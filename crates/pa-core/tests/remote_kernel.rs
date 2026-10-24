@@ -159,6 +159,10 @@ const LOCAL_ONLY_ENV: [(&str, &str); 4] = [
 ];
 
 fn remote_manager(host: &str, cwd: Option<String>) -> ReplKernelManager {
+    ReplKernelManager::new(remote_manager_options(host, cwd))
+}
+
+fn remote_manager_options(host: &str, cwd: Option<String>) -> KernelManagerOptions {
     let mut env: HashMap<String, String> = LOCAL_ONLY_ENV
         .iter()
         .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
@@ -171,7 +175,7 @@ fn remote_manager(host: &str, cwd: Option<String>) -> ReplKernelManager {
             .to_string_lossy()
             .to_string(),
     );
-    ReplKernelManager::new(KernelManagerOptions {
+    KernelManagerOptions {
         python_skills: vec![edit_skill()],
         env,
         remote: Some(RemoteKernelTarget {
@@ -179,7 +183,7 @@ fn remote_manager(host: &str, cwd: Option<String>) -> ReplKernelManager {
             cwd,
         }),
         ..KernelManagerOptions::default()
-    })
+    }
 }
 
 async fn start(manager: &ReplKernelManager) {
@@ -335,6 +339,60 @@ async fn a_remote_kernel_gets_hardened_ssh_and_only_allowlisted_env() {
         2,
         "the second kernel only probes and launches:\n{probe_only}"
     );
+}
+
+/// `rlm.spawn(env=...)` on a remote kernel: the literal and the
+/// passed-through value (resolved from the kernel env seam, never this
+/// process's env) reach the remote `os.environ` over stdin, appear nowhere
+/// in the ssh argv, the remote command, or the kernel's own command line
+/// (what the remote `ps` shows), and the pass-through is masked when the
+/// kernel prints it.
+#[tokio::test]
+async fn spawn_env_reaches_the_remote_kernel_over_stdin_and_never_the_command_line() {
+    const LITERAL: &str = "literal-value-5d1f7a";
+    const SECRET: &str = "passthrough-secret-9c2e44";
+    let mut options = remote_manager_options("env@box", None);
+    options
+        .env
+        .insert("PA_TEST_PASSTHROUGH".to_string(), SECRET.to_string());
+    options.env_overrides = pa_core::kernel::KernelEnvOverrides::from_json(&serde_json::json!({
+        "PA_TEST_LITERAL": LITERAL,
+        "PA_TEST_PASSTHROUGH": null,
+    }))
+    .expect("valid overrides");
+    let manager = ReplKernelManager::new(options);
+    start(&manager).await;
+    let stdout = run(
+        &manager,
+        "import os\nprint(os.getpid())\nprint(os.environ['PA_TEST_LITERAL'])\nprint(os.environ['PA_TEST_PASSTHROUGH'][::-1])\nprint(os.environ['PA_TEST_PASSTHROUGH'])",
+    )
+    .await;
+    let lines: Vec<&str> = stdout.lines().collect();
+    let reversed: String = SECRET.chars().rev().collect();
+    assert_eq!(lines[1..], [LITERAL, reversed.as_str(), "***"]);
+    let kernel_pid: i32 = lines[0].parse().expect("kernel pid");
+    // The fake remote runs on this machine: the remote kernel's command
+    // line is readable like the remote `ps` would show it.
+    let cmdline = std::fs::read(format!("/proc/{kernel_pid}/cmdline")).expect("kernel cmdline");
+    let cmdline = String::from_utf8_lossy(&cmdline).replace('\0', " ");
+    assert!(cmdline.contains("rlm.repl"), "{cmdline}");
+    manager
+        .shutdown(KernelShutdownOptions::default())
+        .await
+        .expect("shutdown");
+    let argv = std::fs::read_to_string(fake_ssh_base().join("argv-env@box")).expect("argv log");
+    let remote_commands =
+        std::fs::read_to_string(fake_ssh_base().join("log-env@box")).expect("remote command log");
+    assert!(remote_commands.contains("-m rlm.repl"), "{remote_commands}");
+    for (what, text) in [
+        ("ssh argv", &argv),
+        ("remote command", &remote_commands),
+        ("kernel cmdline", &cmdline),
+    ] {
+        for value in [LITERAL, SECRET] {
+            assert!(!text.contains(value), "{value:?} leaked into the {what}: {text}");
+        }
+    }
 }
 
 #[tokio::test]

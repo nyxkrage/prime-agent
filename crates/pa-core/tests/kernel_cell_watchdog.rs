@@ -60,6 +60,7 @@ async fn started_manager() -> Option<ReplKernelManager> {
     let python = kernel_python()?;
     let options = KernelManagerOptions {
         remote: None,
+        env_overrides: pa_core::kernel::KernelEnvOverrides::default(),
         python: Some(python),
         cwd: Some(std::env::temp_dir()),
         env: HashMap::new(),
@@ -176,6 +177,7 @@ async fn watchdog_noted_cell_still_schedules_the_snapshot() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let options = KernelManagerOptions {
         remote: None,
+        env_overrides: pa_core::kernel::KernelEnvOverrides::default(),
         python: Some(python),
         cwd: Some(std::env::temp_dir()),
         env: HashMap::new(),

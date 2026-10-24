@@ -69,6 +69,7 @@ fn manager_options(
 ) -> KernelManagerOptions {
     KernelManagerOptions {
         remote: None,
+        env_overrides: pa_core::kernel::KernelEnvOverrides::default(),
         python: Some(python),
         cwd: Some(std::env::temp_dir()),
         env: std::collections::HashMap::default(),

@@ -409,7 +409,7 @@ impl SessionCounters {
         self.with(|values| values.rlm_spawn_env_refused_count += 1);
     }
 
-    fn write_into(&self, properties: &mut Properties) {
+    pub(crate) fn write_into(&self, properties: &mut Properties) {
         self.with(|values| {
             for (key, value) in [
                 ("skill_use_count", values.skill_use_count),

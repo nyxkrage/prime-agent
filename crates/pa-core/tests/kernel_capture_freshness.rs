@@ -44,6 +44,7 @@ fn test_options(snapshot_dir: Option<&Path>) -> Option<KernelManagerOptions> {
     let python = kernel_python()?;
     Some(KernelManagerOptions {
         remote: None,
+        env_overrides: pa_core::kernel::KernelEnvOverrides::default(),
         python: Some(python),
         cwd: Some(std::env::temp_dir()),
         env: HashMap::new(),

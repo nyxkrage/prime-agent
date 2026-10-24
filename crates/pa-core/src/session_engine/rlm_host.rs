@@ -1465,6 +1465,79 @@ mod tests {
         assert_eq!(error.to_string(), "rlm.spawn name must be a string");
     }
 
+    /// `env=` is validated host-side (whatever the kernel wrapper let
+    /// through), reaches the host as literals and pass-through names, and
+    /// counts literal keys, pass-through keys, and refusals, never names.
+    #[tokio::test]
+    async fn spawn_env_is_validated_host_side_and_counted() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = RecordingHost::new();
+        let spawn_requests = Arc::clone(&host.spawn_requests);
+        let wiring = wired(dir.path(), Some(host));
+        let counters = Arc::new(crate::session_engine::telemetry::SessionCounters::default());
+        let _ = wiring.rlm.spawn_counters.set(Arc::clone(&counters));
+        call(
+            &wiring,
+            "rlm.run",
+            json!({
+                "prompt": "train",
+                "kwargs": { "name": "train", "env": { "EPOCHS": "3", "HF_TOKEN": null } }
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            spawn_requests.lock().await[0].env,
+            crate::kernel::env_overrides::KernelEnvOverrides::from_json(
+                &json!({ "EPOCHS": "3", "HF_TOKEN": null })
+            )
+            .unwrap()
+        );
+        let big = "x".repeat(65 * 1024);
+        let mut errors = Vec::new();
+        for env in [
+            json!({ "PATH": "/evil" }),
+            json!({ "PRIME_AGENT_KERNEL_OWNER_PID": null }),
+            json!({ "lower_case": "x" }),
+            json!({ "EPOCHS": 3 }),
+            json!({ "BIG": big }),
+        ] {
+            let error = call(
+                &wiring,
+                "rlm.run",
+                json!({ "prompt": "p", "kwargs": { "name": "bad", "env": env } }),
+            )
+            .await
+            .unwrap_err();
+            errors.push(error.to_string());
+        }
+        assert_eq!(
+            errors,
+            [
+                "rlm.spawn env name PATH is reserved: the kernel launcher owns RLM_*, PRIME_AGENT_*, PYTHON*, PATH, HOME, and VIRTUAL_ENV",
+                "rlm.spawn env name PRIME_AGENT_KERNEL_OWNER_PID is reserved: the kernel launcher owns RLM_*, PRIME_AGENT_*, PYTHON*, PATH, HOME, and VIRTUAL_ENV",
+                "rlm.spawn env name \"lower_case\" is invalid: names must match [A-Z_][A-Z0-9_]*",
+                "rlm.spawn env value for EPOCHS must be a str or None, got int",
+                "rlm.spawn env carries 66563 bytes; at most 65536 are allowed",
+            ]
+        );
+        assert_eq!(spawn_requests.lock().await.len(), 1, "no refused spawn reached the host");
+        let mut properties = pa_telemetry::Properties::new();
+        counters.write_into(&mut properties);
+        let properties = serde_json::to_value(&properties).unwrap();
+        assert_eq!(
+            [
+                "rlm_spawn_count",
+                "rlm_spawn_env_literal_key_count",
+                "rlm_spawn_env_passthrough_key_count",
+                "rlm_spawn_env_refused_count",
+            ]
+            .map(|key| properties[key].clone()),
+            [json!(1), json!(1), json!(1), json!(5)]
+        );
+        assert!(!properties.to_string().contains("HF_TOKEN"));
+    }
+
     #[tokio::test]
     async fn create_session_round_trip_through_the_registry() {
         let dir = tempfile::TempDir::new().unwrap();
