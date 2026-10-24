@@ -1305,6 +1305,86 @@ mod tests {
         assert_eq!(admitted, 0);
     }
 
+    /// The print host enforces `subagentModels` on a real `InlineHost::spawn`:
+    /// an authenticated model outside the filter is refused, named
+    /// explicitly or inherited from the parent, and a malformed setting
+    /// fails closed; nothing is admitted.
+    #[tokio::test]
+    async fn the_inline_host_enforces_the_subagent_filter_on_spawn() {
+        use pa_core::models::{SubagentModelRefusal, SubagentModelRefusalCause};
+        let directory = tempfile::tempdir().unwrap();
+        let options = run_options(directory.path());
+        let agent_dir = &options.config.agent_dir;
+        std::fs::create_dir_all(agent_dir).unwrap();
+        std::fs::write(
+            agent_dir.join("models.json"),
+            json!({
+                "providers": {
+                    "test-provider": {
+                        "baseUrl": "http://localhost:9",
+                        "apiKey": "test-key",
+                        "api": "openai-completions",
+                        "models": [
+                            { "id": "glm-5.3", "contextWindow": 1000, "maxTokens": 100 },
+                            { "id": "glm-5.3-turbo", "alias": "turbo", "contextWindow": 1000, "maxTokens": 100 }
+                        ]
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let manager = pa_core::session::manager::SessionManager::in_memory(directory.path());
+        let mut node = root_node(&options, &manager, None);
+        Arc::get_mut(&mut node).unwrap().max_depth = 2;
+        *node.model_selector.lock().unwrap() = Some("test-provider/glm-5.3".to_string());
+        let outside = SubagentModelRefusalCause::OutsideFilter {
+            permitted: vec!["turbo (test-provider/glm-5.3-turbo)".to_string()],
+            alias_patterns: Vec::new(),
+        };
+        let unreadable = SubagentModelRefusalCause::UnreadableFilter(
+            "subagentModels is present but is not an array of strings".to_string(),
+        );
+        for (settings, cause) in [
+            (
+                r#"{ "subagentModels": ["test-provider/glm-5.3-turbo"] }"#,
+                outside,
+            ),
+            (
+                r#"{ "subagentModels": "test-provider/glm-5.3" }"#,
+                unreadable,
+            ),
+        ] {
+            std::fs::write(agent_dir.join("settings.json"), settings).unwrap();
+            let expected = SubagentModelRefusal {
+                selector: "test-provider/glm-5.3".to_string(),
+                cause,
+            };
+            for model in [Some("test-provider/glm-5.3"), None] {
+                let result = InlineHost(Arc::clone(&node))
+                    .spawn(RlmSpawnRequest {
+                        prompt: "finish the task".to_string(),
+                        name: None,
+                        model: model.map(str::to_string),
+                        thinking: None,
+                        spawned_by_request_id: None,
+                    })
+                    .await;
+                let admitted = node.children.lock().await.len();
+                dispose_inline_subagents(&node).await;
+                node.disposed
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+                let error = result.expect_err("the spawn must be refused");
+                assert_eq!(
+                    error.downcast_ref::<SubagentModelRefusal>(),
+                    Some(&expected),
+                    "{settings} model={model:?}: {error:#}"
+                );
+                assert_eq!(admitted, 0);
+            }
+        }
+    }
+
     /// The fake python tool of the landing test: records one late receipt
     /// through the print path (the factored async fn) while its cell's
     /// result row has not landed.
