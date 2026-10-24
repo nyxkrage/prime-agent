@@ -585,12 +585,13 @@ fn register_find_models(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmHost
                     );
                 };
                 // The live `subagentModels` filter: global settings only
-                // (the cwd only locates the store), aliases expanded.
+                // (the cwd only locates the store), matched against canonical
+                // `provider/model-id` names (aliases are never expanded).
                 let settings = crate::settings::SettingsManager::create(
                     &bridge.settings_dirs.cwd,
                     &bridge.settings_dirs.agent_dir,
                 );
-                let filter = crate::models::SubagentModelFilter::load(&settings, registry);
+                let filter = crate::models::SubagentModelFilter::load(&settings);
                 match &filter {
                     crate::models::SubagentModelFilter::Only(_) => bridge
                         .note_policy(super::telemetry::SubagentModelPolicyEvent::FilteredFind),
@@ -1361,16 +1362,17 @@ mod tests {
         assert_eq!(announced.lock().unwrap().len(), 1);
     }
 
-    /// `subagentModels` (global settings, an alias plus a selector) narrows
+    /// `subagentModels` (global settings, canonical selectors) narrows
     /// `rlm.find_models` to exactly the filtered set, the aliased model
-    /// listed under its alias.
+    /// listed under its alias; an alias as a pattern matches nothing
+    /// (patterns match canonical names only).
     #[tokio::test]
     async fn find_models_returns_only_the_subagent_filter() {
         let dir = tempfile::TempDir::new().unwrap();
         let wiring = wired(dir.path(), None);
         std::fs::write(
             dir.path().join("settings.json"),
-            r#"{ "subagentModels": ["turbo", "test-provider/glm-5.3"] }"#,
+            r#"{ "subagentModels": ["test-provider/glm-5.3-turbo", "test-provider/glm-5.3"] }"#,
         )
         .unwrap();
         let response = call(
@@ -1399,7 +1401,7 @@ mod tests {
         );
         std::fs::write(
             dir.path().join("settings.json"),
-            r#"{ "subagentModels": ["turbo"] }"#,
+            r#"{ "subagentModels": ["*turbo"] }"#,
         )
         .unwrap();
         let response = call(
@@ -1418,6 +1420,19 @@ mod tests {
                 "selector": "test-provider/glm-5.3-turbo",
             }] })
         );
+        std::fs::write(
+            dir.path().join("settings.json"),
+            r#"{ "subagentModels": ["turbo"] }"#,
+        )
+        .unwrap();
+        let response = call(
+            &wiring,
+            "rlm.find_models",
+            json!({ "type": "rlm.find_models", "query": "" }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response, json!({ "models": [] }));
     }
 
     /// `enabledModels` never filters subagents: with it set and

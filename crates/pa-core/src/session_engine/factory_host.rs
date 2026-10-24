@@ -267,9 +267,7 @@ impl FactoryHost {
                 .ok_or_else(|| unavailable_error(&selector))?;
             if let Some(allowlist) = &self.config.allowed_models {
                 let pinned = format!("{}/{}", model.provider, model.id).to_lowercase();
-                // models.json aliases name models in the pin too.
-                if !crate::models::model_allowed(&pinned, &registry.expand_model_aliases(allowlist))
-                {
+                if !crate::models::model_allowed(&pinned, allowlist) {
                     anyhow::bail!(
                         "Requested factory model \"{pinned}\" is blocked by the model allowlist"
                     );

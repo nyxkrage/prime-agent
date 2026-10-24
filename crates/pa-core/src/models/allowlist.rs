@@ -26,27 +26,24 @@ impl std::fmt::Display for ModelAllowlistRefusal {
 
 impl std::error::Error for ModelAllowlistRefusal {}
 
-/// The settings `subagentModels` filter with models.json aliases expanded:
-/// the models `rlm.find_models` lists and `rlm.spawn`/`rlm.create_session`
-/// accept. Global settings only; unset never falls back to `enabledModels`.
+/// The settings `subagentModels` filter: the models `rlm.find_models` lists
+/// and `rlm.spawn`/`rlm.create_session` accept. Global settings only; unset
+/// never falls back to `enabledModels`. Patterns match canonical
+/// `provider/model-id` names only (models.json aliases are never expanded).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubagentModelFilter {
     /// No `subagentModels` configured: every searchable model.
     Unrestricted,
-    /// The configured patterns, aliases replaced by their selectors.
+    /// The configured patterns, matched against canonical selectors.
     Only(Vec<String>),
 }
 
 impl SubagentModelFilter {
-    /// Read the global `subagentModels` list, expanding aliases against the
-    /// registry's models.json alias index.
+    /// Read the global `subagentModels` list.
     #[must_use]
-    pub fn load(
-        settings: &crate::settings::SettingsManager,
-        registry: &super::registry::ModelRegistry,
-    ) -> Self {
+    pub fn load(settings: &crate::settings::SettingsManager) -> Self {
         match settings.get_subagent_models() {
-            Some(patterns) => Self::Only(registry.expand_model_aliases(&patterns)),
+            Some(patterns) => Self::Only(patterns),
             None => Self::Unrestricted,
         }
     }
@@ -61,6 +58,29 @@ impl SubagentModelFilter {
     }
 }
 
+/// A model pattern (`allowedModels`, `subagentModels`) that equals a
+/// models.json alias and matches no canonical model name. Patterns match
+/// `provider/model-id` names only, so such a pattern selects nothing; it is
+/// surfaced as a warning instead of being silently expanded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AliasPattern {
+    /// The pattern as configured.
+    pub pattern: String,
+    /// The `provider/model-id` selector the alias names.
+    pub selector: String,
+}
+
+impl std::fmt::Display for AliasPattern {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self { pattern, selector } = self;
+        write!(
+            f,
+            "pattern \"{pattern}\" is the models.json alias of {selector}, but model patterns \
+             match real model names, not aliases, so it matches nothing; use \"{selector}\""
+        )
+    }
+}
+
 /// An RLM child model outside the settings `subagentModels` filter (named
 /// explicitly or inherited from the parent), refused even when it is
 /// authenticated; typed so the spawn seams can count the refusal.
@@ -71,6 +91,9 @@ pub struct SubagentModelRefusal {
     /// The permitted models as spawnable names (`alias (selector)` or the
     /// selector), so the caller can retry in one step.
     pub permitted: Vec<String>,
+    /// Filter patterns that name an alias instead of a model (they match
+    /// nothing); listed so the refusal explains a surprisingly short list.
+    pub alias_patterns: Vec<AliasPattern>,
 }
 
 impl std::fmt::Display for SubagentModelRefusal {
@@ -85,10 +108,14 @@ impl std::fmt::Display for SubagentModelRefusal {
             write!(
                 f,
                 "No authenticated model matches \"subagentModels\": authenticate one or fix the setting."
-            )
+            )?;
         } else {
-            write!(f, "Pass model= one of: {}.", self.permitted.join(", "))
+            write!(f, "Pass model= one of: {}.", self.permitted.join(", "))?;
         }
+        for alias_pattern in &self.alias_patterns {
+            write!(f, " Note: \"subagentModels\" {alias_pattern}.")?;
+        }
+        Ok(())
     }
 }
 
@@ -206,11 +233,18 @@ mod tests {
         let refusal = SubagentModelRefusal {
             selector: "openai/gpt-6-luna".to_string(),
             permitted: vec!["sol (openai/gpt-6.1-sol)".to_string()],
+            alias_patterns: vec![AliasPattern {
+                pattern: "luna".to_string(),
+                selector: "openai/gpt-6-luna".to_string(),
+            }],
         };
         assert_eq!(
             refusal.to_string(),
             "Model \"openai/gpt-6-luna\" is not permitted for subagents (settings \"subagentModels\"); \
-             there is no fallback to another model. Pass model= one of: sol (openai/gpt-6.1-sol)."
+             there is no fallback to another model. Pass model= one of: sol (openai/gpt-6.1-sol). \
+             Note: \"subagentModels\" pattern \"luna\" is the models.json alias of openai/gpt-6-luna, \
+             but model patterns match real model names, not aliases, so it matches nothing; \
+             use \"openai/gpt-6-luna\"."
         );
     }
 }

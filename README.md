@@ -193,20 +193,25 @@ custom models in `models[]`:
 }
 ```
 
-You can use an alias anywhere a model is named: `rlm.spawn(model="sol")`,
-`rlm.create_session(model=...)`, `--model`, `imageModel`, `allowedModels`, and
-`subagentModels`. An alias is a single word with no `/`, spaces, or glob characters.
-It must be unique across all providers and must not equal any real model ID. If an
-alias breaks these rules, `models.json` fails to load with an error naming both
-models. `modelOverrides.<id>.name` is still only a display name.
+Use an alias to name a model when you select it: `rlm.spawn(model="sol")`,
+`rlm.create_session(model=...)`, `--model`, and `imageModel`. An alias is a single
+word with no `/`, spaces, or glob characters. It must be unique across all providers
+and must not equal any real model ID. If an alias breaks these rules, `models.json`
+fails to load with an error naming both models. `modelOverrides.<id>.name` is still
+only a display name.
 
 To limit which models subagents can use, set `subagentModels` in the global
-`~/.prime/agent/settings.json`. Entries can be aliases, `provider/model-id`
-selectors, or `--models`-style globs:
+`~/.prime/agent/settings.json`. Entries are `provider/model-id` selectors or
+`--models`-style globs, matched against real model names:
 
 ```json
-{ "subagentModels": ["sol", "luna"] }
+{ "subagentModels": ["openai/gpt-6.1-sol", "openai/gpt-6-luna"] }
 ```
+
+Aliases do not work in `subagentModels` or `allowedModels`: the filter always checks
+the real `provider/model-id` name. An alias you pass to `rlm.spawn` resolves to its
+real name first, and that name is what gets checked. An entry that equals an alias
+matches nothing; the agent logs a warning for it, and a refused spawn names it.
 
 When `subagentModels` is set:
 

@@ -274,7 +274,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // `subagentModels` filter's permitted models for the prompt tail
     // (enforcement re-reads the live setting at every spawn).
     let prompt_subagent_models = {
-        let filter = crate::models::SubagentModelFilter::load(&settings, &wiring.rlm.registry);
+        let filter = crate::models::SubagentModelFilter::load(&settings);
         match &filter {
             crate::models::SubagentModelFilter::Unrestricted => None,
             crate::models::SubagentModelFilter::Only(_) => {
@@ -282,6 +282,21 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             }
         }
     };
+    // Model patterns match canonical `provider/model-id` names, never
+    // models.json aliases: a pattern that only names an alias selects
+    // nothing, so say so instead of silently filtering everything out.
+    for (setting, patterns) in [
+        ("allowedModels", factory_allowed_models.as_deref()),
+        ("subagentModels", settings.get_subagent_models().as_deref()),
+    ] {
+        for alias_pattern in wiring
+            .rlm
+            .registry
+            .alias_patterns(patterns.unwrap_or_default())
+        {
+            tracing::warn!("settings \"{setting}\": {alias_pattern}");
+        }
+    }
     // Captured before `settings` moves into the resource loader: the
     // per-cell watchdog budget (default 60s, `0` disables).
     let python_cell_timeout_ms = settings.get_python_cell_timeout_ms();

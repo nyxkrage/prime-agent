@@ -80,19 +80,18 @@ pub fn resolve_auxiliary_model(
     // The daemon's `allowedModels` pin (rust-only guardrail, no TS
     // equivalent) covers every pass model: a selector outside the pin
     // falls back to the session model.
+    if let Some(allowlist) = settings.get_allowed_models() {
+        if !crate::models::model_allowed(&selector, &allowlist) {
+            warn_fallback(&selector, purpose);
+            return fallback();
+        }
+    }
     // The TS find runs over the authenticated, non-stale catalog
     // (`_authenticatedRlmModels`); the registry's set is the same filter.
     let auth = crate::auth::AuthStorage::create(&context.agent_dir);
     let mut registry =
         crate::models::ModelRegistry::create(auth, context.agent_dir.join("models.json"));
     registry.load_private_authorization_from_cache();
-    // models.json aliases name models in the pin too.
-    if let Some(allowlist) = settings.get_allowed_models() {
-        if !crate::models::model_allowed(&selector, &registry.expand_model_aliases(&allowlist)) {
-            warn_fallback(&selector, purpose);
-            return fallback();
-        }
-    }
     let model = registry
         .get_rlm_searchable_models()
         .into_iter()

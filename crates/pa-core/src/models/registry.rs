@@ -455,16 +455,26 @@ impl ModelRegistry {
             .map(|(alias, _)| alias.as_str())
     }
 
-    /// Model patterns (`allowedModels`, `subagentModels`) with every pattern
-    /// that names an alias replaced by the aliased selector; other patterns
-    /// pass through unchanged.
+    /// The patterns (`allowedModels`, `subagentModels`) that equal a
+    /// models.json alias and match no canonical model. Patterns match
+    /// `provider/model-id` names only and aliases are never expanded in
+    /// them, so each one selects nothing; callers warn about it.
     #[must_use]
-    pub fn expand_model_aliases(&self, patterns: &[String]) -> Vec<String> {
+    pub fn alias_patterns(&self, patterns: &[String]) -> Vec<super::allowlist::AliasPattern> {
         patterns
             .iter()
-            .map(|pattern| {
-                self.resolve_model_alias(pattern)
-                    .map_or_else(|| pattern.clone(), str::to_string)
+            .filter_map(|pattern| {
+                let selector = self.resolve_model_alias(pattern)?;
+                let matches_a_model = self.models.iter().any(|model| {
+                    super::allowlist::model_allowed(
+                        &format!("{}/{}", model.provider, model.id),
+                        std::slice::from_ref(pattern),
+                    )
+                });
+                (!matches_a_model).then(|| super::allowlist::AliasPattern {
+                    pattern: pattern.clone(),
+                    selector: selector.to_string(),
+                })
             })
             .collect()
     }

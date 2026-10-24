@@ -462,7 +462,7 @@ fn registry_with_models_json(dir: &std::path::Path, document: &str) -> ModelRegi
 }
 
 #[test]
-fn models_json_aliases_resolve_and_expand() {
+fn models_json_aliases_resolve_and_never_expand_in_patterns() {
     let dir = tempfile::tempdir().unwrap();
     let registry = registry_with_models_json(
         dir.path(),
@@ -486,17 +486,18 @@ fn models_json_aliases_resolve_and_expand() {
     );
     assert_eq!(registry.resolve_model_alias("gpt-5.6-luna"), None);
     assert_eq!(registry.model_alias("openai", "gpt-5.6-luna"), Some("luna"));
+    // Patterns match canonical names only: an alias-named pattern is
+    // reported (it matches nothing), canonical and glob patterns are not.
     assert_eq!(
-        registry.expand_model_aliases(&[
+        registry.alias_patterns(&[
             "luna".to_string(),
-            "big".to_string(),
-            "zai/*".to_string()
-        ]),
-        vec![
-            "openai/gpt-5.6-luna".to_string(),
             "custom/big-model-v2".to_string(),
             "zai/*".to_string()
-        ]
+        ]),
+        vec![crate::models::AliasPattern {
+            pattern: "luna".to_string(),
+            selector: "openai/gpt-5.6-luna".to_string(),
+        }]
     );
 }
 
