@@ -106,6 +106,9 @@ pub struct ModelCostConfig {
 pub struct ModelDefinition {
     pub id: String,
     pub name: Option<String>,
+    /// The short name the model resolves by (`rlm.spawn(model="sol")`);
+    /// unique across providers and never equal to a real model ID.
+    pub alias: Option<String>,
     pub api: Option<String>,
     pub base_url: Option<String>,
     pub reasoning: Option<bool>,
@@ -121,7 +124,11 @@ pub struct ModelDefinition {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ModelOverride {
+    /// Display name only; [`Self::alias`] is the name a model resolves by.
     pub name: Option<String>,
+    /// The short name the model resolves by; unique across providers and
+    /// never equal to a real model ID.
+    pub alias: Option<String>,
     pub reasoning: Option<bool>,
     pub thinking_level_map: Option<BTreeMap<String, Option<String>>>,
     pub input: Option<Vec<String>>,
@@ -181,8 +188,10 @@ pub fn parse_models_config(content: &str) -> Result<ModelsConfig, String> {
 ///
 /// # Errors
 ///
-/// Error when a provider lacks its base URL, API key, or API kind, or a
-/// model lacks an id or zero limits.
+/// Error when a provider lacks its base URL, API key, or API kind, a
+/// model lacks an id or zero limits, or a model alias is malformed,
+/// duplicated across providers, or equal to a model ID the document names
+/// (the registry checks the full catalog at load).
 pub fn validate_config(
     config: &ModelsConfig,
     built_in_providers: &dyn Fn(&str) -> bool,
@@ -243,6 +252,59 @@ pub fn validate_config(
                     ));
                 }
             }
+        }
+    }
+    // The alias rules: a non-empty single token (no `/`, whitespace, or glob
+    // characters, so it can never read as a selector or a pattern), unique
+    // across providers (case-insensitive), and never a model ID the document
+    // names. Errors name both models.
+    let mut aliased: Vec<(&str, String)> = Vec::new();
+    let mut model_ids: Vec<(String, String)> = Vec::new();
+    for (provider_name, provider_config) in &config.providers {
+        let definitions = provider_config
+            .models
+            .iter()
+            .flatten()
+            .map(|model| (model.id.as_str(), model.alias.as_deref()));
+        let overrides = provider_config
+            .model_overrides
+            .iter()
+            .flatten()
+            .map(|(id, over)| (id.as_str(), over.alias.as_deref()));
+        for (model_id, alias) in definitions.chain(overrides) {
+            let selector = format!("{provider_name}/{model_id}");
+            model_ids.push((model_id.to_lowercase(), selector.clone()));
+            let Some(alias) = alias else { continue };
+            let trimmed = alias.trim();
+            if trimmed.is_empty()
+                || trimmed.contains(|c: char| c == '/' || c.is_whitespace())
+                || trimmed.contains(['*', '?', '['])
+            {
+                return Err(format!(
+                    "Model {selector}: invalid alias \"{alias}\" (use a single word without \"/\", spaces, or glob characters)."
+                ));
+            }
+            if let Some((_, other)) = aliased
+                .iter()
+                .find(|(existing, _)| existing.eq_ignore_ascii_case(trimmed))
+            {
+                if other != &selector {
+                    return Err(format!(
+                        "Model {selector}: alias \"{trimmed}\" is already used by model {other}; aliases must be unique."
+                    ));
+                }
+            }
+            aliased.push((trimmed, selector));
+        }
+    }
+    for (alias, selector) in &aliased {
+        if let Some((_, other)) = model_ids
+            .iter()
+            .find(|(model_id, _)| model_id == &alias.to_lowercase())
+        {
+            return Err(format!(
+                "Model {selector}: alias \"{alias}\" equals the ID of model {other}; an alias must not shadow a model ID."
+            ));
         }
     }
     Ok(())
@@ -483,6 +545,52 @@ mod tests {
         let error = validate_config(&config, &|_| false).unwrap_err();
         assert!(error.contains("apiKey"));
         assert!(validate_config(&config, &|p| p == "custom").is_ok());
+    }
+
+    fn alias_error(document: &str) -> String {
+        let config = parse_models_config(document).unwrap();
+        validate_config(&config, &|_| true).unwrap_err()
+    }
+
+    #[test]
+    fn aliases_must_be_unique_across_providers() {
+        assert_eq!(
+            alias_error(
+                r#"{ "providers": {
+                    "anthropic": { "modelOverrides": { "claude-x": { "alias": "Sol" } } },
+                    "openai": { "modelOverrides": { "gpt-6.1-sol": { "alias": "sol" } } }
+                } }"#
+            ),
+            "Model openai/gpt-6.1-sol: alias \"sol\" is already used by model anthropic/claude-x; aliases must be unique."
+        );
+    }
+
+    #[test]
+    fn an_alias_must_not_shadow_a_model_id_or_read_as_a_selector() {
+        assert_eq!(
+            alias_error(
+                r#"{ "providers": { "openai": { "modelOverrides": {
+                    "gpt-6.1-sol": { "alias": "gpt-6-luna" },
+                    "gpt-6-luna": { "name": "Luna" }
+                } } } }"#
+            ),
+            "Model openai/gpt-6.1-sol: alias \"gpt-6-luna\" equals the ID of model openai/gpt-6-luna; an alias must not shadow a model ID."
+        );
+        assert_eq!(
+            alias_error(
+                r#"{ "providers": { "openai": { "modelOverrides": {
+                    "gpt-6.1-sol": { "alias": "openai/sol" }
+                } } } }"#
+            ),
+            "Model openai/gpt-6.1-sol: invalid alias \"openai/sol\" (use a single word without \"/\", spaces, or glob characters)."
+        );
+        let config = parse_models_config(
+            r#"{ "providers": { "openai": { "modelOverrides": {
+                "gpt-6.1-sol": { "alias": "sol" }, "gpt-6-luna": { "alias": "luna" }
+            } } } }"#,
+        )
+        .unwrap();
+        assert_eq!(validate_config(&config, &|_| true), Ok(()));
     }
 
     #[test]

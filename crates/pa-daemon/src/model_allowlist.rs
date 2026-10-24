@@ -35,7 +35,10 @@ pub(crate) fn load(cwd: &Path, agent_dir: &Path) -> DaemonAllowlist {
         return DaemonAllowlist::Unreadable(error.message.clone());
     }
     if let Some(patterns) = settings.get_allowed_models() {
-        DaemonAllowlist::Allowed(patterns)
+        // models.json aliases (global, like this setting) name models here
+        // too: an alias pattern matches its aliased selector.
+        let registry = crate::state_getters::worker_model_registry(agent_dir);
+        DaemonAllowlist::Allowed(registry.expand_model_aliases(&patterns))
     } else {
         // A PRESENT-but-malformed `allowedModels` (the lenient load drops
         // wrong-typed known fields to unset) fails closed: the restriction

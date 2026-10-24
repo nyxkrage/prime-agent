@@ -173,3 +173,52 @@ For per-model early compaction, use the existing provider-scoped
 
 Use the actual model ID for your provider. This sets that model's effective context
 window; it does not change every model's global compaction percentage.
+
+### Model aliases and subagent models
+
+Give a model a short name with the per-model `alias` field in
+`~/.prime/agent/models.json`. It works on built-in models via `modelOverrides` and on
+custom models in `models[]`:
+
+```json
+{
+  "providers": {
+    "openai": {
+      "modelOverrides": {
+        "gpt-6.1-sol": { "alias": "sol" },
+        "gpt-6-luna": { "alias": "luna" }
+      }
+    }
+  }
+}
+```
+
+You can use an alias anywhere a model is named: `rlm.spawn(model="sol")`,
+`rlm.create_session(model=...)`, `--model`, `imageModel`, `allowedModels`, and
+`subagentModels`. An alias is a single word with no `/`, spaces, or glob characters.
+It must be unique across all providers and must not equal any real model ID. If an
+alias breaks these rules, `models.json` fails to load with an error naming both
+models. `modelOverrides.<id>.name` is still only a display name.
+
+To limit which models subagents can use, set `subagentModels` in the global
+`~/.prime/agent/settings.json`. Entries can be aliases, `provider/model-id`
+selectors, or `--models`-style globs:
+
+```json
+{ "subagentModels": ["sol", "luna"] }
+```
+
+When `subagentModels` is set:
+
+- `rlm.find_models()` lists only authenticated models that match. An aliased model
+  appears under its alias, with the full selector alongside.
+- `rlm.spawn` and `rlm.create_session` refuse any other model, even an
+  authenticated one, and the error lists the allowed models. This also applies to a
+  spawn without `model=` that inherits a parent model outside the list. The agent
+  never falls back to another model.
+- The system prompt lists the allowed models.
+
+Only the global setting counts. A project's `.prime/agent/settings.json` cannot
+change it. When `subagentModels` is unset, subagents are not filtered.
+`enabledModels` never applies to subagents. A spawned model must pass both
+`allowedModels` and `subagentModels`.

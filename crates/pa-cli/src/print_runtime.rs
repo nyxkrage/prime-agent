@@ -974,7 +974,10 @@ fn headless_image_model_router(
                     session_model: &session_model,
                     thinking_level,
                     service_tier: None,
-                    image_model_reference: image_model_reference.as_deref(),
+                    // A models.json alias resolves to its selector.
+                    image_model_reference: image_model_reference.as_deref().map(|reference| {
+                        registry.resolve_model_alias(reference).unwrap_or(reference)
+                    }),
                     available_models: &available,
                     // Keyed (provider, id): one provider's authenticated row must not vouch for
                     // another provider's same-id model.
@@ -1107,6 +1110,10 @@ async fn select_model(
     // not inherit an unrelated saved provider.
     if let Some(model_name) = config.model.as_deref() {
         let available: Vec<Model> = registry.get_available().into_iter().cloned().collect();
+        // A models.json alias resolves to its `provider/model-id` selector.
+        let model_name = registry
+            .resolve_model_alias(model_name)
+            .unwrap_or(model_name);
         let resolved =
             pa_core::models::resolve_cli_model(config.provider.as_deref(), model_name, &available);
         if let Some(error) = resolved.error {

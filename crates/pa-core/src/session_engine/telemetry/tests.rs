@@ -522,9 +522,16 @@ async fn session_counters_ride_session_ended() {
     counters.note_kernel_bootstrap(false, false, 300);
     telemetry.note_feature_outcome("goal", "completed", Some("create"));
     telemetry.note_feature_outcome("not-a-feature", "completed", None);
+    telemetry.note_subagent_model_policy(SubagentModelPolicyEvent::FilteredFind);
+    telemetry.note_subagent_model_policy(SubagentModelPolicyEvent::FilteredFind);
+    telemetry.note_subagent_model_policy(SubagentModelPolicyEvent::AliasSpawn);
+    telemetry.note_subagent_model_policy(SubagentModelPolicyEvent::FilterRefused);
     telemetry.end().await.unwrap();
     assert_eq!(fixture.mock.event_names(), ["agent session ended"]);
     let ended = &event_properties(&fixture.mock, "agent session ended").await[0];
+    assert_eq!(ended["subagent_models_find_count"], serde_json::json!(2));
+    assert_eq!(ended["model_alias_spawn_count"], serde_json::json!(1));
+    assert_eq!(ended["subagent_models_refused_count"], serde_json::json!(1));
     assert_eq!(ended["skill_use_count"], serde_json::json!(2));
     assert_eq!(ended["rlm_child_usage_count"], serde_json::json!(1));
     assert_eq!(ended["rlm_child_input_tokens"], serde_json::json!(50_208));

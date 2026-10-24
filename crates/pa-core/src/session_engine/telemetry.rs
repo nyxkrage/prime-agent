@@ -329,8 +329,23 @@ struct CounterValues {
     rlm_child_cache_read_tokens: u64,
     rlm_child_cache_write_tokens: u64,
     rlm_child_cost: f64,
+    subagent_models_find_count: u64,
+    subagent_models_refused_count: u64,
+    model_alias_spawn_count: u64,
     /// `feature_<name>_<outcome>_count` over the fixed feature vocabulary.
     feature_outcomes: std::collections::BTreeMap<String, u64>,
+}
+
+/// One subagent-model policy moment at the RLM bridge, counted on
+/// `agent session ended` (counts only; never a model ID or alias).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubagentModelPolicyEvent {
+    /// `rlm.find_models` answered under an active `subagentModels` filter.
+    FilteredFind,
+    /// `rlm.spawn`/`rlm.create_session` named its model by a models.json alias.
+    AliasSpawn,
+    /// A spawn was refused by the `subagentModels` filter.
+    FilterRefused,
 }
 
 impl SessionCounters {
@@ -401,6 +416,15 @@ impl SessionCounters {
                     "rlm_child_cache_write_tokens",
                     values.rlm_child_cache_write_tokens,
                 ),
+                (
+                    "subagent_models_find_count",
+                    values.subagent_models_find_count,
+                ),
+                (
+                    "subagent_models_refused_count",
+                    values.subagent_models_refused_count,
+                ),
+                ("model_alias_spawn_count", values.model_alias_spawn_count),
             ] {
                 properties.set(key, Value::from(value));
             }
@@ -684,6 +708,16 @@ impl SessionTelemetry {
             if cost.is_finite() && cost > 0.0 {
                 values.rlm_child_cost += cost;
             }
+        });
+    }
+
+    /// A subagent-model policy moment (`subagentModels` filtering, alias
+    /// spawns, filter refusals), counted on `agent session ended`.
+    pub fn note_subagent_model_policy(&self, event: SubagentModelPolicyEvent) {
+        self.counters.with(|values| match event {
+            SubagentModelPolicyEvent::FilteredFind => values.subagent_models_find_count += 1,
+            SubagentModelPolicyEvent::AliasSpawn => values.model_alias_spawn_count += 1,
+            SubagentModelPolicyEvent::FilterRefused => values.subagent_models_refused_count += 1,
         });
     }
 

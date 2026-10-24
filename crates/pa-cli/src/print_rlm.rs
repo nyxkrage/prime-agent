@@ -713,6 +713,17 @@ impl RlmSubagentHost for InlineHost {
                     "subagent",
                 )
                 .map_err(|error| anyhow::anyhow!("{error:#}"))?;
+                // The `subagentModels` filter binds print-mode children too
+                // (unlike `allowedModels`); the typed refusal reaches the
+                // bridge intact for its counter.
+                pa_daemon::rlm_child_model::assert_subagent_model_permitted(
+                    &config.agent_dir,
+                    &pa_daemon::rlm_child_model::load_subagent_filter(
+                        &config.cwd,
+                        &config.agent_dir,
+                    ),
+                    &selector,
+                )?;
                 pa_daemon::rlm_child_model::assert_thinking_supported(
                     &config.agent_dir,
                     request.thinking.as_deref(),

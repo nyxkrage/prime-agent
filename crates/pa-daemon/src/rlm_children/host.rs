@@ -14,7 +14,9 @@ use super::{
 };
 
 /// Resolve the child model with the daemon `allowedModels` allowlist enforced, refusing loudly with
-/// the typed error and the `model refused` event; the settings read runs on the blocking pool.
+/// the typed error and the `model refused` event, then the settings `subagentModels` filter
+/// (typed `SubagentModelRefusal` listing the permitted models); the settings reads run on the
+/// blocking pool.
 async fn resolve_child_model_allowlisted(
     this: &SupervisorChildSessionsInner,
     reference: Option<&str>,
@@ -25,18 +27,32 @@ async fn resolve_child_model_allowlisted(
     let cwd = identity.cwd.clone().unwrap_or_else(|| "/".to_string());
     let load_cwd = cwd.clone();
     let agent_dir = this.agent_dir.clone();
-    let allowlist = tokio::task::spawn_blocking(move || {
-        crate::model_allowlist::load(Path::new(&load_cwd), &agent_dir)
+    let (allowlist, subagent_filter) = tokio::task::spawn_blocking(move || {
+        (
+            crate::model_allowlist::load(Path::new(&load_cwd), &agent_dir),
+            crate::rlm_child_model::load_subagent_filter(Path::new(&load_cwd), &agent_dir),
+        )
     })
     .await
     .context("the allowlist load task join failed")?;
-    match resolve_child_model(
+    // The daemon allowlist gates first (a box-level policy), then the
+    // `subagentModels` filter (RLM children only).
+    let resolved = resolve_child_model(
         &this.agent_dir,
         reference,
         identity.model.as_deref(),
         target,
         &allowlist,
-    ) {
+    )
+    .and_then(|model| {
+        crate::rlm_child_model::assert_subagent_model_permitted(
+            &this.agent_dir,
+            &subagent_filter,
+            &model,
+        )?;
+        Ok(model)
+    });
+    match resolved {
         Ok(model) => Ok(model),
         Err(error) => {
             if let Some(refusal) = error.downcast_ref::<pa_core::models::ModelAllowlistRefusal>() {

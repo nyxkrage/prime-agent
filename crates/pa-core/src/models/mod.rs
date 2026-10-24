@@ -1,6 +1,8 @@
 //! Model subsystem: resolver and Prime Inference private models.
 
-pub use allowlist::{model_allowed, ModelAllowlistRefusal};
+pub use allowlist::{
+    model_allowed, ModelAllowlistRefusal, SubagentModelFilter, SubagentModelRefusal,
+};
 pub use private_auth::{
     get_private_prime_inference_models, private_prime_authorization_fingerprint,
     read_private_prime_authorization_cache, write_private_prime_authorization_cache,

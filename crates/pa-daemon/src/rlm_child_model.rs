@@ -116,6 +116,40 @@ pub fn resolve_child_model_unchecked(
     Err(model_unavailable_error(reference, target, &candidates))
 }
 
+/// Enforce the settings `subagentModels` filter on a resolved child model
+/// (explicit or inherited from the parent, both hosts): a model outside the
+/// filter is refused with the typed [`SubagentModelRefusal`] listing the
+/// permitted models, even when it is authenticated, never a fallback.
+///
+/// [`SubagentModelRefusal`]: pa_core::models::SubagentModelRefusal
+///
+/// # Errors
+/// Returns the typed refusal when the filter excludes the selector.
+pub fn assert_subagent_model_permitted(
+    agent_dir: &Path,
+    filter: &pa_core::models::SubagentModelFilter,
+    selector: &str,
+) -> Result<()> {
+    if filter.permits(selector) {
+        return Ok(());
+    }
+    let registry = crate::state_getters::worker_model_registry(agent_dir);
+    Err(pa_core::models::SubagentModelRefusal {
+        selector: selector.to_string(),
+        permitted: registry.subagent_model_names(filter),
+    }
+    .into())
+}
+
+/// The live `subagentModels` filter for a child spawn: global settings
+/// (the cwd only locates the store), aliases expanded against models.json.
+#[must_use]
+pub fn load_subagent_filter(cwd: &Path, agent_dir: &Path) -> pa_core::models::SubagentModelFilter {
+    let settings = pa_core::settings::SettingsManager::create(cwd, agent_dir);
+    let registry = crate::state_getters::worker_model_registry(agent_dir);
+    pa_core::models::SubagentModelFilter::load(&settings, &registry)
+}
+
 /// A requested thinking level must be supported by the resolved model;
 /// an out-of-catalog model (a scripted verification model) passes unchecked.
 ///
@@ -355,6 +389,80 @@ mod tests {
         )
         .unwrap();
         assert_eq!(resolved, "test-provider/glm-5.3");
+    }
+
+    /// `subagentModels` (global settings, an alias) refuses an authenticated
+    /// model outside the filter, named explicitly or inherited from the
+    /// parent, with the typed refusal listing the permitted models; the
+    /// aliased model passes.
+    #[test]
+    fn the_subagent_filter_refuses_authenticated_models_outside_it() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("models.json"),
+            json!({
+                "providers": {
+                    "test-provider": {
+                        "baseUrl": "http://localhost:9",
+                        "apiKey": "test-key",
+                        "api": "openai-completions",
+                        "models": [
+                            { "id": "glm-5.3", "contextWindow": 1000, "maxTokens": 100 },
+                            { "id": "glm-5.3-turbo", "alias": "turbo", "contextWindow": 1000, "maxTokens": 100 }
+                        ]
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("settings.json"),
+            r#"{ "subagentModels": ["turbo"] }"#,
+        )
+        .unwrap();
+        let filter = load_subagent_filter(dir.path(), dir.path());
+        assert_eq!(
+            filter,
+            pa_core::models::SubagentModelFilter::Only(vec![
+                "test-provider/glm-5.3-turbo".to_string()
+            ])
+        );
+        let expected = pa_core::models::SubagentModelRefusal {
+            selector: "test-provider/glm-5.3".to_string(),
+            permitted: vec!["turbo (test-provider/glm-5.3-turbo)".to_string()],
+        };
+        for (reference, parent) in [
+            (Some("test-provider/glm-5.3"), None),
+            (None, Some("test-provider/glm-5.3")),
+        ] {
+            let selector = resolve_child_model(
+                dir.path(),
+                reference,
+                parent,
+                "subagent",
+                &DaemonAllowlist::Unrestricted,
+            )
+            .unwrap();
+            let error =
+                assert_subagent_model_permitted(dir.path(), &filter, &selector).unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<pa_core::models::SubagentModelRefusal>(),
+                Some(&expected)
+            );
+        }
+        assert!(assert_subagent_model_permitted(
+            dir.path(),
+            &filter,
+            "test-provider/glm-5.3-turbo"
+        )
+        .is_ok());
+        assert!(assert_subagent_model_permitted(
+            dir.path(),
+            &pa_core::models::SubagentModelFilter::Unrestricted,
+            "test-provider/glm-5.3"
+        )
+        .is_ok());
     }
 
     #[test]

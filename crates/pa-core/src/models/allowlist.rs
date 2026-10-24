@@ -26,6 +26,74 @@ impl std::fmt::Display for ModelAllowlistRefusal {
 
 impl std::error::Error for ModelAllowlistRefusal {}
 
+/// The settings `subagentModels` filter with models.json aliases expanded:
+/// the models `rlm.find_models` lists and `rlm.spawn`/`rlm.create_session`
+/// accept. Global settings only; unset never falls back to `enabledModels`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SubagentModelFilter {
+    /// No `subagentModels` configured: every searchable model.
+    Unrestricted,
+    /// The configured patterns, aliases replaced by their selectors.
+    Only(Vec<String>),
+}
+
+impl SubagentModelFilter {
+    /// Read the global `subagentModels` list, expanding aliases against the
+    /// registry's models.json alias index.
+    #[must_use]
+    pub fn load(
+        settings: &crate::settings::SettingsManager,
+        registry: &super::registry::ModelRegistry,
+    ) -> Self {
+        match settings.get_subagent_models() {
+            Some(patterns) => Self::Only(registry.expand_model_aliases(&patterns)),
+            None => Self::Unrestricted,
+        }
+    }
+
+    /// Whether the resolved `provider/model-id` selector passes the filter.
+    #[must_use]
+    pub fn permits(&self, selector: &str) -> bool {
+        match self {
+            Self::Unrestricted => true,
+            Self::Only(patterns) => model_allowed(selector, patterns),
+        }
+    }
+}
+
+/// An RLM child model outside the settings `subagentModels` filter (named
+/// explicitly or inherited from the parent), refused even when it is
+/// authenticated; typed so the spawn seams can count the refusal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubagentModelRefusal {
+    /// The refused model, full selector form `provider/model-id`.
+    pub selector: String,
+    /// The permitted models as spawnable names (`alias (selector)` or the
+    /// selector), so the caller can retry in one step.
+    pub permitted: Vec<String>,
+}
+
+impl std::fmt::Display for SubagentModelRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let selector = &self.selector;
+        write!(
+            f,
+            "Model \"{selector}\" is not permitted for subagents (settings \"subagentModels\"); \
+             there is no fallback to another model. "
+        )?;
+        if self.permitted.is_empty() {
+            write!(
+                f,
+                "No authenticated model matches \"subagentModels\": authenticate one or fix the setting."
+            )
+        } else {
+            write!(f, "Pass model= one of: {}.", self.permitted.join(", "))
+        }
+    }
+}
+
+impl std::error::Error for SubagentModelRefusal {}
+
 /// Whether a selector is allowed by the `allowedModels` patterns (the
 /// `--models` grammar, case-insensitive, matched against the full selector
 /// `provider/model-id` and the bare id, whose `prime-inference` ids may
@@ -121,5 +189,28 @@ mod tests {
             "{message}"
         );
         assert!(message.contains("never falls back"), "{message}");
+    }
+
+    #[test]
+    fn the_subagent_filter_permits_only_matching_selectors() {
+        assert!(SubagentModelFilter::Unrestricted.permits("zai/glm-5.3"));
+        let filter =
+            SubagentModelFilter::Only(vec!["openai/gpt-6.1-sol".to_string(), "zai/*".to_string()]);
+        assert!(filter.permits("openai/gpt-6.1-sol"));
+        assert!(filter.permits("zai/glm-5.3"));
+        assert!(!filter.permits("openai/gpt-6-luna"));
+    }
+
+    #[test]
+    fn the_subagent_refusal_lists_the_permitted_models() {
+        let refusal = SubagentModelRefusal {
+            selector: "openai/gpt-6-luna".to_string(),
+            permitted: vec!["sol (openai/gpt-6.1-sol)".to_string()],
+        };
+        assert_eq!(
+            refusal.to_string(),
+            "Model \"openai/gpt-6-luna\" is not permitted for subagents (settings \"subagentModels\"); \
+             there is no fallback to another model. Pass model= one of: sol (openai/gpt-6.1-sol)."
+        );
     }
 }

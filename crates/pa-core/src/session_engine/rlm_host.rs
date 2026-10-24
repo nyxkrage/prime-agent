@@ -469,7 +469,7 @@ pub(crate) struct SemanticSpawnAnchor {
 
 /// Session-scoped RLM state the handlers share.
 pub struct RlmHostBridge {
-    registry: Arc<ModelRegistry>,
+    pub(crate) registry: Arc<ModelRegistry>,
     pub notes: Arc<RlmProgressNotes>,
     /// Fires on every accepted note; `None` keeps the store the only surface.
     note_emit: Option<RlmProgressNoteEmit>,
@@ -480,6 +480,19 @@ pub struct RlmHostBridge {
     /// The spawn anchor [`register_run`] reads the in-flight turn from
     /// (`None` until the engine built the session's agent).
     pub(crate) semantic_spawn: std::sync::OnceLock<SemanticSpawnAnchor>,
+    /// The settings store the `subagentModels` filter is read from on each
+    /// `rlm.find_models` (global scope only; the cwd only locates the store).
+    settings_dirs: RlmSettingsDirs,
+    /// The `subagent_model_*` / `model_alias_spawn_count` session counters'
+    /// handle (`None` until the engine installs it; sessions without
+    /// telemetry never set it).
+    pub(crate) telemetry: std::sync::OnceLock<Arc<super::telemetry::SessionTelemetry>>,
+}
+
+/// Where the bridge reads settings from: the session cwd and agent dir.
+pub struct RlmSettingsDirs {
+    pub cwd: std::path::PathBuf,
+    pub agent_dir: std::path::PathBuf,
 }
 
 impl RlmHostBridge {
@@ -491,6 +504,7 @@ impl RlmHostBridge {
         host: Arc<dyn RlmSubagentHost>,
         usage: Arc<super::rlm_usage::RlmChildUsageAttributions>,
         note_emit: Option<RlmProgressNoteEmit>,
+        settings_dirs: RlmSettingsDirs,
     ) -> Self {
         Self {
             registry,
@@ -499,6 +513,38 @@ impl RlmHostBridge {
             host,
             usage,
             semantic_spawn: std::sync::OnceLock::new(),
+            settings_dirs,
+            telemetry: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Resolve a models.json alias in a requested child model to its
+    /// selector (counting the alias use); other references pass through
+    /// for the host's resolution.
+    fn resolve_requested_model(&self, model: Option<String>) -> Option<String> {
+        let model = model?;
+        match self.registry.resolve_model_alias(&model) {
+            Some(selector) => {
+                self.note_policy(super::telemetry::SubagentModelPolicyEvent::AliasSpawn);
+                Some(selector.to_string())
+            }
+            None => Some(model),
+        }
+    }
+
+    /// Count a subagent-filter refusal the host returned.
+    fn note_spawn_error(&self, error: &anyhow::Error) {
+        if error
+            .downcast_ref::<crate::models::SubagentModelRefusal>()
+            .is_some()
+        {
+            self.note_policy(super::telemetry::SubagentModelPolicyEvent::FilterRefused);
+        }
+    }
+
+    fn note_policy(&self, event: super::telemetry::SubagentModelPolicyEvent) {
+        if let Some(telemetry) = self.telemetry.get() {
+            telemetry.note_subagent_model_policy(event);
         }
     }
 }
@@ -516,12 +562,13 @@ pub fn register_rlm_host_handlers(handlers: &mut HostRequestHandlers, bridge: &A
 }
 
 fn register_find_models(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmHostBridge>) {
-    let registry = Arc::clone(&bridge.registry);
+    let bridge = Arc::clone(bridge);
     handlers.register(
         "rlm.find_models",
         host_handler(move |payload| {
-            let registry = Arc::clone(&registry);
+            let bridge = Arc::clone(&bridge);
             Box::pin(async move {
+                let registry = &bridge.registry;
                 let data = &payload.data;
                 let Some(query) = data.get("query").and_then(Value::as_str) else {
                     anyhow::bail!("rlm.find_models query must be a string");
@@ -537,16 +584,30 @@ fn register_find_models(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmHost
                         "rlm.find_models limit must be an integer from 1 to {MAX_RLM_MODEL_SEARCH_LIMIT}"
                     );
                 };
+                // The live `subagentModels` filter: global settings only
+                // (the cwd only locates the store), aliases expanded.
+                let settings = crate::settings::SettingsManager::create(
+                    &bridge.settings_dirs.cwd,
+                    &bridge.settings_dirs.agent_dir,
+                );
+                let filter = crate::models::SubagentModelFilter::load(&settings, registry);
+                match &filter {
+                    crate::models::SubagentModelFilter::Only(_) => bridge
+                        .note_policy(super::telemetry::SubagentModelPolicyEvent::FilteredFind),
+                    crate::models::SubagentModelFilter::Unrestricted => {}
+                }
+                // An aliased model is listed under its alias (the name to
+                // spawn it by), the full selector alongside.
                 let models: Vec<RlmModelInfo> = registry
-                    .get_rlm_searchable_models()
+                    .get_rlm_subagent_models(&filter)
                     .into_iter()
                     .map(|model| RlmModelInfo {
                         provider: model.provider.clone(),
                         id: model.id.clone(),
-                        name: if model.name.is_empty() {
-                            model.id.clone()
-                        } else {
-                            model.name.clone()
+                        name: match registry.model_alias(&model.provider, &model.id) {
+                            Some(alias) => alias.to_string(),
+                            None if model.name.is_empty() => model.id.clone(),
+                            None => model.name.clone(),
                         },
                     })
                     .collect();
@@ -610,6 +671,7 @@ fn register_run(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmHostBridge>)
                     anyhow::bail!("rlm.spawn prompt must be a string");
                 };
                 let mut request = spawn_request_from_payload(prompt, data)?;
+                request.model = bridge.resolve_requested_model(request.model.take());
                 // TS `_startRlmChildRun`: the spawning request is the turn
                 // whose tool call is executing now (the anchor is computed
                 // before the spawn admission's first await); a spawn
@@ -627,7 +689,11 @@ fn register_run(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmHostBridge>)
                     }
                     None => None,
                 };
-                let handle = bridge.host.spawn(request).await?;
+                let handle = bridge
+                    .host
+                    .spawn(request)
+                    .await
+                    .inspect_err(|error| bridge.note_spawn_error(error))?;
                 // TS `_findLastAssistantMessage` at spawn: the spawning
                 // assistant row (persisted at `message_end` before tool
                 // execution) is the target every child-usage attribution
@@ -665,11 +731,11 @@ fn spawn_request_from_payload(prompt: &str, data: &Value) -> anyhow::Result<RlmS
 }
 
 fn register_create_session(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmHostBridge>) {
-    let host = Arc::clone(&bridge.host);
+    let bridge = Arc::clone(bridge);
     handlers.register(
         "rlm.create_session",
         host_handler(move |payload| {
-            let host = Arc::clone(&host);
+            let bridge = Arc::clone(&bridge);
             Box::pin(async move {
                 const OPERATION: &str = "rlm.create_session";
                 let data = &payload.data;
@@ -692,6 +758,7 @@ fn register_create_session(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmH
                 }
                 let model = optional_string_kwarg(&kwargs, "model", OPERATION)?;
                 let model = normalize_requested_rlm_subagent_model(model, OPERATION)?;
+                let model = bridge.resolve_requested_model(model);
                 let thinking = optional_string_kwarg(&kwargs, "thinking", OPERATION)?;
                 let thinking =
                     normalize_requested_rlm_subagent_thinking_level(thinking, OPERATION)?
@@ -707,7 +774,8 @@ fn register_create_session(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmH
                     }
                     Some(_) => anyhow::bail!("rlm.create_session cwd must be a non-empty string"),
                 };
-                let handle = host
+                let handle = bridge
+                    .host
                     .create_session(RlmCreateSessionRequest {
                         prompt: prompt.to_string(),
                         name,
@@ -715,7 +783,8 @@ fn register_create_session(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmH
                         thinking,
                         cwd,
                     })
-                    .await?;
+                    .await
+                    .inspect_err(|error| bridge.note_spawn_error(error))?;
                 serde_json::to_value(&handle).map_err(anyhow::Error::new)
             })
         }),
@@ -1056,7 +1125,7 @@ mod tests {
                         "api": "openai-completions",
                         "models": [
                             { "id": "glm-5.3", "name": "GLM 5.3", "contextWindow": 1000, "maxTokens": 100 },
-                            { "id": "glm-5.3-turbo", "name": "GLM Turbo", "contextWindow": 1000, "maxTokens": 100 }
+                            { "id": "glm-5.3-turbo", "name": "GLM Turbo", "alias": "turbo", "contextWindow": 1000, "maxTokens": 100 }
                         ]
                     }
                 }
@@ -1290,6 +1359,122 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(announced.lock().unwrap().len(), 1);
+    }
+
+    /// `subagentModels` (global settings, an alias plus a selector) narrows
+    /// `rlm.find_models` to exactly the filtered set, the aliased model
+    /// listed under its alias.
+    #[tokio::test]
+    async fn find_models_returns_only_the_subagent_filter() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let wiring = wired(dir.path(), None);
+        std::fs::write(
+            dir.path().join("settings.json"),
+            r#"{ "subagentModels": ["turbo", "test-provider/glm-5.3"] }"#,
+        )
+        .unwrap();
+        let response = call(
+            &wiring,
+            "rlm.find_models",
+            json!({ "type": "rlm.find_models", "query": "" }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            response,
+            json!({ "models": [
+                {
+                    "provider": "test-provider",
+                    "id": "glm-5.3",
+                    "name": "GLM 5.3",
+                    "selector": "test-provider/glm-5.3",
+                },
+                {
+                    "provider": "test-provider",
+                    "id": "glm-5.3-turbo",
+                    "name": "turbo",
+                    "selector": "test-provider/glm-5.3-turbo",
+                },
+            ] })
+        );
+        std::fs::write(
+            dir.path().join("settings.json"),
+            r#"{ "subagentModels": ["turbo"] }"#,
+        )
+        .unwrap();
+        let response = call(
+            &wiring,
+            "rlm.find_models",
+            json!({ "type": "rlm.find_models", "query": "glm" }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            response,
+            json!({ "models": [{
+                "provider": "test-provider",
+                "id": "glm-5.3-turbo",
+                "name": "turbo",
+                "selector": "test-provider/glm-5.3-turbo",
+            }] })
+        );
+    }
+
+    /// `enabledModels` never filters subagents: with it set and
+    /// `subagentModels` unset, `rlm.find_models` lists every searchable model.
+    #[tokio::test]
+    async fn enabled_models_never_filter_find_models() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let wiring = wired(dir.path(), None);
+        let query = json!({ "type": "rlm.find_models", "query": "test-provider/" });
+        let unfiltered = call(&wiring, "rlm.find_models", query.clone())
+            .await
+            .unwrap();
+        std::fs::write(
+            dir.path().join("settings.json"),
+            r#"{ "enabledModels": ["test-provider/glm-5.3"] }"#,
+        )
+        .unwrap();
+        let with_enabled = call(&wiring, "rlm.find_models", query).await.unwrap();
+        assert_eq!(with_enabled, unfiltered);
+        assert_eq!(with_enabled["models"].as_array().unwrap().len(), 2);
+    }
+
+    /// A models.json alias in `rlm.spawn(model=...)` and
+    /// `rlm.create_session(model=...)` reaches the host as its selector.
+    #[tokio::test]
+    async fn spawn_resolves_a_model_alias_to_its_selector() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = RecordingHost::new();
+        let spawn_requests = Arc::clone(&host.spawn_requests);
+        let wiring = wired(dir.path(), Some(host));
+        call(
+            &wiring,
+            "rlm.run",
+            json!({ "type": "rlm.run", "prompt": "go", "kwargs": { "model": "TURBO" } }),
+        )
+        .await
+        .unwrap();
+        call(
+            &wiring,
+            "rlm.run",
+            json!({ "type": "rlm.run", "prompt": "go", "kwargs": { "model": "p/m" } }),
+        )
+        .await
+        .unwrap();
+        let models: Vec<Option<String>> = spawn_requests
+            .lock()
+            .await
+            .iter()
+            .map(|request| request.model.clone())
+            .collect();
+        assert_eq!(
+            models,
+            vec![
+                Some("test-provider/glm-5.3-turbo".to_string()),
+                Some("p/m".to_string())
+            ]
+        );
     }
 
     #[tokio::test]

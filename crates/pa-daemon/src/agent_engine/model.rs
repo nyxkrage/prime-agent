@@ -294,6 +294,10 @@ impl AgentSessionEngine {
         // model keeps resolving when no credential is visible; run-start auth
         // validation reports it.
         let all: Vec<Model> = registry.get_all().to_vec();
+        // A models.json alias resolves to its `provider/model-id` selector.
+        let model_name = registry
+            .resolve_model_alias(model_name)
+            .unwrap_or(model_name);
         let resolved =
             pa_core::models::resolve_cli_model(selection.provider.as_deref(), model_name, &all);
         if let Some(error) = resolved.error {

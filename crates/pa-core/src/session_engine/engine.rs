@@ -271,6 +271,18 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // pin), like the request-timing snapshot above.
     let factory_allowed_models = settings.get_allowed_models();
     // Captured before `settings` moves into the resource loader: the
+    // `subagentModels` filter's permitted models for the prompt tail
+    // (enforcement re-reads the live setting at every spawn).
+    let prompt_subagent_models = {
+        let filter = crate::models::SubagentModelFilter::load(&settings, &wiring.rlm.registry);
+        match &filter {
+            crate::models::SubagentModelFilter::Unrestricted => None,
+            crate::models::SubagentModelFilter::Only(_) => {
+                Some(wiring.rlm.registry.subagent_model_names(&filter))
+            }
+        }
+    };
+    // Captured before `settings` moves into the resource loader: the
     // per-cell watchdog budget (default 60s, `0` disables).
     let python_cell_timeout_ms = settings.get_python_cell_timeout_ms();
     let (mcp_skill_overrides, mcp_generic_servers, built_manager) =
@@ -598,6 +610,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             daemonless: config.daemonless,
             can_spawn: config.rlm_subagent_host.is_some(),
             generic_mcp_servers,
+            subagent_models: prompt_subagent_models,
             append_system_prompt: Some(resources.append_system_prompt.join("\n\n")),
             ..Default::default()
         },
@@ -898,6 +911,9 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         // Same lifetime for the `rlm_child_*` session counters: the
         // producer's flush counts through this handle.
         wiring.rlm_usage.set_telemetry(telemetry.clone());
+        // And the subagent-model policy counters (`rlm.find_models`
+        // filtering, alias spawns, filter refusals).
+        let _ = wiring.rlm.telemetry.set(telemetry.clone());
     }
     let goal_driver = wiring.runtime.goal_driver().clone();
     // The factory host bridge: registered from `create_session` (the #3184

@@ -454,3 +454,95 @@ async fn scope_readiness_timeout_keeps_models_available_before_refresh() {
         vec![existing]
     );
 }
+
+fn registry_with_models_json(dir: &std::path::Path, document: &str) -> ModelRegistry {
+    let models_path = dir.join("models.json");
+    std::fs::write(&models_path, document).unwrap();
+    ModelRegistry::create(auth_without_env(&serde_json::json!({})), models_path)
+}
+
+#[test]
+fn models_json_aliases_resolve_and_expand() {
+    let dir = tempfile::tempdir().unwrap();
+    let registry = registry_with_models_json(
+        dir.path(),
+        r#"{ "providers": {
+            "custom": {
+                "baseUrl": "https://custom.example", "apiKey": "custom-key",
+                "api": "openai-completions",
+                "models": [ { "id": "big-model-v2", "alias": "big" } ]
+            },
+            "openai": { "modelOverrides": { "gpt-5.6-luna": { "alias": "luna" } } }
+        } }"#,
+    );
+    assert_eq!(registry.get_error(), None);
+    assert_eq!(
+        registry.resolve_model_alias("LUNA"),
+        Some("openai/gpt-5.6-luna")
+    );
+    assert_eq!(
+        registry.resolve_model_alias(" big "),
+        Some("custom/big-model-v2")
+    );
+    assert_eq!(registry.resolve_model_alias("gpt-5.6-luna"), None);
+    assert_eq!(registry.model_alias("openai", "gpt-5.6-luna"), Some("luna"));
+    assert_eq!(
+        registry.expand_model_aliases(&[
+            "luna".to_string(),
+            "big".to_string(),
+            "zai/*".to_string()
+        ]),
+        vec![
+            "openai/gpt-5.6-luna".to_string(),
+            "custom/big-model-v2".to_string(),
+            "zai/*".to_string()
+        ]
+    );
+}
+
+/// An alias equal to a catalog model ID the document never names (a
+/// built-in on another provider) is caught at registry load, disabling
+/// every alias.
+#[test]
+fn an_alias_shadowing_a_catalog_model_id_fails_the_load() {
+    let dir = tempfile::tempdir().unwrap();
+    let registry = registry_with_models_json(
+        dir.path(),
+        r#"{ "providers": { "openai": { "modelOverrides": {
+            "gpt-5.6-luna": { "alias": "deepseek-v4-flash" }
+        } } } }"#,
+    );
+    let error = registry.get_error().expect("collision is a load error");
+    assert!(
+        error.starts_with(
+            "Invalid models.json: model openai/gpt-5.6-luna: alias \"deepseek-v4-flash\" equals the ID of model "
+        ),
+        "{error}"
+    );
+    assert!(
+        error.contains("/deepseek-v4-flash; an alias must not shadow a model ID."),
+        "{error}"
+    );
+    assert_eq!(registry.resolve_model_alias("deepseek-v4-flash"), None);
+}
+
+/// A duplicate alias is a models.json validation error (custom models
+/// and aliases drop; built-ins keep loading).
+#[test]
+fn a_duplicate_alias_fails_the_load() {
+    let dir = tempfile::tempdir().unwrap();
+    let registry = registry_with_models_json(
+        dir.path(),
+        r#"{ "providers": {
+            "anthropic": { "modelOverrides": { "claude-x": { "alias": "sol" } } },
+            "openai": { "modelOverrides": { "gpt-5.6-luna": { "alias": "sol" } } }
+        } }"#,
+    );
+    let error = registry.get_error().expect("duplicate is a load error");
+    assert!(
+        error.contains("alias \"sol\" is already used by model anthropic/claude-x"),
+        "{error}"
+    );
+    assert_eq!(registry.resolve_model_alias("sol"), None);
+    assert!(!registry.get_all().is_empty());
+}

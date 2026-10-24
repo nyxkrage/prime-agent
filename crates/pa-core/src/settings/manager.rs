@@ -605,6 +605,22 @@ impl SettingsManager {
         (!patterns.is_empty()).then_some(patterns)
     }
 
+    /// The RLM subagent model filter (settings `subagentModels`): the models
+    /// `rlm.find_models` lists and `rlm.spawn`/`rlm.create_session` accept.
+    /// Rust-only; `None` is unrestricted (never the `enabledModels` scope);
+    /// global scope only, like [`Self::get_allowed_models`], so a project can
+    /// neither widen nor redefine it; a list that trims to empty behaves as unset.
+    #[must_use]
+    pub fn get_subagent_models(&self) -> Option<Vec<String>> {
+        let patterns = self.global.subagent_models.as_ref()?;
+        let patterns: Vec<String> = patterns
+            .iter()
+            .map(|pattern| pattern.trim().to_string())
+            .filter(|pattern| !pattern.is_empty())
+            .collect();
+        (!patterns.is_empty()).then_some(patterns)
+    }
+
     /// The persisted default a fresh session starts from; the stored
     /// string is the same vocabulary `get_default_service_tier` parses.
     ///
@@ -1083,6 +1099,40 @@ mod tests {
             .set_factory_enabled(false)
             .expect("set factory disabled");
         assert!(!manager.get_factory_enabled());
+    }
+
+    /// `subagentModels` is global-only: a project value neither enables
+    /// the filter nor overrides the global list, while the merged view
+    /// (which a regressed accessor would read) does carry the project value.
+    #[test]
+    fn subagent_models_read_the_global_scope_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().join("cwd");
+        let agent_dir = dir.path().join("agent");
+        std::fs::create_dir_all(cwd.join(".prime/agent")).unwrap();
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(
+            cwd.join(".prime/agent/settings.json"),
+            r#"{ "subagentModels": ["project/*"] }"#,
+        )
+        .unwrap();
+        let manager = SettingsManager::create(&cwd, &agent_dir);
+        assert_eq!(
+            manager.settings().subagent_models,
+            Some(vec!["project/*".to_string()])
+        );
+        assert_eq!(manager.get_subagent_models(), None);
+
+        std::fs::write(
+            agent_dir.join("settings.json"),
+            r#"{ "subagentModels": [" sol ", "", "luna"], "enabledModels": ["x/*"] }"#,
+        )
+        .unwrap();
+        let manager = SettingsManager::create(&cwd, &agent_dir);
+        assert_eq!(
+            manager.get_subagent_models(),
+            Some(vec!["sol".to_string(), "luna".to_string()])
+        );
     }
 
     #[test]
