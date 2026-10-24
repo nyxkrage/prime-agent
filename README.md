@@ -88,6 +88,37 @@ export NODE_EXTRA_CA_CERTS=/path/to/your-ca.pem
 
 Each transport reads the variable once when its first client is initialized. The background daemon keeps the environment it started with, so run `prime-agent shutdown` after changing it.
 
+## Remote subagents over SSH
+
+`rlm.spawn(prompt, name=..., host="user@box", cwd="~/work")` runs a subagent's
+Python REPL, files, and `bash` on another machine over your system `ssh`; the
+agent loop and model calls stay local. MCP servers and other features whose
+state lives on your machine are refused on remote kernels.
+
+Pass environment variables to a subagent's kernel (local or remote) with `env`:
+
+```python
+await rlm.spawn("train the model", name="train", host="gpu1",
+                env={"EPOCHS": "3",          # set as given
+                     "HF_TOKEN": None})      # copy this machine's value
+```
+
+A `None` value is resolved by Prime Agent from its own environment, so the value
+never appears in the model's code, the transcript, or logs, and for a remote
+host it travels over the kernel's stdin, never on the ssh command line. A
+missing variable fails the spawn by name. Children never inherit their parent's
+`env`. `RLM_*`, `PRIME_AGENT_*`, `PYTHON*`, `PATH`, `HOME`, and `VIRTUAL_ENV`
+are reserved. Pass-through values of 8 or more characters are masked as `***`
+in the subagent's output, as best-effort hygiene.
+
+Threat model: a value sent to a host is trusted to that host (root there can
+read it), and the model can reach this machine's environment anyway; `None`
+exists to keep values out of transcripts and logs, not to hide them from the
+model. Set `"remoteEnvPassthrough": false` in the global
+`~/.prime/agent/settings.json` to refuse `None` values for `host=` spawns
+(literal values stay allowed); project settings cannot turn it back on, and a
+malformed value refuses pass-through.
+
 ## Getting Started
 
 Start Prime Agent from the repository or directory you want it to work in:
@@ -173,3 +204,12 @@ For per-model early compaction, use the existing provider-scoped
 
 Use the actual model ID for your provider. This sets that model's effective context
 window; it does not change every model's global compaction percentage.
+
+### Remote environment pass-through setting
+
+`remoteEnvPassthrough` (global settings only, default `true`) controls whether
+`rlm.spawn(..., host=..., env={"NAME": None})` may copy this machine's value of
+`NAME` to a remote kernel. With `false`, such a spawn fails with an error naming
+the setting; literal `env` values and local spawns are unaffected. A project
+`.prime/agent/settings.json` cannot change it, and a value that is not a boolean
+(or an unreadable global settings file) refuses pass-through.

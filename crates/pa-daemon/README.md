@@ -85,7 +85,12 @@ parent-side registry serves `rlm.list_subagents`/`rlm.collect`/
 `rlm.delete_subagent` with TS-parity selector errors; child model resolution
 and thinking-level validation live in `rlm_child_model.rs`; the create
 command carries the RLM recursion identity (`rlmDepth`/`rlmMaxDepth`/
-`parentSessionPath`/`thinking`) so respawned children keep their depth. Per-session model binding: the
+`parentSessionPath`/`thinking`) so respawned children keep their depth. A
+`rlm.spawn(env=...)` child's create also carries `kernelEnv` (literal values
+and pass-through names as `null`): the spawn checks the global
+`remoteEnvPassthrough` kill switch for remote placements and that every
+pass-through exists, and the child worker re-resolves the names from its own
+env (the parent worker's) at each kernel start. Per-session model binding: the
 create-config `provider`/`model`/`apiKey` are authoritative for worker model
 resolution (explicit CLI flags reach the worker; env remains the no-flag
 fallback). Worker session files carry the TS creation prefix
