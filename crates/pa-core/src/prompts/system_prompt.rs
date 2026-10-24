@@ -277,28 +277,25 @@ fn environment_section(options: &BuildSystemPromptOptions) -> String {
         .unwrap_or_else(|| "not persisted".to_string())
         .replace('\\', "/");
     let mut lines = vec![format!("Current date: {}", today())];
-    match options.remote_kernel {
-        Some(remote) => {
-            let host = &remote.host;
-            lines.push(format!(
+    if let Some(remote) = options.remote_kernel {
+        let host = &remote.host;
+        lines.push(format!(
                 "Kernel host: {host} (remote, over SSH). Your Python REPL, `bash`, and every file you read or write run on {host}, not on the machine that runs your agent loop and model calls."
             ));
-            lines.push(match &remote.cwd {
-                Some(cwd) => format!("Working directory: {cwd} (on {host})"),
-                None => format!("Working directory: the remote login directory on {host}"),
-            });
-            lines.push(format!(
+        lines.push(match &remote.cwd {
+            Some(cwd) => format!("Working directory: {cwd} (on {host})"),
+            None => format!("Working directory: the remote login directory on {host}"),
+        });
+        lines.push(format!(
                 "Conversation log: {messages_path} (on the orchestrator's machine; not readable from your REPL)"
             ));
-            lines.push(
+        lines.push(
                 "Not available on this remote kernel yet: MCP servers, `rlm.harness`, refinements, goals, heartbeats, `agent_observe`, `rlm.create_session`, and `bash(..., persistent=True)`; calling them raises an error that says so."
                     .to_string(),
             );
-        }
-        None => {
-            lines.push(format!("Working directory: {cwd}"));
-            lines.push(format!("Conversation log: {messages_path}"));
-        }
+    } else {
+        lines.push(format!("Working directory: {cwd}"));
+        lines.push(format!("Conversation log: {messages_path}"));
     }
     match options.vision_capable {
         Some(true) => lines.push(

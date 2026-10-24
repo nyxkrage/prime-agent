@@ -548,7 +548,12 @@ pub(crate) async fn ensure_remote_kernel_python(
             to_install.insert(name, hash);
         }
     }
-    if !probe.installed {
+    if probe.installed {
+        report(&format!(
+            "Installing Python skills on {label}: {}...",
+            to_install.keys().cloned().collect::<Vec<_>>().join(", ")
+        ));
+    } else {
         files.extend(base);
         if probe.uv.is_none() && !probe.venv {
             // No remote uv and no working `python3 -m venv`: ship this
@@ -584,11 +589,6 @@ pub(crate) async fn ensure_remote_kernel_python(
         report(&format!(
             "Installing the Prime Agent runtime on {label} ({})...",
             probe.dir
-        ));
-    } else {
-        report(&format!(
-            "Installing Python skills on {label}: {}...",
-            to_install.keys().cloned().collect::<Vec<_>>().join(", ")
         ));
     }
     let archive = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<u8>> {

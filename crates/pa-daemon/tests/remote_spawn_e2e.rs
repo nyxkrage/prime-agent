@@ -160,7 +160,8 @@ fn remote_child_session(root: &Path, cwd: &Path) -> PathBuf {
     assert_eq!(
         found.len(),
         1,
-        "one remote child session in {cwd:?}: {found:?}"
+        "one remote child session in {}: {found:?}",
+        cwd.display()
     );
     found.remove(0)
 }
