@@ -275,8 +275,18 @@ pub fn convert_responses_messages(
                             let omit_id = item_id.is_none()
                                 || (is_different_model
                                     && item_id.is_some_and(|id| id.starts_with("fc_")));
-                            if !omit_id {
-                                entry.insert("id".into(), json!(item_id.unwrap_or_default()));
+                            // The Responses API rejects a `function_call` item id that does not
+                            // start with `fc` (e.g. a `ctc_` custom-tool-call id). This holds for
+                            // every Responses provider and gateway, so it is enforced here, on the
+                            // wire item, not by provider: prefix rather than drop the id, so the
+                            // item still follows its reasoning item. History keeps the stored id.
+                            if let Some(item_id) = item_id.filter(|_| !omit_id) {
+                                let item_id = if item_id.starts_with("fc") {
+                                    item_id.to_string()
+                                } else {
+                                    format!("fc_{item_id}")
+                                };
+                                entry.insert("id".into(), json!(item_id));
                             }
                             entry.insert("call_id".into(), json!(call_id));
                             entry.insert("name".into(), json!(tool_call.name));
@@ -618,6 +628,37 @@ mod tests {
         };
         assert_eq!(function_call.get("id"), Some(&json!("fc_y")));
         assert_eq!(function_call.get("call_id"), Some(&json!("call_x")));
+    }
+
+    /// A same-model `function_call` item id the API would reject (a `ctc_` custom-tool-call id)
+    /// goes out `fc_`-prefixed, for a provider on the piped-id list and for a gateway off it.
+    #[test]
+    fn same_model_non_fc_item_id_gets_fc_prefix() {
+        for provider in ["openai-codex", "opencode-go"] {
+            let model = Model {
+                provider: provider.into(),
+                ..codex_model()
+            };
+            let mut call = assistant(vec![tool_call("call_x|ctc_y")], "gpt-5.1-codex");
+            if let Message::Assistant(assistant) = &mut call {
+                assistant.provider = provider.into();
+            }
+            let items = convert(&model, vec![user("hi"), call, tool_result("call_x|ctc_y")]);
+            let function_call = items
+                .iter()
+                .find(|item| item.get("type").and_then(Value::as_str) == Some("function_call"));
+            assert_eq!(
+                function_call,
+                Some(&json!({
+                    "type": "function_call",
+                    "id": "fc_ctc_y",
+                    "call_id": "call_x",
+                    "name": "bash",
+                    "arguments": "{\"cmd\":\"ls\"}",
+                })),
+                "provider {provider}"
+            );
+        }
     }
 
     /// Assistant text without a signature id falls back to its converted history index instead of
