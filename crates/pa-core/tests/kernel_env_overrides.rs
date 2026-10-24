@@ -109,7 +109,10 @@ async fn a_local_kernel_gets_the_spawn_env_and_masks_passthrough_values() {
         error.traceback
     );
     let result = manager
-        .execute("os.environ['PA_TEST_PASSTHROUGH']", ExecuteOptions::default())
+        .execute(
+            "os.environ['PA_TEST_PASSTHROUGH']",
+            ExecuteOptions::default(),
+        )
         .await
         .expect("cell runs");
     assert_eq!(result.result.as_deref(), Some("'***'"));

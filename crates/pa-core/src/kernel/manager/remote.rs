@@ -20,10 +20,10 @@ use std::fmt::Write as _;
 use std::time::Duration;
 
 use super::{json, lock, Arc, Inner, KernelStartOptions, KernelState};
-use crate::kernel::env_overrides::ResolvedKernelEnv;
 use crate::kernel::bootstrap::{
     ensure_remote_kernel_python, sh_quote, RemoteHost, RemoteKernelInstall,
 };
+use crate::kernel::env_overrides::ResolvedKernelEnv;
 use crate::kernel::remote_policy::{validate_remote_path, REMOTE_KERNEL_FORWARDED_ENV};
 use crate::kernel::shared::RemoteKernelTarget;
 
@@ -113,8 +113,7 @@ impl Inner {
             .iter()
             .map(|(key, value)| (key.clone(), serde_json::Value::String(value.clone())))
             .collect();
-        *lock(&self.remote_env_frame) =
-            Some(json!({ "type": "kernel_env", "env": env_frame }));
+        *lock(&self.remote_env_frame) = Some(json!({ "type": "kernel_env", "env": env_frame }));
         // The kernel's teardown signals the ssh process; the remote runtime
         // sees stdin EOF (or its sshd parent exit, or the heartbeat stop)
         // and shuts down.

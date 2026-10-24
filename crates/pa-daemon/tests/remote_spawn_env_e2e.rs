@@ -470,7 +470,11 @@ fn spawn_env_passes_literals_and_passthroughs_and_never_leaks_the_value() {
             })
         })
         .collect();
-    assert_eq!(leaks, Vec::<PathBuf>::new(), "the pass-through value leaked");
+    assert_eq!(
+        leaks,
+        Vec::<PathBuf>::new(),
+        "the pass-through value leaked"
+    );
     drop(fixture.client);
 }
 
@@ -482,9 +486,7 @@ fn the_global_kill_switch_refuses_remote_passthroughs_but_not_literals() {
         &secret,
         Some(r#"{ "remoteEnvPassthrough": false }"#),
     );
-    let receipt = fixture.wait_for("the root receipt", || {
-        read_receipt(&fixture.shared, "root")
-    });
+    let receipt = fixture.wait_for("the root receipt", || read_receipt(&fixture.shared, "root"));
     assert_eq!(
         receipt,
         json!({

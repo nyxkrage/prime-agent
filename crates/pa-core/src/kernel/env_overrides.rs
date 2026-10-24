@@ -322,7 +322,10 @@ mod tests {
             (overrides.literal_count(), overrides.passthrough_count()),
             (1, 1)
         );
-        assert_eq!(overrides.to_json(), json!({ "EPOCHS": "3", "HF_TOKEN": null }));
+        assert_eq!(
+            overrides.to_json(),
+            json!({ "EPOCHS": "3", "HF_TOKEN": null })
+        );
         assert_eq!(
             format!("{overrides:?}"),
             r#"{"EPOCHS": "literal", "HF_TOKEN": "passthrough"}"#

@@ -221,7 +221,6 @@ fn children_host(
 }
 
 fn spawn_request(name: &str, prompt: &str) -> RlmSpawnRequest {
-    env: pa_core::kernel::KernelEnvOverrides::default(),
     RlmSpawnRequest {
         env: pa_core::kernel::KernelEnvOverrides::default(),
         cwd: None,

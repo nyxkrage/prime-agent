@@ -16,12 +16,12 @@ use std::time::Instant;
 
 use serde_json::{json, Map, Value};
 
+use crate::kernel::env_overrides::KernelEnvRefusal;
 use crate::kernel::rlm_runtime::{
     find_rlm_model_matches, kwargs_from_payload, normalize_requested_rlm_subagent_model,
     normalize_requested_rlm_subagent_session_name, normalize_requested_rlm_subagent_thinking_level,
     RlmModelInfo, DEFAULT_RLM_MODEL_SEARCH_LIMIT, MAX_RLM_MODEL_SEARCH_LIMIT,
 };
-use crate::kernel::env_overrides::KernelEnvRefusal;
 use crate::kernel::shared::{host_handler, HostRequestHandlers};
 use crate::models::registry::ModelRegistry;
 
@@ -671,11 +671,7 @@ fn register_run(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmHostBridge>)
                 };
                 let placement = request.host.clone();
                 let env = request.env.clone();
-                let handle = bridge
-                    .host
-                    .spawn(request)
-                    .await
-                    .map_err(note_env_refusal)?;
+                let handle = bridge.host.spawn(request).await.map_err(note_env_refusal)?;
                 if let Some(counters) = bridge.spawn_counters.get() {
                     counters.note_rlm_spawn(placement.as_ref(), &env);
                 }
@@ -1521,7 +1517,11 @@ mod tests {
                 "rlm.spawn env carries 66563 bytes; at most 65536 are allowed",
             ]
         );
-        assert_eq!(spawn_requests.lock().await.len(), 1, "no refused spawn reached the host");
+        assert_eq!(
+            spawn_requests.lock().await.len(),
+            1,
+            "no refused spawn reached the host"
+        );
         let mut properties = pa_telemetry::Properties::new();
         counters.write_into(&mut properties);
         let properties = serde_json::to_value(&properties).unwrap();

@@ -390,7 +390,10 @@ async fn spawn_env_reaches_the_remote_kernel_over_stdin_and_never_the_command_li
         ("kernel cmdline", &cmdline),
     ] {
         for value in [LITERAL, SECRET] {
-            assert!(!text.contains(value), "{value:?} leaked into the {what}: {text}");
+            assert!(
+                !text.contains(value),
+                "{value:?} leaked into the {what}: {text}"
+            );
         }
     }
 }

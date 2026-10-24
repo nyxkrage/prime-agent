@@ -228,7 +228,6 @@ fn wait_until<T>(deadline: Duration, mut probe: impl FnMut() -> Option<T>) -> T 
 }
 
 fn spawn_request(name: &str, prompt: &str) -> RlmSpawnRequest {
-    env: pa_core::kernel::KernelEnvOverrides::default(),
     RlmSpawnRequest {
         env: pa_core::kernel::KernelEnvOverrides::default(),
         cwd: None,
