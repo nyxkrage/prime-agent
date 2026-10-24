@@ -1,10 +1,14 @@
 //! `rlm.spawn(..., host=...)` through the real supervisor: a root session
 //! spawns a remote child, the remote child's own children inherit its host
-//! unless they spawn with `host="local"`, and the roster names the host.
-//! `PRIME_AGENT_SSH` points at a fake `ssh` that runs the remote command
-//! locally under a per-destination `HOME`, so the destination behaves like
-//! a separate machine; the opt-in live check against a real host is
-//! `pa-core`'s `remote_kernel_live.rs`.
+//! unless they spawn with `host="local"`, the roster names the host, hosts
+//! and cwds outside the allowlist are refused on the spawn path, the
+//! remote kernel sees only the allowlisted env and refused host requests,
+//! and a copy of the remote child's session reopens on the same host (a
+//! damaged placement refuses to open). `PRIME_AGENT_SSH` points at a fake
+//! `ssh` that runs the remote command as a child under `env -i` with a
+//! per-destination `HOME`, so the destination behaves like a separate
+//! machine that sees nothing of this process's env; the opt-in live check
+//! against a real host is `pa-core`'s `remote_kernel_live.rs`.
 // Pedantic-gate dispositions (fleet-uniform ruling; see kernel_dispose_e2e).
 #![allow(clippy::too_many_lines)]
 #![cfg(unix)]
@@ -24,22 +28,23 @@ use serde_json::{json, Value};
 const RECEIPT_TIMEOUT: Duration = Duration::from_mins(10);
 
 const FAKE_SSH: &str = r#"#!/bin/sh
-# Fake ssh: skip the options, run the remote command locally.
+# Fake ssh: parse the options like ssh, then run the remote command as a
+# child under a clean env (like sshd), in a per-destination HOME.
 while [ $# -gt 0 ]; do
   case "$1" in
     --) shift; break ;;
     -p|-o) shift 2 ;;
-    *) shift ;;
+    -*) shift ;;
+    *) break ;;
   esac
 done
 dest="$1"; shift
 base="__BASE__"
 printf '%s\n' "$*" >> "$base/log-$dest"
-export UV_CACHE_DIR="${UV_CACHE_DIR:-$HOME/.cache/uv}"
-export HOME="$base/home-$dest"
-mkdir -p "$HOME"
-cd "$HOME"
-exec sh -c "$*"
+home="$base/home-$dest"
+mkdir -p "$home"
+cd "$home" || exit 255
+env -i HOME="$home" PATH="__PATH__" UV_CACHE_DIR="__UV_CACHE__" /bin/sh -c "$*"
 "#;
 
 /// One cell for every session in the tree (the create's `childScript`
@@ -48,7 +53,7 @@ exec sh -c "$*"
 /// atomic `mkdir` claim: the first local kernel is the root, the first
 /// remote one is the remote child.
 const CELL: &str = r#"
-import json, os
+import json, os, rlm
 shared = __SHARED__
 remote = os.environ.get("HOME", "").endswith("/home-box")
 def claim(name):
@@ -57,14 +62,32 @@ def claim(name):
         return True
     except FileExistsError:
         return False
-def receipt(role):
+def receipt(role, **extra):
     with open(os.path.join(shared, "receipt-" + role + ".json"), "w") as handle:
-        json.dump({"home": os.environ.get("HOME"), "cwd": os.getcwd()}, handle)
+        json.dump({"home": os.environ.get("HOME"), "cwd": os.getcwd(), **extra}, handle)
+async def error_of(call):
+    try:
+        await call()
+        return "allowed"
+    except Exception as error:
+        return str(error)
 if not remote and claim("root"):
-    receipt("root")
+    refused = []
+    for kwargs in [
+        {"host": "box$(touch${IFS}pwned)"},
+        {"host": "box", "cwd": "/tmp/a b"},
+        {"host": "box", "cwd": "it's"},
+        {"cwd": "no-such-dir"},
+    ]:
+        refused.append(await error_of(lambda kwargs=kwargs: rlm.spawn("x", name="bad", **kwargs)))
+    receipt("root", refused=refused)
     print(await rlm.spawn("work remotely", name="vps", host="box", cwd=__REMOTE_CWD__))
 elif remote and claim("vps"):
-    receipt("vps")
+    receipt(
+        "vps",
+        env=sorted(os.environ),
+        mcp=await error_of(lambda: rlm.host_request("mcp.config")),
+    )
     print(await rlm.spawn("stay on the host", name="inherit"))
     print(await rlm.spawn("come back", name="escape", host="local"))
 elif remote:
@@ -84,21 +107,75 @@ impl Drop for Daemon {
     }
 }
 
-/// The local kernel Python (the resolution the other kernel e2es use).
-fn kernel_python() -> Option<PathBuf> {
+/// The local kernel Python (the resolution the other kernel e2es use). A
+/// missing interpreter fails the test: a silent skip would let the remote
+/// spawn path go unverified.
+fn kernel_python() -> PathBuf {
     if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_PYTHON") {
-        return Some(PathBuf::from(explicit));
+        return PathBuf::from(explicit);
     }
-    let candidate =
-        PathBuf::from(std::env::var("HOME").ok()?).join(".prime/agent/kernel-venv/bin/python");
-    if candidate.exists() {
-        return Some(candidate);
-    }
-    eprintln!(
-        "kernel python {} not found; skipping the remote spawn e2e",
+    let candidate = PathBuf::from(std::env::var("HOME").expect("HOME"))
+        .join(".prime/agent/kernel-venv/bin/python");
+    assert!(
+        candidate.exists(),
+        "kernel python {} not found: set PA_E2E_KERNEL_PYTHON to a Python 3.11+ with the kernel runtime's dependencies",
         candidate.display()
     );
-    None
+    candidate
+}
+
+/// A PATH entry holding `name`, from this process's PATH.
+fn dir_of(name: &str) -> Option<PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH")?).find(|dir| dir.join(name).is_file())
+}
+
+/// The session file in the dir of the remote child that ran in `cwd`.
+fn remote_child_session(root: &Path, cwd: &Path) -> PathBuf {
+    let mut found = Vec::new();
+    for entry in walk_all(root) {
+        if entry
+            .file_name()
+            .is_some_and(|name| name == "remote-kernel.json")
+        {
+            let placement: Value =
+                serde_json::from_str(&std::fs::read_to_string(&entry).expect("placement"))
+                    .expect("placement json");
+            if placement["cwd"] == json!(cwd.to_string_lossy()) {
+                let dir = entry.parent().expect("dir").to_path_buf();
+                found.extend(
+                    std::fs::read_dir(&dir)
+                        .expect("child dir")
+                        .flatten()
+                        .map(|file| file.path())
+                        .filter(|path| {
+                            path.extension().is_some_and(|ext| ext == "jsonl")
+                                && path
+                                    .file_name()
+                                    .is_some_and(|name| name != "semantic-edges.jsonl")
+                        }),
+                );
+            }
+        }
+    }
+    assert_eq!(
+        found.len(),
+        1,
+        "one remote child session in {cwd:?}: {found:?}"
+    );
+    found.remove(0)
+}
+
+fn walk_all(dir: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            files.extend(walk_all(&path));
+        } else {
+            files.push(path);
+        }
+    }
+    files
 }
 
 struct Client {
@@ -187,9 +264,7 @@ fn read_receipt(shared: &Path, role: &str) -> Option<Value> {
 
 #[test]
 fn a_remote_child_runs_remotely_its_children_inherit_and_local_escapes() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
+    let kernel_python = kernel_python();
     let dir = tempfile::TempDir::new().expect("temp dir");
     let base = dir.path().join("fake-ssh-base");
     let shared = dir.path().join("shared");
@@ -198,7 +273,24 @@ fn a_remote_child_runs_remotely_its_children_inherit_and_local_escapes() {
         std::fs::create_dir_all(path).expect("dir");
     }
     let ssh = base.join("fake-ssh");
-    std::fs::write(&ssh, FAKE_SSH.replace("__BASE__", &base.to_string_lossy())).expect("ssh");
+    let mut remote_path = vec![dir_of("python3").expect("python3 on PATH for the fake remote")];
+    remote_path.extend(dir_of("uv"));
+    remote_path.extend([PathBuf::from("/usr/bin"), PathBuf::from("/bin")]);
+    let uv_cache = std::env::var("UV_CACHE_DIR")
+        .unwrap_or_else(|_| format!("{}/.cache/uv", std::env::var("HOME").expect("HOME")));
+    std::fs::write(
+        &ssh,
+        FAKE_SSH
+            .replace("__BASE__", &base.to_string_lossy())
+            .replace(
+                "__PATH__",
+                &std::env::join_paths(remote_path)
+                    .expect("remote PATH")
+                    .to_string_lossy(),
+            )
+            .replace("__UV_CACHE__", &uv_cache),
+    )
+    .expect("ssh");
     std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).expect("chmod");
 
     let cell = CELL
@@ -310,6 +402,15 @@ fn a_remote_child_runs_remotely_its_children_inherit_and_local_escapes() {
         std::thread::sleep(Duration::from_millis(100));
     };
 
+    let mut receipts = receipts;
+    let refused = receipts[0]
+        .as_object_mut()
+        .expect("root receipt")
+        .remove("refused")
+        .expect("refusals");
+    let vps = receipts[1].as_object_mut().expect("vps receipt");
+    let remote_env = vps.remove("env").expect("remote env");
+    let remote_mcp = vps.remove("mcp").expect("remote mcp");
     let remote_home = base.join("home-box").to_string_lossy().to_string();
     let local_home = std::env::var("HOME").unwrap_or_default();
     let canonical = |path: &Path| {
@@ -331,6 +432,50 @@ fn a_remote_child_runs_remotely_its_children_inherit_and_local_escapes() {
             json!({ "home": local_home, "cwd": canonical(dir.path()) }),
         ]
     );
+    // The spawn path refuses hosts and cwds outside the allowlists, and a
+    // local child's relative cwd must exist under the parent's cwd.
+    assert_eq!(
+        refused,
+        json!([
+            "rlm.spawn host \"box$(touch${IFS}pwned)\" contains '$'; an SSH destination may only use letters, digits, and . _ @ [ ] : -",
+            "rlm.spawn cwd \"/tmp/a b\" contains ' '; remote paths may only use letters, digits, and . _ / + - (with an optional leading ~)",
+            "rlm.spawn cwd must be an absolute or ~-relative remote path, got \"it's\"",
+            format!("rlm.spawn cwd {}/no-such-dir is not an existing directory", dir.path().display()),
+        ])
+    );
+    // The remote kernel's env is the fake remote's own plus the allowlist
+    // (and NO_COLOR, which the kernel bootstrap sets in-kernel): nothing of
+    // the daemon's env (PYTHONPATH, PRIME_AGENT_*, credentials).
+    let remote_env: std::collections::BTreeSet<String> = remote_env
+        .as_array()
+        .expect("env keys")
+        .iter()
+        .map(|key| key.as_str().expect("key").to_string())
+        .filter(|key| !["PWD", "SHLVL", "_", "OLDPWD", "LC_CTYPE"].contains(&key.as_str()))
+        .collect();
+    assert_eq!(
+        remote_env,
+        [
+            "HOME",
+            "PATH",
+            "UV_CACHE_DIR",
+            "NO_COLOR",
+            "RLM_SESSION_ID",
+            "PRIME_AGENT_CODING_AGENT_DIR",
+            "PRIME_AGENT_KERNEL_OWNER_PID",
+            "PRIME_AGENT_INTERNAL_ORPHAN_PROCESS_JOURNAL",
+            "RLM_REMOTE_HOST",
+            "RLM_REMOTE_INSTALL_DIR",
+            "RLM_HOST_HEARTBEAT_TIMEOUT_MS",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+    );
+    assert_eq!(
+        remote_mcp,
+        json!("host request \"mcp.config\" is not available on remote kernels yet (this kernel runs on box): MCP server configs carry local credentials (env, headers, OAuth)")
+    );
     // Exactly two kernels launched over ssh (the remote child and its
     // inheriting child); the escaped grandchild never touched the host.
     let ssh_log = std::fs::read_to_string(base.join("log-box")).expect("ssh log");
@@ -351,4 +496,98 @@ fn a_remote_child_runs_remotely_its_children_inherit_and_local_escapes() {
         .map(|row| (row["sessionName"].clone(), row["host"].clone()))
         .collect();
     assert_eq!(hosts, vec![(json!("vps"), json!("box"))], "{children}");
+
+    // A copy of the remote child's session (its file plus the placement
+    // sidecar) reopens with its kernel on the same host, never locally.
+    let vps_session = remote_child_session(dir.path(), &remote_cwd);
+    let reopen_dir = dir.path().join("reopen");
+    std::fs::create_dir_all(&reopen_dir).expect("reopen dir");
+    let reopened = reopen_dir.join(vps_session.file_name().expect("name"));
+    std::fs::copy(&vps_session, &reopened).expect("copy session");
+    std::fs::copy(
+        vps_session.with_file_name("remote-kernel.json"),
+        reopen_dir.join("remote-kernel.json"),
+    )
+    .expect("copy placement");
+    let reopen_script = dir.path().join("reopen.json");
+    let reopen_cell = format!(
+        "import json, os\nwith open({:?}, 'w') as handle:\n    json.dump({{'home': os.environ.get('HOME'), 'cwd': os.getcwd()}}, handle)",
+        shared.join("receipt-reopen.json").to_string_lossy()
+    );
+    std::fs::write(
+        &reopen_script,
+        json!({
+            "engine": "faux",
+            "responses": [
+                { "content": [
+                    { "type": "toolCall", "name": "python_repl", "arguments": { "code": reopen_cell } },
+                ] },
+                { "text": "done" },
+            ],
+        })
+        .to_string(),
+    )
+    .expect("write reopen script");
+    let created = client.request(
+        "reopen",
+        &json!({
+            "type": "create",
+            "name": "reopened",
+            "sessionPath": reopened.to_string_lossy(),
+            "config": { "cwd": dir.path().to_string_lossy(), "script": reopen_script.to_string_lossy() },
+        }),
+    );
+    assert_eq!(created["success"], true, "reopen failed: {created}");
+    let reopened_id = created["data"]["activeSessionId"]
+        .as_str()
+        .expect("session id")
+        .to_string();
+    let prompted = client.request(
+        "reopen-prompt",
+        &json!({ "type": "prompt_and_wait", "activeSessionId": reopened_id, "message": "again" }),
+    );
+    assert_eq!(
+        prompted["success"], true,
+        "reopen prompt failed: {prompted}"
+    );
+    let deadline = Instant::now() + RECEIPT_TIMEOUT;
+    let reopen = loop {
+        if let Some(receipt) = read_receipt(&shared, "reopen") {
+            break receipt;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the reopened session never ran its cell:\n{}",
+            session_tails(&reopen_dir)
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert_eq!(
+        reopen,
+        json!({ "home": remote_home, "cwd": canonical(&remote_cwd) })
+    );
+
+    // A damaged placement refuses to open instead of running locally.
+    let damaged_dir = dir.path().join("damaged");
+    std::fs::create_dir_all(&damaged_dir).expect("damaged dir");
+    let damaged = damaged_dir.join(vps_session.file_name().expect("name"));
+    std::fs::copy(&vps_session, &damaged).expect("copy session");
+    std::fs::write(damaged_dir.join("remote-kernel.json"), "{broken").expect("damage");
+    let refused = client.request(
+        "damaged",
+        &json!({
+            "type": "create",
+            "name": "damaged",
+            "sessionPath": damaged.to_string_lossy(),
+            "config": { "cwd": dir.path().to_string_lossy() },
+        }),
+    );
+    assert_eq!(refused["success"], false, "{refused}");
+    let error = refused["error"].as_str().unwrap_or_default();
+    assert!(
+        error.contains(
+            "this session's kernel ran on a remote host; it will not reopen with a local kernel"
+        ),
+        "{refused}"
+    );
 }
