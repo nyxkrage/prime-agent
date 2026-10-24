@@ -305,16 +305,18 @@ pub fn convert_responses_messages(
                             let omit_id = item_id.is_none()
                                 || (is_different_model
                                     && item_id.is_some_and(|id| id.starts_with("fc_")));
-                            // The Responses API rejects a `function_call` item id that does not
-                            // start with `fc` (e.g. a `ctc_` custom-tool-call id). This holds for
-                            // every Responses provider and gateway, so it is enforced here, on the
-                            // wire item, not by provider: prefix rather than drop the id, so the
-                            // item still follows its reasoning item. History keeps the stored id.
+                            // A `ctc_` custom-tool-call id (a freeform call replayed with
+                            // freeform tools off) is rejected as a `function_call` item id
+                            // ("Expected an ID that begins with 'fc'"), so it goes out as
+                            // `fc_<id>` on every Responses provider: prefixed rather than dropped,
+                            // so the item still follows its reasoning item. Any other id passes
+                            // through unchanged (gateways may issue their own item ids). History
+                            // keeps the stored id.
                             if let Some(item_id) = item_id.filter(|_| !omit_id) {
-                                let item_id = if item_id.starts_with("fc") {
-                                    item_id.to_string()
+                                let item_id = if item_id.starts_with("ctc_") {
+                                    normalize_id_part(&format!("fc_{item_id}"))
                                 } else {
-                                    format!("fc_{item_id}")
+                                    item_id.to_string()
                                 };
                                 entry.insert("id".into(), json!(item_id));
                             }
@@ -677,33 +679,46 @@ mod tests {
     }
 
     /// A same-model `function_call` item id the API would reject (a `ctc_` custom-tool-call id)
-    /// goes out `fc_`-prefixed, for a provider on the piped-id list and for a gateway off it.
+    /// goes out `fc_`-prefixed and capped at 64 characters, for a provider on the piped-id list
+    /// and for a gateway off it. Any other id, such as a gateway's own non-`fc` item id, is sent
+    /// unchanged.
     #[test]
     fn same_model_non_fc_item_id_gets_fc_prefix() {
+        let long_ctc = format!("ctc_{}", "a".repeat(70));
+        let cases = [
+            ("call_x|ctc_y", "fc_ctc_y".to_string()),
+            ("call_x|gw_item_1", "gw_item_1".to_string()),
+            (
+                &*format!("call_x|{long_ctc}"),
+                format!("fc_{long_ctc}").chars().take(64).collect(),
+            ),
+        ];
         for provider in ["openai-codex", "opencode-go"] {
-            let model = Model {
-                provider: provider.into(),
-                ..codex_model()
-            };
-            let mut call = assistant(vec![tool_call("call_x|ctc_y")], "gpt-5.1-codex");
-            if let Message::Assistant(assistant) = &mut call {
-                assistant.provider = provider.into();
+            for (tool_call_id, expected_id) in &cases {
+                let model = Model {
+                    provider: provider.into(),
+                    ..codex_model()
+                };
+                let mut call = assistant(vec![tool_call(tool_call_id)], "gpt-5.1-codex");
+                if let Message::Assistant(assistant) = &mut call {
+                    assistant.provider = provider.into();
+                }
+                let items = convert(&model, vec![user("hi"), call, tool_result(tool_call_id)]);
+                let function_call = items
+                    .iter()
+                    .find(|item| item.get("type").and_then(Value::as_str) == Some("function_call"));
+                assert_eq!(
+                    function_call,
+                    Some(&json!({
+                        "type": "function_call",
+                        "id": expected_id,
+                        "call_id": "call_x",
+                        "name": "bash",
+                        "arguments": "{\"cmd\":\"ls\"}",
+                    })),
+                    "provider {provider}, id {tool_call_id}"
+                );
             }
-            let items = convert(&model, vec![user("hi"), call, tool_result("call_x|ctc_y")]);
-            let function_call = items
-                .iter()
-                .find(|item| item.get("type").and_then(Value::as_str) == Some("function_call"));
-            assert_eq!(
-                function_call,
-                Some(&json!({
-                    "type": "function_call",
-                    "id": "fc_ctc_y",
-                    "call_id": "call_x",
-                    "name": "bash",
-                    "arguments": "{\"cmd\":\"ls\"}",
-                })),
-                "provider {provider}"
-            );
         }
     }
 
