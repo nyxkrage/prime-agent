@@ -6,12 +6,12 @@ use crate::types::Model;
 
 /// The header the opencode gateway routes requests by. `opencode-go` rejects a request that carries
 /// no session (`MissingSessionID`), so every request to either opencode provider sends one.
-pub(crate) const OPENCODE_SESSION_HEADER: &str = "x-opencode-session";
+const OPENCODE_SESSION_HEADER: &str = "x-opencode-session";
 
 /// Append the opencode session header for the opencode providers, unless the model or caller headers
 /// already set it. The value is the caller's session when it has one, else one id per process, so
-/// sessionless calls (compaction, branch summaries, refine) stay routable. Other providers are
-/// left untouched.
+/// genuinely sessionless calls stay routable; an empty session id counts as none. Other providers
+/// are left untouched.
 pub(crate) fn push_opencode_session_header(
     headers: &mut Vec<(String, String)>,
     model: &Model,
@@ -27,7 +27,7 @@ pub(crate) fn push_opencode_session_header(
     {
         return;
     }
-    let value = session_id.map_or_else(
+    let value = session_id.filter(|id| !id.is_empty()).map_or_else(
         || {
             PROCESS_SESSION_ID
                 .get_or_init(|| format!("pa-{:032x}", rand::random::<u128>()))
@@ -73,6 +73,15 @@ mod tests {
         assert_eq!(first, second);
         assert_eq!(first.len(), 1);
         assert!(first[0].1.starts_with("pa-"));
+    }
+
+    #[test]
+    fn an_empty_session_counts_as_sessionless() {
+        let mut empty = Vec::new();
+        push_opencode_session_header(&mut empty, &model("opencode-go"), Some(""));
+        let mut sessionless = Vec::new();
+        push_opencode_session_header(&mut sessionless, &model("opencode-go"), None);
+        assert_eq!(empty, sessionless);
     }
 
     #[test]

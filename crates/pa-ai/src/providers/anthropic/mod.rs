@@ -351,7 +351,7 @@ pub(crate) fn build_request_headers(
             .collect()
     });
 
-    let mut default_headers = match model.provider.as_str() {
+    let default_headers = match model.provider.as_str() {
         "cloudflare-ai-gateway" => {
             let mut headers = Map::new();
             headers.insert("accept".into(), json!("application/json"));
@@ -410,13 +410,6 @@ pub(crate) fn build_request_headers(
             merge_headers(&[Some(headers), model_headers, options_headers_json])
         }
     };
-
-    // withOpenCodeHeaders: session header for opencode providers.
-    if model.provider == "opencode" || model.provider == "opencode-go" {
-        if let Some(session_id) = session_id {
-            default_headers.insert("session_id".into(), json!(session_id));
-        }
-    }
 
     let mut pairs = headers_to_pairs(&default_headers);
     push_opencode_session_header(&mut pairs, model, session_id);
@@ -609,6 +602,32 @@ mod subscription_identity_tests {
             headers: None,
             compat: None,
         }
+    }
+
+    /// TS `withOpenCodeHeaders`: an opencode model routes under the caller's
+    /// session through `x-opencode-session` and nothing else.
+    #[test]
+    fn opencode_requests_carry_the_session_routing_header() {
+        let model = Model {
+            id: "claude-sonnet-5".into(),
+            provider: "opencode".into(),
+            base_url: "https://opencode.ai/zen".into(),
+            ..test_model()
+        };
+        let (headers, is_oauth) =
+            build_request_headers(&model, "sk-test", false, false, None, Some("s-1"));
+        assert!(!is_oauth);
+        let expected: Vec<(String, String)> = [
+            ("anthropic-version", "2023-06-01"),
+            ("accept", "application/json"),
+            ("anthropic-dangerous-direct-browser-access", "true"),
+            ("x-opencode-session", "s-1"),
+            ("x-api-key", "sk-test"),
+        ]
+        .into_iter()
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect();
+        assert_eq!(headers, expected);
     }
 
     #[test]
