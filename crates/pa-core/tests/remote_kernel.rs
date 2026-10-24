@@ -1,65 +1,120 @@
-//! Remote (SSH) kernels: provisioning, cells, the install cache, the Python
-//! probe, and a dropped connection. `PRIME_AGENT_SSH` points at a fake `ssh`
-//! that runs the remote command locally with a per-destination `HOME`, so
-//! each destination behaves like a separate machine.
+//! Remote (SSH) kernels against a realistic fake `ssh`: provisioning, the
+//! ssh hardening options and env allowlist, the remote kernel's env, the
+//! install cache and its lock, garbage collection, refused host requests,
+//! interrupts, login-shell noise, a dropped connection, and teardown.
+//!
+//! The fake `ssh` (`KernelManagerOptions::env["PRIME_AGENT_SSH"]`, so no
+//! process env is mutated) parses its options like ssh, records its argv
+//! and its own env, and runs the remote command as a child under
+//! `env -i HOME=... PATH=...`: nothing of this process's env (PYTHONPATH,
+//! credentials) reaches the "remote", so the uploaded runtime must work on
+//! its own, and the fake ssh is a real intermediate process between the
+//! manager and the remote Python, like sshd. A destination's `HOME` is
+//! keyed by its host part (`user@host` shares `host`'s machine), so tests
+//! running in parallel on one machine also exercise the install lock.
 #![cfg(unix)]
 // Kernel manager futures follow the crate's existing integration-test disposition.
 #![allow(clippy::large_futures)]
 
+use std::collections::{BTreeSet, HashMap};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use pa_core::kernel::manager::{KernelStartOptions, ReplKernelManager};
 use pa_core::kernel::shared::{
     ExecuteOptions, ExecuteStatus, KernelManagerOptions, KernelShutdownOptions, RemoteKernelTarget,
 };
-use pa_core::kernel::KernelPythonSkill;
+use pa_core::kernel::{AbortSignal, KernelPythonSkill};
 
 /// Provisioning builds a venv with uv (from its warm cache), so the bound
 /// covers a cold install, not a fixed wait.
 const START_TIMEOUT: Duration = Duration::from_mins(10);
+/// How long a torn-down kernel's processes may take to disappear.
+const EXIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 const FAKE_SSH: &str = r#"#!/bin/sh
-# Fake ssh: skip the options, run the remote command locally.
+# Fake ssh: parse the options like ssh, record argv and this process's env,
+# then run the remote command as a child under a clean env (like sshd).
+base="__BASE__"
+argv="$*"
 while [ $# -gt 0 ]; do
   case "$1" in
     --) shift; break ;;
-    -p|-o) shift 2 ;;
-    *) shift ;;
+    -o|-p) shift 2 ;;
+    -*) shift ;;
+    *) break ;;
   esac
 done
 dest="$1"; shift
-base="__BASE__"
+printf '%s\n' "$argv" >> "$base/argv-$dest"
+env | sort > "$base/ssh-env-$dest"
 printf '%s\n' "$*" >> "$base/log-$dest"
-export UV_CACHE_DIR="${UV_CACHE_DIR:-$HOME/.cache/uv}"
-export HOME="$base/home-$dest"
-mkdir -p "$HOME"
-cd "$HOME"
+machine="${dest##*@}"
+home="$base/home-$machine"
+mkdir -p "$home"
+cd "$home" || exit 255
+path="__PATH__"
 case "$dest" in
-  oldpython) PATH="$base/oldpython-bin:$PATH"; export PATH ;;
+  oldpython) path="$base/oldpython-bin:$path" ;;
+  # Login-shell rc noise, including a line that parses as a protocol frame.
+  noisy@*) echo 'Welcome to the box'; echo '{"event": "ready", "protocol": 99}' ;;
 esac
-exec sh -c "$*"
+env -i HOME="$home" PATH="$path" UV_CACHE_DIR="__UV_CACHE__" /bin/sh -c "$*"
 "#;
 
 const OLD_PYTHON: &str = r#"#!/bin/sh
-echo '{"version": [3, 8, 10], "executable": "/usr/bin/python3", "venv": true, "uv": null, "system": "Linux", "machine": "x86_64", "root": "/r", "dir": "/r/k", "installed": false}'
+echo '{"version": [3, 8, 10], "executable": "/usr/bin/python3", "venv": true, "uv": null, "system": "Linux", "machine": "x86_64", "root": "/r", "dir": "/r/k", "installed": false, "stale_skills": []}'
 "#;
 
-/// The fake-ssh base dir, installed once per test binary.
+/// A PATH entry holding `name`, from this process's PATH.
+fn dir_of(name: &str) -> Option<PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH")?).find(|dir| dir.join(name).is_file())
+}
+
+/// The fake-ssh base dir, installed once per test binary under cargo's
+/// target tmp dir. A static never drops, so each run first removes the
+/// bases of earlier runs whose process is gone (they hold whole venvs).
 fn fake_ssh_base() -> &'static Path {
-    static BASE: OnceLock<tempfile::TempDir> = OnceLock::new();
+    static BASE: OnceLock<PathBuf> = OnceLock::new();
     BASE.get_or_init(|| {
-        let base = tempfile::TempDir::new().expect("temp dir");
-        let ssh = base.path().join("fake-ssh");
+        let tmp = Path::new(env!("CARGO_TARGET_TMPDIR"));
+        for entry in std::fs::read_dir(tmp).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if let Some(pid) = name
+                .strip_prefix("remote-kernel-")
+                .and_then(|pid| pid.parse::<i32>().ok())
+            {
+                if !alive(pid) {
+                    let _ = std::fs::remove_dir_all(entry.path());
+                }
+            }
+        }
+        let base = tmp.join(format!("remote-kernel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).expect("fake ssh base");
+        let python = dir_of("python3").expect("python3 on PATH for the fake remote");
+        let mut path = vec![python];
+        // A uv on the fake remote installs from the warm cache.
+        path.extend(dir_of("uv"));
+        path.extend([PathBuf::from("/usr/bin"), PathBuf::from("/bin")]);
+        let uv_cache = std::env::var("UV_CACHE_DIR")
+            .unwrap_or_else(|_| format!("{}/.cache/uv", std::env::var("HOME").expect("HOME")));
+        let ssh = base.join("fake-ssh");
         std::fs::write(
             &ssh,
-            FAKE_SSH.replace("__BASE__", &base.path().to_string_lossy()),
+            FAKE_SSH
+                .replace("__BASE__", &base.to_string_lossy())
+                .replace(
+                    "__PATH__",
+                    &std::env::join_paths(path).unwrap().to_string_lossy(),
+                )
+                .replace("__UV_CACHE__", &uv_cache),
         )
         .expect("write fake ssh");
         std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-        let old_bin = base.path().join("oldpython-bin");
+        let old_bin = base.join("oldpython-bin");
         std::fs::create_dir_all(&old_bin).expect("old python dir");
         std::fs::write(old_bin.join("python3"), OLD_PYTHON).expect("write old python");
         std::fs::set_permissions(
@@ -67,17 +122,20 @@ fn fake_ssh_base() -> &'static Path {
             std::fs::Permissions::from_mode(0o755),
         )
         .expect("chmod");
-        // Set once, before any manager exists; every test reads the same value.
-        std::env::set_var("PRIME_AGENT_SSH", &ssh);
         base
     })
-    .path()
 }
 
-fn install_count(destination: &str) -> usize {
-    std::fs::read_to_string(fake_ssh_base().join(format!("log-{destination}")))
+fn remote_root(machine: &str) -> PathBuf {
+    fake_ssh_base()
+        .join(format!("home-{machine}"))
+        .join(".prime/agent/remote")
+}
+
+fn base_builds(machine: &str) -> usize {
+    std::fs::read_to_string(remote_root(machine).join("install-history.log"))
         .unwrap_or_default()
-        .matches("import io, json, os, shutil, subprocess, sys, tarfile, time")
+        .lines()
         .count()
 }
 
@@ -92,16 +150,43 @@ fn edit_skill() -> KernelPythonSkill {
     }
 }
 
+/// Local kernel env the remote kernel must never see.
+const LOCAL_ONLY_ENV: [(&str, &str); 4] = [
+    ("PRIME_AGENT_BASH_COMMAND_PREFIX", "local-prefix"),
+    ("SERPER_API_KEY", "local-secret"),
+    ("RLM_HARNESS_STATE_DIR", "/local/harness"),
+    ("PRIME_AGENT_CODING_AGENT_DIR", "/local/agent"),
+];
+
 fn remote_manager(host: &str, cwd: Option<String>) -> ReplKernelManager {
-    fake_ssh_base();
+    let mut env: HashMap<String, String> = LOCAL_ONLY_ENV
+        .iter()
+        .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+        .collect();
+    env.insert("RLM_SESSION_ID".to_string(), "session-1".to_string());
+    env.insert(
+        "PRIME_AGENT_SSH".to_string(),
+        fake_ssh_base()
+            .join("fake-ssh")
+            .to_string_lossy()
+            .to_string(),
+    );
     ReplKernelManager::new(KernelManagerOptions {
         python_skills: vec![edit_skill()],
+        env,
         remote: Some(RemoteKernelTarget {
             host: host.to_string(),
             cwd,
         }),
         ..KernelManagerOptions::default()
     })
+}
+
+async fn start(manager: &ReplKernelManager) {
+    tokio::time::timeout(START_TIMEOUT, manager.start(KernelStartOptions::default()))
+        .await
+        .expect("remote kernel starts in time")
+        .expect("remote kernel starts");
 }
 
 async fn run(manager: &ReplKernelManager, code: &str) -> String {
@@ -113,53 +198,389 @@ async fn run(manager: &ReplKernelManager, code: &str) -> String {
     result.stdout
 }
 
+fn alive(pid: i32) -> bool {
+    nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok()
+}
+
+/// Wait (bounded) until none of `pids` is alive; returns the survivors.
+async fn wait_gone(pids: &[i32]) -> Vec<i32> {
+    let deadline = Instant::now() + EXIT_TIMEOUT;
+    loop {
+        let survivors: Vec<i32> = pids.iter().copied().filter(|pid| alive(*pid)).collect();
+        if survivors.is_empty() || Instant::now() > deadline {
+            return survivors;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// The kernel pid and a live `bash()` child's pid (its own process group).
+async fn kernel_and_bash_pids(manager: &ReplKernelManager) -> (i32, i32) {
+    let stdout = run(
+        manager,
+        "import os\nfrom rlm import bash\nh = bash('sleep 600')\nprint(os.getpid(), h.pid)",
+    )
+    .await;
+    let pids: Vec<i32> = stdout
+        .split_whitespace()
+        .map(|pid| pid.parse().expect("pid"))
+        .collect();
+    (pids[0], pids[1])
+}
+
 #[tokio::test]
-async fn remote_kernel_runs_on_the_remote_and_reuses_the_install() {
+async fn a_remote_kernel_gets_hardened_ssh_and_only_allowlisted_env() {
     let manager = remote_manager("box", None);
-    tokio::time::timeout(START_TIMEOUT, manager.start(KernelStartOptions::default()))
-        .await
-        .expect("remote kernel starts in time")
-        .expect("remote kernel starts");
+    start(&manager).await;
     let home = fake_ssh_base().join("home-box");
     let stdout = run(
         &manager,
-        "import os, sys, edit\nprint(os.getcwd())\nprint(sys.executable)\nprint(os.environ['PRIME_AGENT_CODING_AGENT_DIR'])",
+        "import os, sys, edit\nprint(os.getcwd())\nprint(sys.executable)\nprint(' '.join(sorted(os.environ)))\nprint(os.environ['PRIME_AGENT_CODING_AGENT_DIR'])",
     )
     .await;
     let lines: Vec<&str> = stdout.lines().collect();
-    let remote_root = home.join(".prime/agent/remote");
+    let root = remote_root("box");
     assert_eq!(
         lines[0],
         home.to_string_lossy(),
         "the login dir is the default cwd"
     );
     assert!(
-        Path::new(lines[1]).starts_with(&remote_root),
+        Path::new(lines[1]).starts_with(&root),
         "the kernel runs the remote venv: {}",
         lines[1]
     );
-    assert_eq!(lines[2], remote_root.join("agent").to_string_lossy());
+    // The remote kernel's env: the fake remote's own (HOME, PATH,
+    // UV_CACHE_DIR, what /bin/sh adds, and Python's C-locale coercion), the
+    // one forwarded key, and the launcher's keys. No local-only key arrives.
+    let keys: BTreeSet<&str> = lines[2].split(' ').collect();
+    let shell_added: BTreeSet<&str> = ["PWD", "SHLVL", "_", "OLDPWD", "LC_CTYPE"].into();
+    let keys: BTreeSet<&str> = keys.difference(&shell_added).copied().collect();
+    assert_eq!(
+        keys,
+        BTreeSet::from([
+            "HOME",
+            "PATH",
+            "UV_CACHE_DIR",
+            "RLM_SESSION_ID",
+            "PRIME_AGENT_CODING_AGENT_DIR",
+            "PRIME_AGENT_KERNEL_OWNER_PID",
+            "PRIME_AGENT_INTERNAL_ORPHAN_PROCESS_JOURNAL",
+            "RLM_REMOTE_HOST",
+            "RLM_REMOTE_INSTALL_DIR",
+            "RLM_HOST_HEARTBEAT_TIMEOUT_MS",
+        ])
+    );
+    assert_eq!(
+        lines[3],
+        root.join("agent").to_string_lossy(),
+        "a remote scratch agent dir"
+    );
     manager
         .shutdown(KernelShutdownOptions::default())
         .await
         .expect("shutdown");
-    assert_eq!(install_count("box"), 1);
 
-    // A second kernel on the same host skips the upload and honors cwd.
+    // Every ssh invocation carries the hardening options before `--`.
+    let argv = std::fs::read_to_string(fake_ssh_base().join("argv-box")).expect("argv log");
+    for line in argv.lines() {
+        assert!(
+            line.starts_with(
+                "-T -o BatchMode=yes -o ForwardAgent=no -o ForwardX11=no -o ClearAllForwardings=yes -o PermitLocalCommand=no -o ControlMaster=no -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -- box "
+            ),
+            "{line}"
+        );
+    }
+    // The ssh process itself only inherits the env allowlist (plus what
+    // /bin/sh adds to its own env).
+    let ssh_env = std::fs::read_to_string(fake_ssh_base().join("ssh-env-box")).expect("ssh env");
+    for line in ssh_env.lines() {
+        let key = line.split('=').next().unwrap_or_default();
+        assert!(
+            [
+                "PATH",
+                "HOME",
+                "USER",
+                "SSH_AUTH_SOCK",
+                "LANG",
+                "PWD",
+                "SHLVL",
+                "_",
+                "OLDPWD"
+            ]
+            .contains(&key)
+                || key.starts_with("LC_"),
+            "the ssh process inherited {key}"
+        );
+    }
+
+    // A second kernel on the same machine skips the base install and
+    // honors cwd; a `user@` destination is the same machine.
     let work = home.join("work");
     std::fs::create_dir_all(&work).expect("work dir");
-    let second = remote_manager("box", Some(work.to_string_lossy().to_string()));
-    tokio::time::timeout(START_TIMEOUT, second.start(KernelStartOptions::default()))
-        .await
-        .expect("second kernel starts in time")
-        .expect("second kernel starts");
-    let stdout = run(&second, "import os\nprint(os.getcwd())").await;
-    assert_eq!(stdout.trim(), work.to_string_lossy());
+    let second = remote_manager("again@box", Some(work.to_string_lossy().to_string()));
+    start(&second).await;
+    assert_eq!(
+        run(&second, "import os\nprint(os.getcwd())").await.trim(),
+        work.to_string_lossy()
+    );
     second
         .shutdown(KernelShutdownOptions::default())
         .await
         .expect("shutdown");
-    assert_eq!(install_count("box"), 1, "the cached install is reused");
+    assert_eq!(base_builds("box"), 1, "one base build per machine");
+    let probe_only = std::fs::read_to_string(fake_ssh_base().join("log-again@box")).expect("log");
+    assert_eq!(
+        probe_only.lines().count(),
+        2,
+        "the second kernel only probes and launches:\n{probe_only}"
+    );
+}
+
+#[tokio::test]
+async fn teardown_leaves_no_remote_processes() {
+    let manager = remote_manager("teardown@box", None);
+    start(&manager).await;
+    let (kernel, bash) = kernel_and_bash_pids(&manager).await;
+    assert!(alive(kernel) && alive(bash));
+    manager
+        .shutdown(KernelShutdownOptions::default())
+        .await
+        .expect("shutdown");
+    assert_eq!(wait_gone(&[kernel, bash]).await, Vec::<i32>::new());
+    assert!(
+        !remote_root("box")
+            .join(format!("run/{kernel}.kernel"))
+            .exists(),
+        "a clean exit drops its run record"
+    );
+}
+
+#[tokio::test]
+async fn a_remote_kernel_refuses_host_requests_and_features_outside_the_allowlist() {
+    let manager = remote_manager("refuse@box", None);
+    start(&manager).await;
+    let stdout = run(
+        &manager,
+        r#"
+import rlm
+async def attempt(label, call):
+    try:
+        await call()
+        print(label, "-> allowed")
+    except Exception as error:
+        print(label, "->", error)
+for kind in ["mcp.config", "mcp.refresh", "refine.status", "goal.get", "rlm_heartbeat.list", "agent_observe.list", "rlm.create_session", "brand.new", "rlm.find_models"]:
+    await attempt(kind, lambda kind=kind: rlm.host_request(kind))
+async def harness():
+    rlm.harness.list()
+await attempt("rlm.harness", harness)
+async def persistent():
+    rlm.bash("true", persistent=True)
+await attempt("bash(persistent=True)", persistent)
+"#,
+    )
+    .await;
+    let refused = |kind: &str, reason: &str| {
+        format!("{kind} -> host request \"{kind}\" is not available on remote kernels yet (this kernel runs on refuse@box): {reason}")
+    };
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        [
+            refused("mcp.config", "MCP server configs carry local credentials (env, headers, OAuth)"),
+            refused("mcp.refresh", "MCP server configs carry local credentials (env, headers, OAuth)"),
+            refused("refine.status", "harness refinement state lives on this machine"),
+            refused("goal.get", "goal state is not audited for remote kernels"),
+            refused("rlm_heartbeat.list", "heartbeat jobs schedule wake-ups on this machine"),
+            refused("agent_observe.list", "it reads other agents' local transcripts"),
+            refused("rlm.create_session", "it creates a local top-level session from a kernel-supplied cwd"),
+            refused("brand.new", "it has not been audited for remote kernels"),
+            // Allowed by policy; this bare manager registers no handler.
+            "rlm.find_models -> host request type \"rlm.find_models\" is not available in this session".to_string(),
+            "rlm.harness -> rlm.harness is not available on remote kernels yet (this kernel runs on refuse@box): harness state lives on the orchestrator's machine".to_string(),
+            "bash(persistent=True) -> bash(persistent=True) is not available on remote kernels yet (this kernel runs on refuse@box): a persistent shell outlives its kernel, and nothing on the orchestrator's machine can reattach or reap it there".to_string(),
+        ]
+    );
+    manager
+        .shutdown(KernelShutdownOptions::default())
+        .await
+        .expect("shutdown");
+}
+
+#[tokio::test]
+async fn an_interrupt_reaches_the_remote_kernel() {
+    let manager = remote_manager("interrupt@box", None);
+    start(&manager).await;
+    let running = Arc::new(tokio::sync::Notify::new());
+    let on_stream = {
+        let running = Arc::clone(&running);
+        Arc::new(move |chunk: &str, _stream| {
+            if chunk.contains("cell-running") {
+                running.notify_one();
+            }
+        })
+    };
+    let signal = AbortSignal::new();
+    let cell = {
+        let manager = manager.clone();
+        let signal = signal.clone();
+        tokio::spawn(async move {
+            manager
+                .execute(
+                    "import time\nprint('cell-running', flush=True)\ntime.sleep(600)",
+                    ExecuteOptions {
+                        on_stream: Some(on_stream),
+                        signal: Some(signal),
+                        ..ExecuteOptions::default()
+                    },
+                )
+                .await
+        })
+    };
+    running.notified().await;
+    signal.abort();
+    let result = tokio::time::timeout(Duration::from_secs(30), cell)
+        .await
+        .expect("the interrupted cell settles")
+        .expect("cell task")
+        .expect("cell result");
+    assert_eq!(result.status, ExecuteStatus::Aborted, "{result:?}");
+    assert_eq!(
+        run(&manager, "print('still alive')").await.trim(),
+        "still alive"
+    );
+    manager
+        .shutdown(KernelShutdownOptions::default())
+        .await
+        .expect("shutdown");
+}
+
+#[tokio::test]
+async fn login_shell_output_before_the_kernel_is_ignored() {
+    let manager = remote_manager("noisy@box", None);
+    start(&manager).await;
+    assert_eq!(run(&manager, "print(6 * 7)").await.trim(), "42");
+    manager
+        .shutdown(KernelShutdownOptions::default())
+        .await
+        .expect("shutdown");
+}
+
+#[tokio::test]
+async fn hosts_and_cwds_outside_the_allowlist_never_reach_ssh() {
+    for (host, cwd, expected) in [
+        (
+            "box$(touch${IFS}/tmp/pwned)",
+            None,
+            "rlm.spawn host \"box$(touch${IFS}/tmp/pwned)\" contains '$'; an SSH destination may only use letters, digits, and . _ @ [ ] : -",
+        ),
+        (
+            "-oProxyCommand=id",
+            None,
+            "rlm.spawn host \"-oProxyCommand=id\" contains '='; an SSH destination may only use letters, digits, and . _ @ [ ] : -",
+        ),
+        (
+            "cwd@box",
+            Some("/tmp/a b"),
+            "rlm.spawn cwd \"/tmp/a b\" contains ' '; remote paths may only use letters, digits, and . _ / + - (with an optional leading ~)",
+        ),
+        (
+            "cwd@box",
+            Some("/tmp/it's"),
+            "rlm.spawn cwd \"/tmp/it's\" contains '\\''; remote paths may only use letters, digits, and . _ / + - (with an optional leading ~)",
+        ),
+        (
+            "cwd@box",
+            Some("work"),
+            "rlm.spawn cwd must be an absolute or ~-relative remote path, got \"work\"",
+        ),
+    ] {
+        let manager = remote_manager(host, cwd.map(str::to_string));
+        let error = manager
+            .start(KernelStartOptions::default())
+            .await
+            .expect_err("refused");
+        assert_eq!(format!("{error:#}"), expected);
+    }
+    assert!(
+        !fake_ssh_base().join("argv-cwd@box").exists(),
+        "ssh never ran"
+    );
+}
+
+#[tokio::test]
+async fn concurrent_installs_build_once_recover_and_collect_garbage() {
+    let root = remote_root("twin");
+    // Old installs: one this tool created and nobody used for 8 days, one
+    // without the marker (not ours), and one recent install of ours.
+    let old = root.join("v2-0000000000000000");
+    let foreign = root.join("v2-1111111111111111");
+    let recent = root.join("v2-2222222222222222");
+    for dir in [&old, &foreign, &recent] {
+        std::fs::create_dir_all(dir).expect("old install");
+    }
+    for dir in [&old, &recent] {
+        std::fs::write(
+            dir.join(".prime-agent-remote"),
+            dir.file_name().unwrap().to_string_lossy().as_bytes(),
+        )
+        .expect("marker");
+    }
+    let eight_days_ago = std::time::SystemTime::now() - Duration::from_hours(8 * 24);
+    for dir in [&old, &foreign] {
+        let marker = dir.join(".prime-agent-remote");
+        if marker.exists() {
+            std::fs::File::options()
+                .write(true)
+                .open(&marker)
+                .unwrap()
+                .set_modified(eight_days_ago)
+                .unwrap();
+        }
+    }
+
+    // Two kernels start at once on a fresh machine: one builds, the other
+    // waits on the install lock and reuses it.
+    let (first, second) = (
+        remote_manager("one@twin", None),
+        remote_manager("two@twin", None),
+    );
+    tokio::join!(start(&first), start(&second));
+    assert_eq!(base_builds("twin"), 1);
+    assert_eq!(run(&first, "print(1)").await.trim(), "1");
+    assert_eq!(run(&second, "print(2)").await.trim(), "2");
+    let install_dir = run(
+        &first,
+        "import os\nprint(os.environ['RLM_REMOTE_INSTALL_DIR'])",
+    )
+    .await;
+    let install_dir = PathBuf::from(install_dir.trim());
+    for manager in [&first, &second] {
+        manager
+            .shutdown(KernelShutdownOptions::default())
+            .await
+            .expect("shutdown");
+    }
+    assert!(!old.exists(), "an idle install of ours is collected");
+    assert!(
+        foreign.exists(),
+        "a dir without our marker is never touched"
+    );
+    assert!(recent.exists(), "a recently used install is kept");
+
+    // An install interrupted before its stamp (and a leftover, unheld
+    // lock file) is rebuilt by the next start.
+    std::fs::remove_file(install_dir.join(".installed")).expect("drop the stamp");
+    std::fs::remove_file(install_dir.join("venv/bin/python")).expect("break the venv");
+    assert!(PathBuf::from(format!("{}.lock", install_dir.display())).exists());
+    let third = remote_manager("three@twin", None);
+    start(&third).await;
+    assert_eq!(base_builds("twin"), 2);
+    assert_eq!(run(&third, "import edit\nprint('ok')").await.trim(), "ok");
+    third
+        .shutdown(KernelShutdownOptions::default())
+        .await
+        .expect("shutdown");
 }
 
 #[tokio::test]
@@ -173,16 +594,21 @@ async fn an_unsupported_remote_python_fails_the_start_clearly() {
         format!("{error:#}"),
         "Remote host oldpython has Python 3.8.10 at /usr/bin/python3; the Prime Agent kernel needs Python 3.11 or newer as python3."
     );
-    assert_eq!(install_count("oldpython"), 0);
+    assert_eq!(
+        std::fs::read_to_string(fake_ssh_base().join("log-oldpython"))
+            .unwrap_or_default()
+            .lines()
+            .count(),
+        1,
+        "only the probe ran"
+    );
 }
 
 #[tokio::test]
-async fn a_dropped_connection_fails_the_running_cell_naming_the_host() {
-    let manager = remote_manager("dropbox", None);
-    tokio::time::timeout(START_TIMEOUT, manager.start(KernelStartOptions::default()))
-        .await
-        .expect("remote kernel starts in time")
-        .expect("remote kernel starts");
+async fn a_dropped_connection_fails_the_cell_and_the_remote_kernel_exits() {
+    let manager = remote_manager("drop@box", None);
+    start(&manager).await;
+    let (kernel, bash) = kernel_and_bash_pids(&manager).await;
     let running = Arc::new(tokio::sync::Notify::new());
     let on_stream = {
         let running = Arc::clone(&running);
@@ -207,9 +633,15 @@ async fn a_dropped_connection_fails_the_running_cell_naming_the_host() {
         })
     };
     running.notified().await;
-    let pid = manager.process_id().expect("kernel pid");
+    // The local ssh process dies (the connection drops): its remote child
+    // loses its parent, like a kernel whose sshd session ended.
+    let ssh = manager.process_id().expect("ssh pid");
+    assert_ne!(
+        ssh, kernel,
+        "a real process sits between ssh and the kernel"
+    );
     nix::sys::signal::kill(
-        nix::unistd::Pid::from_raw(pid),
+        nix::unistd::Pid::from_raw(ssh),
         nix::sys::signal::Signal::SIGKILL,
     )
     .expect("drop the connection");
@@ -220,7 +652,12 @@ async fn a_dropped_connection_fails_the_running_cell_naming_the_host() {
         .expect_err("the cell fails");
     assert_eq!(
         format!("{error:#}"),
-        "Remote kernel on dropbox exited (code=null): the SSH connection closed or the remote Python died"
+        "Remote kernel on drop@box exited (code=null): the SSH connection closed or the remote Python died"
     );
     assert!(manager.is_defunct());
+    assert_eq!(
+        wait_gone(&[kernel, bash]).await,
+        Vec::<i32>::new(),
+        "the remote kernel and its bash group exit with the connection"
+    );
 }

@@ -7,7 +7,9 @@
 # Layout under <root>/<key>/: .prime-agent-remote (marks a dir this tool
 # created), runtime/, venv/, bin/uv (when shipped), skills/<name>-<hash>/
 # with skills/<name>.installed stamps, .installed (the base stamp, written
-# last), and .inuse/.last-used (held and touched by running kernels).
+# last), and .inuse/.last-used (held and touched by running kernels). The
+# root also keeps install-history.log (one line per base build) and run/
+# (remote kernel records and orphan journals, see rlm/remote.py).
 #
 # argv: install root, base key, JSON {skill dir: content hash} to install,
 # JSON extra requirements, "1" when the archive carries the base runtime.
@@ -167,6 +169,10 @@ try:
             run([sys.executable, "-m", "venv", venv])
         pip_install([runtime] + extras)
         write(stamp, key)
+        # One line per base build: the install history an operator (or a
+        # test) reads to see when and how often this host built a venv.
+        with open(os.path.join(root, "install-history.log"), "a") as history:
+            history.write("%d built %s\n" % (int(time.time()), key))
     def source(name):
         return os.path.join(target, "skills", name + "-" + skills[name])
 
