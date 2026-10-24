@@ -940,3 +940,129 @@ fn map_responses_stop_reason(status: Option<&str>) -> StopReason {
         Some(_) => StopReason::Error,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event_stream::{
+        create_assistant_message_event_stream, initial_assistant_message, AssistantMessageEventExt,
+    };
+
+    fn responses_model() -> Model {
+        Model {
+            id: "gpt-5.6-luna".into(),
+            name: "gpt-5.6-luna".into(),
+            api: "openai-responses".into(),
+            provider: "opencode-go".into(),
+            base_url: "https://opencode.ai/zen/go/v1".into(),
+            reasoning: true,
+            thinking_level_map: None,
+            input: vec![crate::types::ModelInput::Text],
+            cost: crate::types::zero_model_cost(),
+            context_window: 400_000,
+            max_tokens: 128_000,
+            max_tokens_explicit: false,
+            featured: None,
+            headers: None,
+            compat: None,
+        }
+    }
+
+    /// The `output_item.done` events finalize their blocks: the reasoning item's JSON (with
+    /// `encrypted_content`) becomes the thinking signature, the message id/phase the text
+    /// signature, and each block gets its `*_end` event. The event shapes follow a live
+    /// opencode-go `gpt-5.6-luna` capture. Regression: the slot was removed before its content
+    /// index was read, so every finalize branch was skipped and replay lost the reasoning.
+    #[tokio::test]
+    #[ignore = "fails until output_item.done reads the slot before removing it"]
+    async fn output_item_done_finalizes_signatures_for_reasoning_message_and_tool_call() {
+        let reasoning_done = json!({
+            "id": "rs_1", "type": "reasoning", "encrypted_content": "gAAAA-final",
+            "summary": [{"type": "summary_text", "text": "Multiply."}],
+        });
+        let events = [
+            json!({"type": "response.created", "response": {"id": "resp_1"}}),
+            json!({"type": "response.output_item.added", "output_index": 0, "item": {
+                "id": "rs_1", "type": "reasoning", "encrypted_content": "gAAAA-added", "summary": []}}),
+            json!({"type": "response.reasoning_summary_part.added", "output_index": 0,
+                "part": {"type": "summary_text", "text": ""}}),
+            json!({"type": "response.reasoning_summary_text.delta", "output_index": 0,
+                "delta": "Multiply."}),
+            json!({"type": "response.reasoning_summary_part.done", "output_index": 0}),
+            json!({"type": "response.output_item.done", "output_index": 0,
+                "item": reasoning_done.clone()}),
+            json!({"type": "response.output_item.added", "output_index": 1, "item": {
+                "id": "msg_1", "type": "message", "status": "in_progress", "role": "assistant",
+                "phase": "final_answer", "content": []}}),
+            json!({"type": "response.content_part.added", "output_index": 1, "content_index": 0,
+                "part": {"type": "output_text", "text": ""}}),
+            json!({"type": "response.output_text.delta", "output_index": 1, "content_index": 0,
+                "delta": "391"}),
+            json!({"type": "response.output_item.done", "output_index": 1, "item": {
+                "id": "msg_1", "type": "message", "status": "completed", "role": "assistant",
+                "phase": "final_answer", "content": [{"type": "output_text", "text": "391"}]}}),
+            json!({"type": "response.output_item.added", "output_index": 2, "item": {
+                "id": "fc_1", "type": "function_call", "call_id": "call_1", "name": "bash",
+                "arguments": ""}}),
+            json!({"type": "response.function_call_arguments.delta", "output_index": 2,
+                "delta": "{\"cmd\":\"echo hi\"}"}),
+            json!({"type": "response.output_item.done", "output_index": 2, "item": {
+                "id": "fc_1", "type": "function_call", "call_id": "call_1", "name": "bash",
+                "arguments": "{\"cmd\":\"echo hi\"}"}}),
+            json!({"type": "response.completed", "response": {"id": "resp_1",
+                "status": "completed"}}),
+        ];
+        let model = responses_model();
+        let mut output = initial_assistant_message(&model.api, &model.provider, &model.id);
+        let (writer, stream) = create_assistant_message_event_stream();
+        {
+            let mut processor = ResponsesStreamProcessor::new(
+                &model,
+                &mut output,
+                &writer,
+                ResponsesStreamHooks::default(),
+            );
+            for event in &events {
+                processor.handle_event(event).expect("scripted event");
+            }
+        }
+        writer.end(None);
+        let end_events: Vec<&str> = stream
+            .collect()
+            .await
+            .iter()
+            .map(AssistantMessageEventExt::event_type)
+            .filter(|event_type| event_type.ends_with("_end"))
+            .collect();
+
+        assert_eq!(
+            output.content,
+            vec![
+                AssistantContent::Thinking(ThinkingContent {
+                    thinking: "Multiply.".into(),
+                    thinking_signature: Some(reasoning_done.to_string()),
+                    redacted: None,
+                    rest: Map::default(),
+                }),
+                AssistantContent::Text(TextContent {
+                    text: "391".into(),
+                    text_signature: Some(encode_text_signature_v1(
+                        "msg_1",
+                        Some(TextSignaturePhase::FinalAnswer),
+                    )),
+                    rest: Map::default(),
+                }),
+                AssistantContent::ToolCall(ToolCall {
+                    id: "call_1|fc_1".into(),
+                    name: "bash".into(),
+                    arguments: [("cmd".to_string(), json!("echo hi"))]
+                        .into_iter()
+                        .collect(),
+                    thought_signature: None,
+                    rest: Map::default(),
+                }),
+            ]
+        );
+        assert_eq!(end_events, ["thinking_end", "text_end", "toolcall_end"]);
+    }
+}
