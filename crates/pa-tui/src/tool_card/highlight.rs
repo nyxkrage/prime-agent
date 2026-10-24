@@ -353,6 +353,18 @@ fn ident_continues(text: &str, i: usize) -> bool {
 /// A python string starting at `i`: prefix and body form one `string`
 /// token. Substitutions and escapes keep the string color.
 fn string_at(text: &str, i: usize) -> Option<usize> {
+    scan_string(text, i).map(|scan| scan.len)
+}
+
+/// One scanned string token: its byte length, and for a triple-quoted
+/// string that runs to the end of the block unclosed, the delimiter that
+/// would close it.
+struct StringScan {
+    len: usize,
+    unclosed_triple: Option<&'static str>,
+}
+
+fn scan_string(text: &str, i: usize) -> Option<StringScan> {
     let bytes = text.as_bytes();
     let mut end = i;
     while end < bytes.len()
@@ -368,6 +380,12 @@ fn string_at(text: &str, i: usize) -> Option<usize> {
         return None;
     }
     let triple = bytes.get(end + 1) == Some(quote) && bytes.get(end + 2) == Some(quote);
+    let closing = match (quote, triple) {
+        (b'\'', true) => "'''",
+        (_, true) => "\"\"\"",
+        (b'\'', false) => "'",
+        (_, false) => "\"",
+    };
     let mut cursor = end + if triple { 3 } else { 1 };
     while cursor < text.len() {
         let rest = &text[cursor..];
@@ -378,13 +396,11 @@ fn string_at(text: &str, i: usize) -> Option<usize> {
             continue;
         }
         let ch = rest.chars().next()?;
-        if triple {
-            let closing = [quote_char(*quote); 3].iter().collect::<String>();
-            if rest.starts_with(&closing) {
-                return Some(cursor + 3 - i);
-            }
-        } else if ch == quote_char(*quote) {
-            return Some(cursor + ch.len_utf8() - i);
+        if rest.starts_with(closing) {
+            return Some(StringScan {
+                len: cursor + closing.len() - i,
+                unclosed_triple: None,
+            });
         }
         // Single-quoted strings never cross a line break; an unterminated
         // triple-quoted string runs to the end of the block.
@@ -393,19 +409,42 @@ fn string_at(text: &str, i: usize) -> Option<usize> {
         }
         cursor += ch.len_utf8();
     }
-    if triple {
-        Some(text.len() - i)
-    } else {
-        None
-    }
+    triple.then(|| StringScan {
+        len: text.len() - i,
+        unclosed_triple: Some(closing),
+    })
 }
 
-fn quote_char(byte: u8) -> char {
-    if byte == b'\'' {
-        '\''
-    } else {
-        '"'
+/// When `code` ends inside an unclosed triple-quoted string (a cell still
+/// streaming in), the text that closes it: the string's delimiter, then
+/// the brackets still open around it, innermost first.
+pub(crate) fn unclosed_triple_quoted_tail(code: &str) -> Option<String> {
+    let mut tokens = tokenize(code);
+    let (text, scope) = tokens.pop()?;
+    if scope != Scope::String {
+        return None;
     }
+    let delimiter = scan_string(code, code.len() - text.len())?.unclosed_triple?;
+    let mut open: Vec<char> = Vec::new();
+    for (text, scope) in &tokens {
+        if !matches!(scope, Scope::Plain | Scope::Params) {
+            continue;
+        }
+        for ch in text.chars() {
+            match ch {
+                '(' => open.push(')'),
+                '[' => open.push(']'),
+                '{' => open.push('}'),
+                ')' | ']' | '}' if open.last() == Some(&ch) => {
+                    open.pop();
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut closing = delimiter.to_string();
+    closing.extend(open.iter().rev());
+    Some(closing)
 }
 
 /// Highlight python `code` into per-line spans. The whole block is one
@@ -714,5 +753,26 @@ mod tests {
     fn escaped_quote_stays_in_string() {
         let toks = scopes("x = 'a\\'b'");
         assert!(toks.contains(&("'a\\'b'".into(), Scope::String)));
+    }
+
+    #[test]
+    fn unclosed_triple_quoted_tail_closes_the_string_and_its_brackets() {
+        let cases = [
+            ("f(x, [g('''abc", Some("''')])")),
+            (r#"x = {'k': ("""a 'b' \""""#, Some(r#"""")}"#)),
+            (r#"def f(a="""doc"#, Some(r#"""")"#)),
+            (r"s = '''a\'''", Some("'''")),
+            ("s = '''done'''", None),
+            ("s = 'single", None),
+            ("# '''comment", None),
+            ("x = 1", None),
+        ];
+        for (code, expected) in cases {
+            assert_eq!(
+                unclosed_triple_quoted_tail(code).as_deref(),
+                expected,
+                "{code:?}"
+            );
+        }
     }
 }

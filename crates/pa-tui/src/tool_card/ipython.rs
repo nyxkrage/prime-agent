@@ -390,7 +390,8 @@ fn is_magic_line(statement: &str) -> bool {
 
 /// The expanded source rows (TS `renderCode`): the first line guttered
 /// `\u{2570}\u{2500}`, continuation lines indented; bash cells and magic
-/// lines render in bashMode, python lines syntax highlighted.
+/// lines render in bashMode, python lines syntax highlighted (the
+/// literals passed to `apply_patch` coloured as the patch they carry).
 fn render_code(lines: &mut RowOutput, code: &str, theme: &Theme, width: usize) -> bool {
     if code.is_empty() {
         add_wrapped(
@@ -412,7 +413,13 @@ fn render_code(lines: &mut RowOutput, code: &str, theme: &Theme, width: usize) -
     let highlighted = if is_bash_cell {
         Vec::new()
     } else {
-        highlight::highlight_python(code, &highlight::SyntaxPalette::from_theme(theme))
+        let mut highlighted =
+            highlight::highlight_python(code, &highlight::SyntaxPalette::from_theme(theme));
+        // Colours never change a row's width: counting skips the patch parse.
+        if !lines.is_counting() {
+            super::patch_literal::overlay_patch_literals(code, &mut highlighted, theme);
+        }
+        highlighted
     };
     let statements = python_statement_lines(code);
     for (index, raw_line) in raw_lines.iter().enumerate() {
