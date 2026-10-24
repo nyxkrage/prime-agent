@@ -273,6 +273,16 @@ async fn reseed_lists_live_ledger_children_settled_and_bills_only_after_a_delive
         )
         .unwrap();
     }
+    // sub-a ran its kernel on a remote host: its placement sidecar brings
+    // the host back with the reseeded row (and its delete tombstone).
+    crate::rlm_children::remote_placement::write_remote_placement(
+        Path::new(&child_one).parent().unwrap(),
+        &pa_core::kernel::RemoteKernelTarget {
+            host: "user@box".to_string(),
+            cwd: None,
+        },
+    )
+    .unwrap();
     let spawn = |child_id: &str, parent: &str, child: &str| {
         format!(
             r#"{{"v":1,"op":"spawn","at":"2026-09-30T00:00:00Z","childId":"{child_id}","parent":"{parent}","child":"{child}","depth":1,"name":"{child_id}"}}"#
@@ -326,19 +336,27 @@ async fn reseed_lists_live_ledger_children_settled_and_bills_only_after_a_delive
                 row.status,
                 row.active_session_id.as_deref(),
                 row.label.as_deref(),
+                row.host.as_deref(),
             )
         })
         .collect();
     assert_eq!(
         rows,
         [
-            ("sub-a", "completed", Some("sess-a"), Some("finished task")),
-            ("sub-b", "error", Some("sess-b"), Some("child agent")),
+            (
+                "sub-a",
+                "completed",
+                Some("sess-a"),
+                Some("finished task"),
+                Some("user@box")
+            ),
+            ("sub-b", "error", Some("sess-b"), Some("child agent"), None),
             (
                 "sub-legacy",
                 "completed",
                 Some("sess-legacy"),
-                Some("child agent")
+                Some("child agent"),
+                None
             ),
         ],
         "completed and interrupted children keep their display verdicts"
@@ -356,6 +374,15 @@ async fn reseed_lists_live_ledger_children_settled_and_bills_only_after_a_delive
         .find_record("sub-a")
         .await
         .expect("the reseeded row");
+    sessions.inner.remember_deleted_child(&*record.lock().await);
+    let tombstone_host = sessions
+        .inner
+        .deleted_children
+        .lock()
+        .unwrap()
+        .get("sub-a")
+        .and_then(|deleted| deleted.host.clone());
+    assert_eq!(tombstone_host.as_deref(), Some("user@box"));
     // Nothing is owed: the pre-restart history never re-bills.
     sessions.inner.emit_child_usage(&record).await;
     assert_eq!(sink.reports.lock().expect("reports lock").len(), 0);
