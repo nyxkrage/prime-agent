@@ -1,6 +1,10 @@
 //! `OpenAI` Responses stream hooks, reasoning-summary options, and service-tier pricing.
 
-use crate::types::Usage;
+use std::collections::HashMap;
+
+use serde_json::{Map, Value};
+
+use crate::types::{Tool, ToolCall, Usage};
 
 /// Reasoning summary mode requested from the Responses API.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,12 +31,56 @@ pub type ResolveServiceTierFn =
 /// Hook applying service-tier pricing to a usage block.
 pub type ApplyServiceTierPricingFn = Box<dyn Fn(&mut Usage, Option<String>) + Send>;
 
-/// Service-tier hooks mirroring the TS `OpenAIResponsesStreamOptions`.
+/// The request's freeform (Responses `custom`) tools: tool name -> the argument its raw text
+/// input maps onto (`python_repl` -> `code`). Built from the request's tool list, so the wire
+/// shape follows whichever tools the caller marked for this request.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FreeformToolArguments(HashMap<String, String>);
+
+impl FreeformToolArguments {
+    /// Collect the tools that carry a free-text argument.
+    pub fn from_tools(tools: Option<&[Tool]>) -> Self {
+        Self(
+            tools
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|tool| {
+                    tool.freeform_argument
+                        .as_ref()
+                        .map(|argument| (tool.name.clone(), argument.clone()))
+                })
+                .collect(),
+        )
+    }
+
+    /// The argument object a streamed `custom_tool_call` input becomes: `{<argument>: input}`.
+    /// A tool the request did not declare as freeform keys the input under the wire field name
+    /// `input`, so the call still reaches the tool layer (which reports the bad arguments).
+    pub fn arguments_from_input(&self, tool_name: &str, input: &str) -> Map<String, Value> {
+        let argument = self.0.get(tool_name).map_or("input", String::as_str);
+        Map::from_iter([(argument.to_string(), Value::String(input.to_string()))])
+    }
+
+    /// The raw input a recorded tool call replays as, when it can go out as a `custom_tool_call`:
+    /// the tool is freeform in this request and the call's arguments are exactly its one string
+    /// argument. Anything else (structured history, extra keys) replays as a `function_call`.
+    pub fn custom_input<'a>(&self, tool_call: &'a ToolCall) -> Option<&'a str> {
+        let argument = self.0.get(&tool_call.name)?;
+        if tool_call.arguments.len() != 1 {
+            return None;
+        }
+        tool_call.arguments.get(argument).and_then(Value::as_str)
+    }
+}
+
+/// Service-tier hooks mirroring the TS `OpenAIResponsesStreamOptions`, plus the request's
+/// freeform tools so `custom_tool_call` items map back onto their argument object.
 #[derive(Default)]
 pub struct ResponsesStreamHooks {
     pub request_service_tier: Option<crate::types::ServiceTier>,
     pub resolve_service_tier: Option<ResolveServiceTierFn>,
     pub apply_service_tier_pricing: Option<ApplyServiceTierPricingFn>,
+    pub freeform_tools: FreeformToolArguments,
 }
 
 /// Multipliers per <https://developers.openai.com/api/docs/pricing>.

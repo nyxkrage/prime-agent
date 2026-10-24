@@ -28,8 +28,8 @@ use crate::providers::openai_codex_responses::websocket::{
 };
 use crate::providers::openai_responses_shared::{
     convert_responses_messages, convert_responses_tools, ConvertResponsesMessagesOptions,
-    ConvertResponsesToolsOptions, ReasoningSummary, ResponsesStreamHooks, ResponsesStreamProcessor,
-    OPENAI_TOOL_CALL_PROVIDERS,
+    ConvertResponsesToolsOptions, FreeformToolArguments, ReasoningSummary, ResponsesStreamHooks,
+    ResponsesStreamProcessor, OPENAI_TOOL_CALL_PROVIDERS,
 };
 use crate::providers::simple_options::build_base_options;
 use crate::registry::Provider;
@@ -231,12 +231,14 @@ async fn run_stream(
         // Retry a stale previous_response_id once on a fresh connection (the failed attempt's
         // cleanup dropped the cached one); the retry resends the full request body.
         let mut chain_reset_retried = false;
+        let freeform_tools = FreeformToolArguments::from_tools(context.tools.as_deref());
         loop {
             let attempt = run_websocket_attempt(
                 model,
                 &options,
                 &body,
                 &websocket_headers,
+                &freeform_tools,
                 output,
                 writer,
                 &mut websocket_started,
@@ -345,7 +347,7 @@ async fn run_stream(
     writer.push(AssistantMessageEvent::Start {
         partial: output.clone(),
     });
-    run_sse_stream(&mut response, model, &options, output, writer).await?;
+    run_sse_stream(&mut response, model, context, &options, output, writer).await?;
 
     if options
         .base
@@ -376,6 +378,7 @@ fn is_codex_visible_response_event(event: &Value) -> bool {
         || event_type.starts_with("response.content_")
         || event_type.starts_with("response.refusal.")
         || event_type.starts_with("response.function_")
+        || event_type.starts_with("response.custom_tool_call_input.")
 }
 
 /// One WebSocket attempt.
@@ -387,6 +390,7 @@ async fn run_websocket_attempt(
     options: &OpenAICodexResponsesOptions,
     body: &Value,
     websocket_headers: &[(String, String)],
+    freeform_tools: &FreeformToolArguments,
     output: &mut AssistantMessage,
     writer: &AssistantMessageEventWriter,
     websocket_started: &mut bool,
@@ -444,6 +448,7 @@ async fn run_websocket_attempt(
             apply_service_tier_pricing: Some(Box::new(move |usage, service_tier| {
                 apply_codex_service_tier_pricing(usage, service_tier.as_deref(), &model_id);
             })),
+            freeform_tools: freeform_tools.clone(),
         };
         let mut start_emitted = false;
         let mut processor = ResponsesStreamProcessor::new(model, output, writer, hooks);
@@ -544,6 +549,7 @@ fn assistant_as_message(output: &AssistantMessage) -> crate::types::Message {
 async fn run_sse_stream(
     response: &mut HttpResponse,
     model: &Model,
+    context: &Context,
     options: &OpenAICodexResponsesOptions,
     output: &mut AssistantMessage,
     writer: &AssistantMessageEventWriter,
@@ -555,6 +561,7 @@ async fn run_sse_stream(
         apply_service_tier_pricing: Some(Box::new(move |usage, service_tier| {
             apply_codex_service_tier_pricing(usage, service_tier.as_deref(), &model_id);
         })),
+        freeform_tools: FreeformToolArguments::from_tools(context.tools.as_deref()),
     };
     let mut processor = ResponsesStreamProcessor::new(model, output, writer, hooks);
     // The TS catch settles partial tool calls before the error event carries the message.
@@ -1101,6 +1108,7 @@ mod tests {
             "response.content_part.added",
             "response.refusal.delta",
             "response.function_call_arguments.delta",
+            "response.custom_tool_call_input.delta",
         ];
         for event_type in visible {
             let event = json!({ "type": event_type });

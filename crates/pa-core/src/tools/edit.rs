@@ -320,6 +320,7 @@ pub fn create_edit_tool_definition(cwd: &str) -> ToolDefinition {
         parameters: edit_tool_schema(),
         execution_mode: None,
         prepare_arguments: Some(prepare_edit_arguments),
+        freeform_argument: None,
         execute,
     }
 }

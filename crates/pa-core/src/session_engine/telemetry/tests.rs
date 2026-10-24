@@ -520,6 +520,7 @@ async fn session_counters_ride_session_ended() {
     counters.note_mcp_connector_use();
     counters.note_kernel_bootstrap(true, true, 1_200);
     counters.note_kernel_bootstrap(false, false, 300);
+    counters.note_freeform_tools_request();
     telemetry.note_feature_outcome("goal", "completed", Some("create"));
     telemetry.note_feature_outcome("not-a-feature", "completed", None);
     telemetry.end().await.unwrap();
@@ -536,6 +537,7 @@ async fn session_counters_ride_session_ended() {
     assert_eq!(ended["kernel_bootstrap_failed_count"], serde_json::json!(1));
     assert_eq!(ended["kernel_bootstrap_max_ms"], serde_json::json!(1_200));
     assert_eq!(ended["feature_goal_completed_count"], serde_json::json!(1));
+    assert_eq!(ended["freeform_tools_request_count"], serde_json::json!(1));
 }
 
 /// `build_client` reuses the installation id a TS install wrote to

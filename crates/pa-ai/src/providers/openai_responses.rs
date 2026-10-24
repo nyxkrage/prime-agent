@@ -12,8 +12,8 @@ use crate::event_stream::{
 use crate::models::{clamp_thinking_level, supports_thinking};
 use crate::providers::openai_responses_shared::{
     apply_service_tier_pricing, convert_responses_messages, convert_responses_tools,
-    ConvertResponsesMessagesOptions, ConvertResponsesToolsOptions, ReasoningSummary,
-    ResponsesStreamHooks, OPENAI_TOOL_CALL_PROVIDERS,
+    ConvertResponsesMessagesOptions, ConvertResponsesToolsOptions, FreeformToolArguments,
+    ReasoningSummary, ResponsesStreamHooks, OPENAI_TOOL_CALL_PROVIDERS,
 };
 use crate::providers::simple_options::build_base_options;
 use crate::registry::Provider;
@@ -347,6 +347,7 @@ async fn run_stream(
         apply_service_tier_pricing: Some(Box::new(move |usage, service_tier| {
             apply_service_tier_pricing(usage, service_tier.as_deref(), &model_id);
         })),
+        freeform_tools: FreeformToolArguments::from_tools(context.tools.as_deref()),
     };
 
     let stream_result: Result<(), ProviderError>;
@@ -565,6 +566,136 @@ mod tests {
         assert_eq!(
             params.get("reasoning"),
             Some(&json!({ "effort": "xhigh", "summary": "auto" }))
+        );
+    }
+
+    /// Golden replay of a captured `opencode-go/gpt-5.6-luna` Responses stream with one
+    /// `custom_tool_call` (freeform `python_repl`): the recorded tool call carries the canonical
+    /// `{"code": input}` arguments under the `call_id|ctc_item_id` id, and the follow-up request
+    /// replays it as the same `custom_tool_call` item with a `custom_tool_call_output`.
+    #[test]
+    // Long by design: the golden capture, the recorded row, and the replayed request are pinned
+    // as whole objects in one place.
+    #[allow(clippy::too_many_lines)]
+    fn captured_custom_tool_call_stream_records_and_replays() {
+        let model: Model = serde_json::from_value(json!({
+            "id": "gpt-5.6-luna", "name": "GPT-5.6 Luna", "api": "openai-responses",
+            "provider": "opencode-go", "baseUrl": "https://opencode.ai/zen/go/v1",
+            "reasoning": true, "input": ["text"],
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+            "contextWindow": 1000, "maxTokens": 100,
+        }))
+        .unwrap();
+        let tools = vec![crate::types::Tool {
+            name: "python_repl".into(),
+            description: "Run Python code in a persistent REPL. Send raw Python source.".into(),
+            parameters: json!({ "type": "object" }),
+            freeform_argument: Some("code".into()),
+        }];
+        let capture = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/testdata/opencode_go_luna_custom_tool_call.jsonl"
+        ))
+        .unwrap();
+        let mut output = AssistantMessage {
+            content: Vec::new(),
+            api: model.api.clone(),
+            provider: model.provider.clone(),
+            model: model.id.clone(),
+            response_model: None,
+            response_id: None,
+            diagnostics: None,
+            usage: Usage::default(),
+            stop_reason: StopReason::Stop,
+            stop_reason_raw: None,
+            error_message: None,
+            timestamp: 0,
+            rest: Map::default(),
+        };
+        let (writer, _reader) = create_assistant_message_event_stream();
+        {
+            let mut processor =
+                crate::providers::openai_responses_shared::ResponsesStreamProcessor::new(
+                    &model,
+                    &mut output,
+                    &writer,
+                    ResponsesStreamHooks {
+                        freeform_tools: FreeformToolArguments::from_tools(Some(&tools)),
+                        ..ResponsesStreamHooks::default()
+                    },
+                );
+            for line in capture.lines() {
+                processor
+                    .handle_event(&serde_json::from_str(line).unwrap())
+                    .unwrap();
+            }
+            processor.finish().unwrap();
+        }
+        let call_id = "call_hwEuKHGWozj3uX9UORaEPOwP";
+        let item_id = "ctc_0eb41533c5579b9c016adc87f5f8cc87d1b402ca2ebe40078e";
+        let tool_call = crate::types::ToolCall {
+            id: format!("{call_id}|{item_id}"),
+            name: "python_repl".into(),
+            arguments: [("code".to_string(), json!("print(17*23)\n"))]
+                .into_iter()
+                .collect(),
+            thought_signature: None,
+            rest: Map::default(),
+        };
+        assert_eq!(
+            output.content,
+            vec![crate::types::AssistantContent::ToolCall(tool_call.clone())]
+        );
+        assert_eq!(output.stop_reason, StopReason::ToolUse);
+
+        let context = Context {
+            system_prompt: None,
+            messages: vec![
+                crate::types::Message::Assistant(output),
+                crate::types::Message::ToolResult(crate::types::ToolResultMessage {
+                    tool_call_id: tool_call.id,
+                    tool_name: "python_repl".into(),
+                    content: vec![crate::types::UserOrToolContent::Text(
+                        crate::types::TextContent {
+                            text: "391".into(),
+                            text_signature: None,
+                            rest: Map::default(),
+                        },
+                    )],
+                    details: None,
+                    is_error: false,
+                    timestamp: 0,
+                    rest: Map::default(),
+                }),
+            ],
+            tools: Some(tools),
+        };
+        let params = build_params(
+            &model,
+            &context,
+            &OpenAIResponsesOptions::from_base(StreamOptions::default()),
+        );
+        assert_eq!(
+            params.get("input"),
+            Some(&json!([
+                {
+                    "type": "custom_tool_call",
+                    "id": item_id,
+                    "call_id": call_id,
+                    "name": "python_repl",
+                    "input": "print(17*23)\n",
+                },
+                { "type": "custom_tool_call_output", "call_id": call_id, "output": "391" },
+            ]))
+        );
+        assert_eq!(
+            params.get("tools"),
+            Some(&json!([{
+                "type": "custom",
+                "name": "python_repl",
+                "description": "Run Python code in a persistent REPL. Send raw Python source.",
+                "format": { "type": "text" },
+            }]))
         );
     }
 }

@@ -273,6 +273,9 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // Captured before `settings` moves into the resource loader: the
     // per-cell watchdog budget (default 60s, `0` disables).
     let python_cell_timeout_ms = settings.get_python_cell_timeout_ms();
+    // Captured before `settings` moves into the resource loader: the
+    // per-provider freeform-tools resolution the stream gate applies.
+    let freeform_tools_settings = settings.get_freeform_tools();
     let (mcp_skill_overrides, mcp_generic_servers, built_manager) =
         mcp_gating(&settings, config.agent_dir.clone()).await?;
     let mcp_manager = config
@@ -682,6 +685,13 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // over the timing-instrumented fn (TS `sdk.ts` instruments first, the
     // `AgentSession` constructor wraps semantic edges over it). The side
     // question keeps the pre-semantic fn, so its calls carry no id.
+    // The freeform-tools gate sits innermost, beside the provider: the
+    // side question and the agent loop both send through it.
+    let stream_fn = super::freeform_tools::gate_stream_fn(
+        freeform_tools_settings,
+        std::sync::Arc::clone(&session_counters),
+        stream_fn,
+    );
     let timing_stream_fn = super::request_timing::instrument_stream_fn(
         std::sync::Arc::clone(&request_timing_wiring),
         stream_fn,

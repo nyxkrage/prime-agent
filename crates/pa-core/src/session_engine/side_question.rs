@@ -538,6 +538,7 @@ mod tests {
             }),
             execution_mode: None,
             prepare_arguments: None,
+            freeform_argument: None,
             execute: Arc::new(move |_id, _params, _signal, _on_update| {
                 let executed = Arc::clone(&executed);
                 Box::pin(async move {

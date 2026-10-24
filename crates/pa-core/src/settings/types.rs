@@ -254,6 +254,33 @@ pub struct TelemetrySettings {
     pub local_mirror: Option<bool>,
 }
 
+/// `freeformTools`: send free-text tools (`python_repl`) as raw-text custom tools on providers
+/// whose API has that form (the `OpenAI` Responses `"type": "custom"` tools). Rust-only setting.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FreeformToolsSettings {
+    /// Global override for every provider without its own entry.
+    pub enabled: Option<bool>,
+    /// Per-provider override, keyed by provider id.
+    pub providers: Option<std::collections::BTreeMap<String, bool>>,
+}
+
+/// Providers that get freeform tools when nothing is configured (verified to accept them).
+const FREEFORM_TOOLS_DEFAULT_PROVIDERS: [&str; 2] = ["openai", "openai-codex"];
+
+impl FreeformToolsSettings {
+    /// Resolve for one provider: its `providers` entry, then the global `enabled`, then the
+    /// built-in default (on for `openai` and `openai-codex` only).
+    #[must_use]
+    pub fn is_enabled_for(&self, provider: &str) -> bool {
+        self.providers
+            .as_ref()
+            .and_then(|providers| providers.get(provider).copied())
+            .or(self.enabled)
+            .unwrap_or_else(|| FREEFORM_TOOLS_DEFAULT_PROVIDERS.contains(&provider))
+    }
+}
+
 /// User-declared MCP server (settings `mcpServers` entry).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
@@ -384,6 +411,8 @@ pub struct Settings {
     /// Log per-request provider timing phases to the diagnostic log
     /// (unset means OFF, exactly the TS default).
     pub request_timing: Option<bool>,
+    /// Freeform (raw-text custom) tools per provider; unset uses the built-in defaults.
+    pub freeform_tools: Option<FreeformToolsSettings>,
     /// Unknown keys survive load/save round-trips (forward compatibility).
     #[serde(flatten, skip_serializing_if = "serde_json::Map::is_empty")]
     pub extra: serde_json::Map<String, serde_json::Value>,

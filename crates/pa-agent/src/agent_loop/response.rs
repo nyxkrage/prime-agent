@@ -126,6 +126,7 @@ async fn stream_assistant_response_inner(
                 name: tool.name().to_string(),
                 description: tool.description().to_string(),
                 parameters: tool.parameters().clone(),
+                freeform_argument: tool.freeform_argument().map(str::to_string),
             })
             .collect(),
     };

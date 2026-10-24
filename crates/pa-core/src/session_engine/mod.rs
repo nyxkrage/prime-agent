@@ -16,6 +16,7 @@ pub mod compaction_utils;
 pub mod engine;
 pub mod error_classify;
 pub mod factory_host;
+mod freeform_tools;
 pub mod goal_boundary;
 pub mod goal_driver;
 pub mod harness_digest;

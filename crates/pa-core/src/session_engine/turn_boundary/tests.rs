@@ -721,6 +721,7 @@ fn probe_tool(
         parameters: json!({ "type": "object", "properties": {} }),
         execution_mode: None,
         prepare_arguments: None,
+        freeform_argument: None,
         execute: Arc::new(move |_id, _params, _signal, _on_update| {
             let handler = handler.clone();
             let slot = slot_in_tool.clone();

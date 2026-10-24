@@ -14,7 +14,8 @@ use crate::event_stream::{
 use crate::models::{clamp_thinking_level, supports_thinking};
 use crate::providers::openai_responses_shared::{
     convert_responses_messages, convert_responses_tools, ConvertResponsesMessagesOptions,
-    ConvertResponsesToolsOptions, ResponsesStreamHooks, AZURE_TOOL_CALL_PROVIDERS,
+    ConvertResponsesToolsOptions, FreeformToolArguments, ResponsesStreamHooks,
+    AZURE_TOOL_CALL_PROVIDERS,
 };
 use crate::providers::simple_options::build_base_options;
 use crate::registry::Provider;
@@ -382,7 +383,10 @@ async fn run_stream(
 
     let stream_result: Result<(), ProviderError>;
     {
-        let hooks = ResponsesStreamHooks::default();
+        let hooks = ResponsesStreamHooks {
+            freeform_tools: FreeformToolArguments::from_tools(context.tools.as_deref()),
+            ..ResponsesStreamHooks::default()
+        };
         let mut processor =
             crate::providers::openai_responses_shared::ResponsesStreamProcessor::new(
                 model, output, writer, hooks,

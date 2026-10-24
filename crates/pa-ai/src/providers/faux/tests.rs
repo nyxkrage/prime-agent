@@ -499,6 +499,7 @@ async fn estimates_prompt_and_output_tokens_from_serialized_context() {
             "required": ["text"],
             "additionalProperties": false
         }),
+        freeform_argument: None,
     };
     let context = Context {
         system_prompt: Some("sys".into()),
@@ -559,6 +560,7 @@ async fn estimates_prompt_and_output_tokens_from_serialized_context() {
                     "required": ["text"],
                     "additionalProperties": false
                 }),
+                freeform_argument: None,
             }])
             .unwrap()
         ),

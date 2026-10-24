@@ -99,6 +99,11 @@ pub struct ToolDefinition {
     /// Scheduling constraints; `None` means unconstrained.
     pub execution_mode: Option<ExecutionMode>,
     pub prepare_arguments: Option<PrepareArgumentsFn>,
+    /// The one string argument that carries the tool's whole free-text payload (`code` for
+    /// `python_repl`). Providers with a raw-text tool form (the `OpenAI` Responses custom tools)
+    /// send the tool that way and hand the raw input back as `{<argument>: input}`, so execution
+    /// sees the same arguments either way. `None` keeps the JSON-schema form on every provider.
+    pub freeform_argument: Option<String>,
     /// Executes the tool. The error message is the model-facing error text.
     pub execute: ExecuteFn,
 }
@@ -113,13 +118,14 @@ impl ToolDefinition {
         }
     }
 
-    /// The wire `Tool` sent to providers (name, description, parameters).
+    /// The wire `Tool` sent to providers (name, description, parameters, free-text argument).
     #[must_use]
     pub fn to_tool(&self) -> Tool {
         Tool {
             name: self.name.clone(),
             description: self.description.clone(),
             parameters: self.parameters.clone(),
+            freeform_argument: self.freeform_argument.clone(),
         }
     }
 }
@@ -179,6 +185,7 @@ pub fn tool_definition_from_wrapped(tool: &WrappedTool) -> ToolDefinition {
         parameters: tool.parameters.clone(),
         execution_mode: None,
         prepare_arguments: tool.prepare_arguments,
+        freeform_argument: None,
         execute: tool.execute.clone(),
     }
 }

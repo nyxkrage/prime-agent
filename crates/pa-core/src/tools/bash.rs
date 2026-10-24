@@ -543,6 +543,7 @@ pub fn create_bash_tool_definition_with_options(
         parameters: bash_tool_schema(),
         execution_mode: None,
         prepare_arguments: None,
+        freeform_argument: None,
         execute,
     }
 }

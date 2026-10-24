@@ -329,6 +329,8 @@ struct CounterValues {
     rlm_child_cache_read_tokens: u64,
     rlm_child_cache_write_tokens: u64,
     rlm_child_cost: f64,
+    /// Model requests that offered a freeform (raw-text custom) tool.
+    freeform_tools_request_count: u64,
     /// `feature_<name>_<outcome>_count` over the fixed feature vocabulary.
     feature_outcomes: std::collections::BTreeMap<String, u64>,
 }
@@ -375,6 +377,12 @@ impl SessionCounters {
         });
     }
 
+    /// One model request went out with freeform tools enabled (the setting resolved on for the
+    /// request's provider and a free-text tool was offered); no tool content is recorded.
+    pub fn note_freeform_tools_request(&self) {
+        self.with(|values| values.freeform_tools_request_count += 1);
+    }
+
     fn write_into(&self, properties: &mut Properties) {
         self.with(|values| {
             for (key, value) in [
@@ -400,6 +408,10 @@ impl SessionCounters {
                 (
                     "rlm_child_cache_write_tokens",
                     values.rlm_child_cache_write_tokens,
+                ),
+                (
+                    "freeform_tools_request_count",
+                    values.freeform_tools_request_count,
                 ),
             ] {
                 properties.set(key, Value::from(value));

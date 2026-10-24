@@ -19,6 +19,7 @@ fn echo_definition() -> ToolDefinition {
         }),
         execution_mode: Some(ExecutionMode::Sequential),
         prepare_arguments: None,
+        freeform_argument: None,
         execute: Arc::new(|_id, params, _signal, _on_update| {
             let text = params
                 .get("text")
@@ -783,6 +784,7 @@ async fn late_receipts_recorded_before_the_row_lands_apply_on_landing() {
         parameters: serde_json::json!({ "type": "object", "properties": {} }),
         execution_mode: Some(ExecutionMode::Sequential),
         prepare_arguments: None,
+        freeform_argument: None,
         execute: Arc::new(move |tool_call_id, _params, _signal, _on_update| {
             let slot = Arc::clone(&slot);
             let receipt = receipt.clone();

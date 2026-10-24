@@ -100,6 +100,15 @@ pub struct ToolDefinition {
     pub name: String,
     pub description: String,
     pub parameters: serde_json::Value,
+    /// The string argument carrying the tool's whole free-text payload (see
+    /// [`crate::types::AgentTool::freeform_argument`]); providers with a
+    /// raw-text tool form may send the tool that way.
+    #[serde(
+        rename = "freeformArgument",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub freeform_argument: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

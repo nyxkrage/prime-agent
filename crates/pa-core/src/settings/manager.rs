@@ -863,6 +863,12 @@ impl SettingsManager {
         self.merged.request_timing.unwrap_or(false)
     }
 
+    /// `freeformTools`, merged across scopes (unset resolves to the built-in defaults).
+    #[must_use]
+    pub fn get_freeform_tools(&self) -> super::types::FreeformToolsSettings {
+        self.merged.freeform_tools.clone().unwrap_or_default()
+    }
+
     #[must_use]
     pub fn get_session_dir(&self) -> Option<std::path::PathBuf> {
         let session_dir = self.merged.session_dir.as_ref()?;
