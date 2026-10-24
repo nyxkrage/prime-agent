@@ -59,6 +59,9 @@ pub struct CompactOptions<'a> {
     /// request id, and the compaction's terminal event lands before the
     /// compaction entry persists. `None` records nothing.
     pub semantic_edges: Option<std::sync::Arc<super::semantic_edges::SemanticEdgeRecorder>>,
+    /// The owning session's id (TS `_performCompaction` passes `this.sessionId`): every
+    /// summary call routes and caches under it like the session's own turns.
+    pub session_id: Option<String>,
 }
 
 /// The model-visible message produced by a session entry (summarizer input).
@@ -242,6 +245,7 @@ async fn summary_call_with_retry(
     summary_headers: Option<std::collections::BTreeMap<String, String>>,
     model: &pa_types::ai::Model,
     api_key: Option<String>,
+    session_id: Option<&str>,
     max_tokens: u64,
     mut request: Vec<AgentMessage>,
     on_delta: Option<SummaryDeltaSink>,
@@ -253,6 +257,7 @@ async fn summary_call_with_retry(
                 model,
                 api_key.clone(),
                 headers,
+                session_id,
                 max_tokens,
                 request.clone(),
                 on_delta.clone(),
@@ -276,7 +281,9 @@ async fn summary_call_with_retry(
         }
     }
     let retry = super::semantic_edges::summary_slice_call(compaction, summary_headers, |headers| {
-        complete_summary_call(model, api_key, headers, max_tokens, request, None, failure)
+        complete_summary_call(
+            model, api_key, headers, session_id, max_tokens, request, None, failure,
+        )
     })
     .await?;
     // Both attempts are wire calls, so both bill: the slice's usage is their sum.
@@ -395,6 +402,7 @@ pub(crate) async fn summarize_attempt(
             summary_headers.clone(),
             &model,
             api_key.clone(),
+            options.session_id.as_deref(),
             history_max_tokens,
             request,
             options.summary_delta.clone(),
@@ -418,6 +426,7 @@ pub(crate) async fn summarize_attempt(
             summary_headers.clone(),
             &model,
             api_key.clone(),
+            options.session_id.as_deref(),
             turn_prefix_max_tokens,
             request,
             None,

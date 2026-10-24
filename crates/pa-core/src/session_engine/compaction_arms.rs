@@ -189,6 +189,7 @@ impl AgentSession {
             auxiliary: self.auxiliary_model.as_ref(),
             summary_delta,
             semantic_edges: self.semantic_edges(),
+            session_id: self.agent.session_id().map(str::to_string),
         };
         // The flight spans the attempts, the rebuilt-context replace, and
         // the kernel-state notice: every path here REPLACES the live loop
@@ -279,6 +280,7 @@ impl AgentSession {
                 auxiliary: options.auxiliary,
                 summary_delta: options.summary_delta.clone(),
                 semantic_edges: options.semantic_edges.clone(),
+                session_id: options.session_id.clone(),
             };
             let mut prepared = crate::session_engine::compact_session::summarize_attempt(
                 &attempt,
@@ -401,7 +403,7 @@ impl AgentSession {
             options,
             source,
             model,
-            refine::default_refiner_call(api_key),
+            refine::default_refiner_call(api_key, self.agent.session_id().map(str::to_string)),
             global_harness_dir,
         )
         .await

@@ -127,7 +127,8 @@ pub fn build_turn_prefix_request(messages: &[AgentMessage]) -> Vec<AgentMessage>
 pub type SummaryDeltaSink = std::sync::Arc<dyn Fn(&str) + Send + Sync>;
 
 /// Run one summarizer wire call through `pa_ai::complete_simple`: `headers`
-/// are the routed model's merged request headers; `on_delta` is the live sink
+/// are the routed model's merged request headers; `session_id` is the owning
+/// session's id the call routes under; `on_delta` is the live sink
 /// ([`SummaryDeltaSink`]); `failure` labels the unusable-reply bails. Only a
 /// reply with non-empty text is a usable summary — anything less would be
 /// committed as the compaction row and replace the transcript. A reply
@@ -139,10 +140,12 @@ pub type SummaryDeltaSink = std::sync::Arc<dyn Fn(&str) + Send + Sync>;
 /// Returns an error when the summarizer wire call fails, when its reply
 /// stops with an error, a tool call, or an abort, or when its joined text
 /// is empty (all labeled with `failure`).
+#[allow(clippy::too_many_arguments)] // the request parts plus the summarizer's own controls
 pub async fn complete_summary_call(
     model: &pa_types::ai::Model,
     api_key: Option<String>,
     headers: Option<std::collections::BTreeMap<String, String>>,
+    session_id: Option<&str>,
     max_tokens: u64,
     request_messages: Vec<AgentMessage>,
     on_delta: Option<SummaryDeltaSink>,
@@ -171,6 +174,7 @@ pub async fn complete_summary_call(
             max_tokens: Some(max_tokens),
             api_key,
             headers: headers.map(|headers| headers.into_iter().collect()),
+            session_id: session_id.map(str::to_string),
             ..Default::default()
         });
     stream_options.reasoning = pa_types::ai::minimum_reasoning(model);

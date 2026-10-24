@@ -99,6 +99,7 @@ async fn summary_respects_mandatory_thinking() {
         &model,
         Some("synthetic-key".into()),
         None,
+        /*session_id*/ None,
         512,
         Vec::new(),
         None,
@@ -126,6 +127,7 @@ async fn dropped_summary_closes_hung_transport() {
                 &model,
                 Some("synthetic-key".into()),
                 None,
+                /*session_id*/ None,
                 512,
                 Vec::new(),
                 on_delta,
@@ -169,6 +171,7 @@ async fn summary_preserves_unspecified_reasoning_when_off_is_supported() {
             &model,
             Some("synthetic-key".into()),
             None,
+            /*session_id*/ None,
             512,
             Vec::new(),
             None,
@@ -206,6 +209,7 @@ async fn branch_summary_respects_mandatory_thinking() {
             replace_instructions: false,
             reserve_tokens: DEFAULT_BRANCH_RESERVE_TOKENS,
             auxiliary: None,
+            session_id: None,
         },
     )
     .await;
@@ -222,10 +226,13 @@ async fn branch_summary_respects_mandatory_thinking() {
 #[tokio::test]
 async fn refiner_call_respects_mandatory_thinking() {
     let (model, request, server) = mock_summary(Reply::Complete).await;
-    let reply =
-        default_refiner_call(Some("synthetic-key".into()))(model, "system", "prompt".into())
-            .await
-            .unwrap();
+    let reply = default_refiner_call(Some("synthetic-key".into()), /*session_id*/ None)(
+        model,
+        "system",
+        "prompt".into(),
+    )
+    .await
+    .unwrap();
     assert!(matches!(
         reply.content.as_slice(),
         [pa_types::ai::AssistantContentBlock::Text(text)] if text.text == "summary"

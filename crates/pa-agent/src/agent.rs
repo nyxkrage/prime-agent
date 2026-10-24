@@ -843,6 +843,14 @@ impl Agent {
             .retain(|(listener_id, _)| *listener_id != id);
     }
 
+    /// The session id every loop request carries (TS `agent.sessionId`): the
+    /// provider cache key and routing affinity. Calls the session makes outside
+    /// the loop (summaries, refinement, side questions) route under it too.
+    #[must_use]
+    pub fn session_id(&self) -> Option<&str> {
+        self.inner.session_id.as_deref()
+    }
+
     pub async fn state(&self) -> AgentStateSnapshot {
         let shared = self.inner.shared.lock().await;
         AgentStateSnapshot {

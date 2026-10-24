@@ -536,7 +536,7 @@ impl AgentSession {
                 reason: AUTO_REFINE_COMPACT_REASON.to_string(),
                 turns_since_last_review,
             },
-            default_refiner_call(api_key.clone()),
+            default_refiner_call(api_key.clone(), self.agent.session_id().map(str::to_string)),
         )
         .await?;
         if !review.should_refine {
@@ -610,11 +610,15 @@ impl AgentSession {
     }
 }
 
-/// The default model seam over pa-ai completion.
+/// The default model seam over pa-ai completion. `session_id` is the owning
+/// session's id (TS `refineHarness`/`reviewAutoRefine` take `sessionId`): the
+/// refiner calls route and cache under it like the session's own turns.
 #[must_use]
-pub fn default_refiner_call(api_key: Option<String>) -> crate::refinement::executor::RefinerFn {
+pub fn default_refiner_call(
+    api_key: Option<String>,
+    session_id: Option<String>,
+) -> crate::refinement::executor::RefinerFn {
     Box::new(move |model, system_prompt, prompt| {
-        let api_key = api_key;
         Box::pin(async move {
             let context = pa_types::ai::Context {
                 system_prompt: Some(system_prompt.to_string()),
@@ -628,6 +632,7 @@ pub fn default_refiner_call(api_key: Option<String>) -> crate::refinement::execu
             let mut stream_options =
                 pa_ai::types::SimpleStreamOptions::from_base(pa_ai::types::StreamOptions {
                     api_key,
+                    session_id,
                     ..Default::default()
                 });
             stream_options.reasoning = pa_types::ai::minimum_reasoning(&model);

@@ -193,6 +193,9 @@ pub async fn run_side_question(
         stream_fn: Some(stream_fn),
         before_tool_call: Some(before_tool_call),
         should_stop_after_turn: Some(should_stop_after_turn),
+        // TS `side-question.ts` runs under `parent.sessionId`: the side call shares the
+        // parent's provider cache and routing.
+        session_id: parent.session_id().map(str::to_string),
         ..Default::default()
     }));
 

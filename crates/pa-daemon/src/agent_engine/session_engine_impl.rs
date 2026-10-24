@@ -738,6 +738,14 @@ impl SessionEngine for AgentSessionEngine {
             cwd: self.cwd(),
             agent_dir: self.config.agent_dir.clone(),
         };
+        // TS `navigateTree` passes `this.sessionId`: the summary routes under the
+        // owning session's durable id, the one its turns carry.
+        let session_id = self
+            .semantic_identity
+            .lock()
+            .expect("semantic identity lock")
+            .as_ref()
+            .map(|identity| identity.session_id.clone());
         let run = async {
             pa_core::session_engine::branch_summarization::generate_branch_summary(
                 &entries,
@@ -748,6 +756,7 @@ impl SessionEngine for AgentSessionEngine {
                     replace_instructions,
                     reserve_tokens,
                     auxiliary: Some(&auxiliary),
+                    session_id: session_id.as_deref(),
                 },
             )
             .await

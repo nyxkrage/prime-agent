@@ -514,7 +514,6 @@ fn base_settings() -> Value {
 }
 
 #[test]
-#[ignore = "red until session-id plumbing lands (next commit)"]
 fn every_maintenance_call_routes_under_the_owning_session() {
     for provider in PROVIDERS {
         let mut harness = Harness::start(provider, &base_settings());
@@ -585,7 +584,6 @@ fn every_maintenance_call_routes_under_the_owning_session() {
 }
 
 #[test]
-#[ignore = "red until session-id plumbing lands (next commit)"]
 fn automatic_compaction_and_the_auto_refine_review_route_under_the_owning_session() {
     let settings = json!({
         // A tiny reserve: the crossing usage below fires the threshold compaction.
@@ -631,7 +629,6 @@ fn automatic_compaction_and_the_auto_refine_review_route_under_the_owning_sessio
 }
 
 #[test]
-#[ignore = "red until session-id plumbing lands (next commit)"]
 fn resume_keeps_and_replacement_changes_the_routing_identity() {
     for provider in PROVIDERS {
         let mut harness = Harness::start(provider, &base_settings());

@@ -300,6 +300,9 @@ pub struct GenerateBranchSummaryOptions<'a> {
     /// When present, the summary call resolves its model through the
     /// `auxiliaryModel` setting with a context-window fit check.
     pub auxiliary: Option<&'a super::auxiliary_model::AuxiliaryModelContext>,
+    /// The owning session's id (TS `GenerateBranchSummaryOptions.sessionId`): the
+    /// summary call routes and caches under it like the session's own turns.
+    pub session_id: Option<&'a str>,
 }
 
 /// The default reserve budget.
@@ -357,6 +360,7 @@ pub async fn generate_branch_summary(
         replace_instructions,
         reserve_tokens,
         auxiliary,
+        session_id,
     } = options;
     // The branch summary runs with its own prompt prefix, so on the session model it
     // re-reads the whole branch — route it to the auxiliary model when its known window fits.
@@ -457,6 +461,7 @@ pub async fn generate_branch_summary(
             max_tokens: Some(BRANCH_SUMMARY_MAX_TOKENS),
             api_key,
             headers: summary_headers.map(|headers| headers.into_iter().collect()),
+            session_id: session_id.map(str::to_string),
             ..Default::default()
         });
     stream_options.reasoning = pa_types::ai::minimum_reasoning(model);
@@ -698,6 +703,7 @@ mod tests {
                 replace_instructions: false,
                 reserve_tokens: DEFAULT_BRANCH_RESERVE_TOKENS,
                 auxiliary: None,
+                session_id: None,
             },
         )
         .await;
@@ -730,6 +736,7 @@ mod tests {
                 replace_instructions: false,
                 reserve_tokens: DEFAULT_BRANCH_RESERVE_TOKENS,
                 auxiliary: None,
+                session_id: None,
             },
         )
         .await;
@@ -793,6 +800,7 @@ mod tests {
                     replace_instructions: false,
                     reserve_tokens: DEFAULT_BRANCH_RESERVE_TOKENS,
                     auxiliary: Some(&aux),
+                    session_id: None,
                 },
             )
             .await;

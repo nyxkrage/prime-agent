@@ -687,6 +687,14 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         stream_fn,
     );
     let side_question_stream_fn = std::sync::Arc::clone(&timing_stream_fn);
+    // TS `sdk.ts` binds `sessionId: sessionManager.getSessionId()` on the Agent: every
+    // request the session makes routes and caches under its durable id. The semantic
+    // identity carries that id in every embedding (a daemon worker's engine manager is
+    // in-memory, with a per-build id); a session built without one stays sessionless.
+    let session_id = config
+        .semantic_edges
+        .as_ref()
+        .map(|identity| identity.session_id.clone());
     let semantic_recorder = config.semantic_edges.take().map(|identity| {
         std::sync::Arc::new(super::semantic_edges::SemanticEdgeRecorder::open(identity))
     });
@@ -738,6 +746,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         should_stop_before_turn: config.queued_steering_probe.clone(),
         steering_mode: config.steering_mode,
         follow_up_mode: config.follow_up_mode,
+        session_id,
         ..Default::default()
     });
 
