@@ -446,7 +446,12 @@ const PLAIN_CELLS: [&str; 12] = [
 /// The expanded card rows as `[[text, style], ...]` per row, the shape the
 /// golden corpus records (styles in their `Debug` form).
 fn plain_cell_rows(code: &str) -> Value {
-    let card = cell_card(code, json!({ "status": "ok", "durationMs": 1 }), false, false);
+    let card = cell_card(
+        code,
+        json!({ "status": "ok", "durationMs": 1 }),
+        false,
+        false,
+    );
     let rows: Vec<Value> = [100, 24]
         .into_iter()
         .flat_map(|width| render(&card, 0, Detail::All, &theme(), width, true))
@@ -459,4 +464,31 @@ fn plain_cell_rows(code: &str) -> Value {
         })
         .collect();
     Value::Array(rows)
+}
+
+/// The geometry pass skips the `apply_patch` literal parse (colours never
+/// change widths): painted and counted rows agree at every width, the
+/// narrow ones wrapping the patch rows.
+#[test]
+fn patch_cells_paint_the_rows_they_count() {
+    let code = "await apply_patch('''*** Begin Patch\n*** Update File: src/some/longer/path.py\n@@ def main():\n-    print(\"hi there\")\n+    print(\"hello there\")\n*** End Patch''')";
+    let card = cell_card(
+        code,
+        json!({ "status": "ok", "durationMs": 1 }),
+        false,
+        false,
+    );
+    for width in [12, 24, 100] {
+        let rows = render(&card, 0, Detail::All, &theme(), width, true);
+        assert_eq!(
+            rows.len(),
+            count(&card, 0, Detail::All, &theme(), width, true),
+            "width {width}"
+        );
+        assert!(
+            rows.iter()
+                .all(|row| crate::width::str_width(&text_of(row)) <= width),
+            "width {width}: {rows:?}"
+        );
+    }
 }
