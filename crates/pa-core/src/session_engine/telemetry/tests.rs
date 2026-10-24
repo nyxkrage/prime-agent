@@ -536,6 +536,46 @@ async fn session_counters_ride_session_ended() {
     assert_eq!(ended["kernel_bootstrap_failed_count"], serde_json::json!(1));
     assert_eq!(ended["kernel_bootstrap_max_ms"], serde_json::json!(1_200));
     assert_eq!(ended["feature_goal_completed_count"], serde_json::json!(1));
+    // No apply_patch activity: no apply_patch keys on the event.
+    assert!(ended.keys().all(|key| !key.starts_with("apply_patch_")));
+}
+
+/// `apply_patch` reports fold into `agent session ended`: successful calls
+/// with their file/hunk totals, failures by reason, unknown reasons dropped.
+#[tokio::test]
+async fn apply_patch_reports_ride_session_ended() {
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    for report in [
+        serde_json::json!({ "files": 2, "hunks": 3, "failure": null }),
+        serde_json::json!({ "files": 1, "hunks": 1, "failure": null }),
+        serde_json::json!({ "files": 0, "hunks": 0, "failure": "context_not_found" }),
+        serde_json::json!({ "files": 0, "hunks": 0, "failure": "not-a-reason" }),
+    ] {
+        counters.note_apply_patch(&report);
+    }
+    telemetry.end().await.unwrap();
+    let ended = &event_properties(&fixture.mock, "agent session ended").await[0];
+    let apply_patch: serde_json::Map<String, serde_json::Value> = ended
+        .iter()
+        .filter(|(key, _)| key.starts_with("apply_patch_"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    assert_eq!(
+        serde_json::Value::Object(apply_patch),
+        serde_json::json!({
+            "apply_patch_call_count": 2,
+            "apply_patch_file_count": 3,
+            "apply_patch_hunk_count": 4,
+            "apply_patch_failure_context_not_found_count": 1,
+        })
+    );
 }
 
 /// `build_client` reuses the installation id a TS install wrote to

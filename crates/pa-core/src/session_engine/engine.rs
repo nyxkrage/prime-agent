@@ -273,6 +273,9 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // Captured before `settings` moves into the resource loader: the
     // per-cell watchdog budget (default 60s, `0` disables).
     let python_cell_timeout_ms = settings.get_python_cell_timeout_ms();
+    // Captured before `settings` moves into the resource loader: the
+    // `applyPatch` switch over the model's edit format.
+    let apply_patch_setting = settings.get_apply_patch();
     let (mcp_skill_overrides, mcp_generic_servers, built_manager) =
         mcp_gating(&settings, config.agent_dir.clone()).await?;
     let mcp_manager = config
@@ -322,6 +325,13 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         },
     };
     let model_context_window = model.context_window;
+    // The one edit-format decision for this session: the static prompt's
+    // edit guidance and the `apply-patch` kernel skill binding both follow it.
+    let edit_format = crate::models::resolve_edit_format(
+        apply_patch_setting,
+        &model_info.id,
+        config.model_info.as_ref().and_then(|full| full.edit_format),
+    );
 
     let session_id = wiring.session.lock().await.get_session_id().to_string();
     let mut handlers = wiring.handlers.clone();
@@ -466,8 +476,22 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // the in-process bash notices are in): a controller-backed bundled
     // skill whose host request never registered drops out (TS
     // `_modelVisibleSkills`).
-    let model_visible_skills =
-        super::runtime_wiring::model_visible_skills(resources.skills.clone(), &handlers);
+    // The `apply_patch` skill reports its adoption counters here; registered
+    // only when the skill is bound.
+    if edit_format == pa_types::ai::EditFormat::ApplyPatch {
+        let counters = std::sync::Arc::clone(&session_counters);
+        handlers.register(
+            super::runtime_wiring::APPLY_PATCH_REPORT_REQUEST,
+            crate::kernel::shared::host_handler(move |payload| {
+                counters.note_apply_patch(&payload.data);
+                std::future::ready(Ok(serde_json::json!({})))
+            }),
+        );
+    }
+    let model_visible_skills = super::runtime_wiring::skills_for_edit_format(
+        super::runtime_wiring::model_visible_skills(resources.skills.clone(), &handlers),
+        edit_format,
+    );
     let python_skills = super::runtime_wiring::kernel_python_skills(&model_visible_skills);
     // TS resolves the serper credential on the host: `!command` key refs
     // cannot run in-kernel (the websearch skill's auth.json fallback reads
@@ -576,6 +600,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         &crate::prompts::system_prompt::BuildSystemPromptOptions {
             custom_prompt: resources.system_prompt.clone(),
             model_prompt_extras: model_prompts.extras.as_deref(),
+            edit_format,
             vision_capable: prompt_vision_capable,
             cwd: cwd.display().to_string(),
             messages_path: conversation_log.clone(),

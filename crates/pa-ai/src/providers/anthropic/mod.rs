@@ -603,6 +603,7 @@ mod subscription_identity_tests {
             context_window: 200_000,
             max_tokens: 32_000,
             max_tokens_explicit: false,
+            edit_format: None,
             featured: None,
             headers: None,
             compat: None,

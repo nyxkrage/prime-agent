@@ -69,6 +69,9 @@ pub struct BuildSystemPromptOptions<'a> {
     /// still applies.
     pub custom_prompt: Option<String>,
     pub model_prompt_extras: Option<&'a str>,
+    /// The model's resolved edit format ([`crate::models::resolve_edit_format`]);
+    /// selects the static layers' edit guidance, so it is a static input.
+    pub edit_format: pa_types::ai::EditFormat,
     /// Whether the resolved model accepts image input, when known.
     pub vision_capable: Option<bool>,
     /// Active tools. Tool schemas carry tool descriptions outside the prompt.
@@ -119,15 +122,31 @@ pub fn system_prompt_breakdown(options: &BuildSystemPromptOptions) -> SystemProm
             ));
         }
         _ => {
+            // `prime-agent prompt` shows the chosen edit-guidance variant in
+            // the core/usage provenance.
+            let (core_source, usage_source) = match options.edit_format {
+                pa_types::ai::EditFormat::Edit => (
+                    layers::layer_source("core").unwrap_or_default(),
+                    layers::layer_source("usage").unwrap_or_default(),
+                ),
+                pa_types::ai::EditFormat::ApplyPatch => (
+                    "prompts/layers/core.md + apply-patch-core.md",
+                    "prompts/layers/usage.md + apply-patch-usage.md",
+                ),
+            };
             segments.push(PromptSegment::static_segment(
                 "core",
-                layers::layer_source("core").unwrap_or_default(),
-                layers::CORE_LAYER.trim().to_string(),
+                core_source,
+                layers::layer_for_edit_format(layers::CORE_LAYER, options.edit_format)
+                    .trim()
+                    .to_string(),
             ));
             segments.push(PromptSegment::static_segment(
                 "usage",
-                layers::layer_source("usage").unwrap_or_default(),
-                layers::USAGE_LAYER.trim().to_string(),
+                usage_source,
+                layers::layer_for_edit_format(layers::USAGE_LAYER, options.edit_format)
+                    .trim()
+                    .to_string(),
             ));
             segments.push(PromptSegment::static_segment(
                 "opinionated",
@@ -530,6 +549,37 @@ mod tests {
         let mut bare = base_options();
         bare.daemonless = true;
         assert!(!build_system_prompt(&bare).contains("completions do not wake you"));
+    }
+
+    /// The `apply_patch` edit format swaps the core/usage edit guidance in the
+    /// static prefix and names the variant in the provenance; everything else
+    /// (the opinionated layer, the whole dynamic tail) is unchanged.
+    #[test]
+    fn the_apply_patch_edit_format_swaps_only_the_edit_guidance() {
+        let edit = system_prompt_breakdown(&base_options());
+        let mut options = base_options();
+        options.edit_format = pa_types::ai::EditFormat::ApplyPatch;
+        let apply_patch = system_prompt_breakdown(&options);
+        let sources = |breakdown: &SystemPromptBreakdown| {
+            breakdown
+                .segments
+                .iter()
+                .map(|segment| (segment.name, segment.source))
+                .collect::<Vec<_>>()
+        };
+        let mut expected_sources = sources(&edit);
+        expected_sources[0].1 = "prompts/layers/core.md + apply-patch-core.md";
+        expected_sources[1].1 = "prompts/layers/usage.md + apply-patch-usage.md";
+        assert_eq!(sources(&apply_patch), expected_sources);
+        assert!(apply_patch.segments[0]
+            .text
+            .contains("`apply_patch(patch: str)"));
+        assert!(apply_patch.segments[1].text.contains("using `apply_patch`"));
+        assert_eq!(
+            apply_patch.assembled[apply_patch.cached_prefix_len..],
+            edit.assembled[edit.cached_prefix_len..]
+        );
+        assert_eq!(apply_patch.segments[2..], edit.segments[2..]);
     }
 
     #[test]

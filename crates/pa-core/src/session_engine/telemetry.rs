@@ -331,6 +331,9 @@ struct CounterValues {
     rlm_child_cost: f64,
     /// `feature_<name>_<outcome>_count` over the fixed feature vocabulary.
     feature_outcomes: std::collections::BTreeMap<String, u64>,
+    /// `apply_patch_*_count` adoption counters; empty (and so absent from
+    /// the event) until the session's kernel reports an `apply_patch` call.
+    apply_patch_counts: std::collections::BTreeMap<String, u64>,
 }
 
 impl SessionCounters {
@@ -375,6 +378,32 @@ impl SessionCounters {
         });
     }
 
+    /// One `apply_patch` call, as the skill reports it over
+    /// [`crate::session_engine::runtime_wiring::APPLY_PATCH_REPORT_REQUEST`]:
+    /// `{"files": n, "hunks": n, "failure": reason | null}`. Counts only;
+    /// the report carries no paths or content.
+    pub fn note_apply_patch(&self, report: &Value) {
+        let files = report["files"].as_u64().unwrap_or(0);
+        let hunks = report["hunks"].as_u64().unwrap_or(0);
+        let increments = match report["failure"].as_str() {
+            // An out-of-vocabulary reason counts nothing.
+            Some(reason) => pa_telemetry::apply_patch_failure_key(reason)
+                .map(|key| (key, 1))
+                .into_iter()
+                .collect::<Vec<_>>(),
+            None => vec![
+                ("apply_patch_call_count".to_string(), 1),
+                ("apply_patch_file_count".to_string(), files),
+                ("apply_patch_hunk_count".to_string(), hunks),
+            ],
+        };
+        self.with(|values| {
+            for (key, increment) in increments {
+                *values.apply_patch_counts.entry(key).or_default() += increment;
+            }
+        });
+    }
+
     fn write_into(&self, properties: &mut Properties) {
         self.with(|values| {
             for (key, value) in [
@@ -407,7 +436,11 @@ impl SessionCounters {
             if values.rlm_child_usage_count > 0 {
                 properties.set("rlm_child_cost", Value::from(values.rlm_child_cost));
             }
-            for (key, count) in &values.feature_outcomes {
+            for (key, count) in values
+                .feature_outcomes
+                .iter()
+                .chain(&values.apply_patch_counts)
+            {
                 properties.set(key, Value::from(*count));
             }
         });

@@ -658,6 +658,12 @@ impl SettingsManager {
             .unwrap_or(crate::settings::types::DEFAULT_PYTHON_CELL_TIMEOUT_MS)
     }
 
+    /// The `applyPatch` switch over per-model edit formats (default `auto`).
+    #[must_use]
+    pub fn get_apply_patch(&self) -> crate::settings::types::ApplyPatchSetting {
+        self.merged.apply_patch.unwrap_or_default()
+    }
+
     /// The steering queue's delivery mode: `all` co-delivers every queued message at
     /// the next turn boundary; `one-at-a-time` delivers one per turn.
     #[must_use]
@@ -1253,6 +1259,22 @@ mod tests {
             ..Settings::default()
         });
         assert_eq!(manager.get_python_cell_timeout_ms(), 0);
+    }
+
+    #[test]
+    fn apply_patch_reads_setting_or_auto() {
+        use crate::settings::types::ApplyPatchSetting;
+        let manager = SettingsManager::in_memory(&Settings::default());
+        assert_eq!(manager.get_apply_patch(), ApplyPatchSetting::Auto);
+        let document = serde_json::json!({ "applyPatch": "off" });
+        let manager =
+            SettingsManager::in_memory(&crate::settings::load::from_value_lenient(&document));
+        assert_eq!(manager.get_apply_patch(), ApplyPatchSetting::Off);
+        // An out-of-vocabulary value loads as unset (lenient load), so `auto`.
+        let document = serde_json::json!({ "applyPatch": false });
+        let manager =
+            SettingsManager::in_memory(&crate::settings::load::from_value_lenient(&document));
+        assert_eq!(manager.get_apply_patch(), ApplyPatchSetting::Auto);
     }
 
     #[test]

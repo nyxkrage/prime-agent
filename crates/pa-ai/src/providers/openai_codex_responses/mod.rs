@@ -880,6 +880,7 @@ mod tests {
             context_window: 400_000,
             max_tokens: 128_000,
             max_tokens_explicit: false,
+            edit_format: None,
             featured: None,
             headers: None,
             compat: None,

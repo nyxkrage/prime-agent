@@ -23,6 +23,7 @@ fn tier_model(provider: &str, api: &str, id: &str) -> Model {
         context_window: 0,
         max_tokens: 0,
         max_tokens_explicit: false,
+        edit_format: None,
         featured: None,
         headers: None,
         compat: None,
@@ -186,4 +187,18 @@ fn user_content_text_helper() {
     )
     .unwrap();
     assert_eq!(content.text(), "a b c");
+}
+
+/// An unset `editFormat` stays off the wire, so catalog JSON carrying `Model`
+/// is byte-identical to before the field existed; a set one round-trips.
+#[test]
+fn edit_format_serializes_only_when_set() {
+    let model = tier_model("openai", "openai-responses", "gpt-5.1");
+    let json = serde_json::to_value(&model).unwrap();
+    assert_eq!(json.get("editFormat"), None);
+    let mut configured = model;
+    configured.edit_format = Some(EditFormat::ApplyPatch);
+    let json = serde_json::to_value(&configured).unwrap();
+    assert_eq!(json["editFormat"], serde_json::json!("apply_patch"));
+    assert_eq!(serde_json::from_value::<Model>(json).unwrap(), configured);
 }

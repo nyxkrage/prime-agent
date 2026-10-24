@@ -116,6 +116,8 @@ pub struct ModelDefinition {
     pub max_tokens: Option<u64>,
     pub headers: Option<BTreeMap<String, String>>,
     pub compat: Option<serde_json::Value>,
+    /// `editFormat`: how the model edits files from the REPL.
+    pub edit_format: Option<pa_types::ai::EditFormat>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -130,6 +132,8 @@ pub struct ModelOverride {
     pub max_tokens: Option<u64>,
     pub headers: Option<BTreeMap<String, String>>,
     pub compat: Option<serde_json::Value>,
+    /// `editFormat`: how the model edits files from the REPL.
+    pub edit_format: Option<pa_types::ai::EditFormat>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -339,6 +343,9 @@ pub fn apply_model_override(model: &Model, over: &ModelOverride) -> Model {
         // the default output ceiling.
         result.max_tokens_explicit = true;
     }
+    if let Some(edit_format) = over.edit_format {
+        result.edit_format = Some(edit_format);
+    }
     if let Some(cost) = &over.cost {
         let base = &result.cost;
         result.cost = ModelCost {
@@ -448,6 +455,7 @@ pub fn load_custom_models(
                 // A configured `maxTokens` is explicit; the 16_384
                 // default is not, so a defaulted model stays capped.
                 max_tokens_explicit: model_def.max_tokens.is_some(),
+                edit_format: model_def.edit_format,
                 featured: None,
                 headers: None,
                 compat,
@@ -599,6 +607,46 @@ mod tests {
         // An override that does not touch maxTokens leaves the flag alone.
         let untouched = apply_model_override(&base, &ModelOverride::default());
         assert!(!untouched.max_tokens_explicit);
+    }
+
+    /// `editFormat` parses on custom model definitions and on per-model
+    /// overrides, and the override carries it onto the built-in model.
+    #[test]
+    fn edit_format_parses_on_definitions_and_overrides() {
+        let config = r#"{ "providers": {
+            "openai": { "modelOverrides": { "gpt-5.1-codex-mini": { "editFormat": "edit" } } },
+            "my-proxy": {
+                "baseUrl": "http://proxy.example.test/v1",
+                "api": "openai-responses",
+                "apiKey": "TEST_KEY",
+                "models": [ { "id": "gpt-6.1-sol", "editFormat": "apply_patch" }, { "id": "plain" } ]
+            }
+        } }"#;
+        let result = load_custom_models(config, &|_| false, &|_| None);
+        assert!(result.error.is_none());
+        let formats: Vec<(&str, Option<pa_types::ai::EditFormat>)> = result
+            .models
+            .iter()
+            .map(|model| (model.id.as_str(), model.edit_format))
+            .collect();
+        assert_eq!(
+            formats,
+            vec![
+                ("gpt-6.1-sol", Some(pa_types::ai::EditFormat::ApplyPatch)),
+                ("plain", None),
+            ]
+        );
+        let over = &result.model_overrides["openai"]["gpt-5.1-codex-mini"];
+        let base: Model = serde_json::from_value(serde_json::json!({
+            "id": "gpt-5.1-codex-mini", "name": "Codex mini", "api": "openai-responses",
+            "provider": "openai", "baseUrl": "https://x", "reasoning": true, "input": [],
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+            "contextWindow": 400_000, "maxTokens": 128_000
+        }))
+        .unwrap();
+        let mut expected = base.clone();
+        expected.edit_format = Some(pa_types::ai::EditFormat::Edit);
+        assert_eq!(apply_model_override(&base, over), expected);
     }
 
     #[test]

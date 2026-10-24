@@ -11,6 +11,17 @@ pub enum MermaidRenderingMode {
     Streaming,
 }
 
+/// `applyPatch`: the global switch over the per-model `editFormat`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ApplyPatchSetting {
+    /// Each model edits with its resolved `editFormat`.
+    #[default]
+    Auto,
+    /// Every model edits with `edit`; `apply_patch` is neither prompted nor bound.
+    Off,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum UpdateChannel {
@@ -341,6 +352,9 @@ pub struct Settings {
     /// (default [`DEFAULT_PYTHON_CELL_TIMEOUT_MS`]; `0` disables). Daemonless
     /// sessions never arm it.
     pub python_cell_timeout_ms: Option<u64>,
+    /// `"auto" | "off"` (default `"auto"`): `"off"` makes every model edit
+    /// with `edit` regardless of its `editFormat` (Rust-only setting).
+    pub apply_patch: Option<ApplyPatchSetting>,
     pub autonomous: Option<AutonomousSettings>,
     /// Custom shell that runs every kernel `bash()` and user-bash command as
     /// `<shell> -c <command>`: an absolute path to an existing executable,

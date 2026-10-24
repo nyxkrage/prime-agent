@@ -913,6 +913,7 @@ pub fn register_faux_provider(options: RegisterFauxProviderOptions) -> FauxProvi
             context_window: definition.context_window.unwrap_or(128_000),
             max_tokens: definition.max_tokens.unwrap_or(16_384),
             max_tokens_explicit: false,
+            edit_format: None,
             featured: None,
             headers: None,
             compat: None,

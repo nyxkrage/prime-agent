@@ -57,7 +57,7 @@ pub fn run_prompt_command(args: &[String]) -> i32 {
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| std::path::PathBuf::from("."));
-    match assemble_breakdown(&cwd, parsed.model.as_deref()) {
+    match assemble_breakdown(&cwd, &get_agent_dir(), parsed.model.as_deref()) {
         Ok((breakdown, errors)) => {
             for error in &errors {
                 eprintln!("Error: {error}");
@@ -78,11 +78,11 @@ pub fn run_prompt_command(args: &[String]) -> i32 {
 
 fn assemble_breakdown(
     cwd: &std::path::Path,
+    agent_dir: &std::path::Path,
     model: Option<&str>,
 ) -> anyhow::Result<(pa_core::prompts::SystemPromptBreakdown, Vec<String>)> {
-    let agent_dir = get_agent_dir();
-    let model_prompts = pa_core::prompts::model_prompts::load_model_prompts(model, &agent_dir);
-    let settings = SettingsManager::create(cwd, &agent_dir);
+    let model_prompts = pa_core::prompts::model_prompts::load_model_prompts(model, agent_dir);
+    let settings = SettingsManager::create(cwd, agent_dir);
     // MCP gating: auth-gated built-in integrations drop their skills; enabled persistent generic
     // servers add the prompt MCP guidance.
     let user_servers = settings
@@ -98,11 +98,32 @@ fn assemble_breakdown(
         })
         .collect::<std::collections::HashMap<String, pa_core::mcp::McpServerConfig>>();
     let (skill_overrides, generic_servers, _manager) =
-        pa_core::mcp::McpManager::prompt_gating(user_servers, &agent_dir);
+        pa_core::mcp::McpManager::prompt_gating(user_servers, agent_dir);
+    // The session's edit-format decision for the selected model: its
+    // models.json `editFormat` when the registry knows it, else the ID default.
+    let edit_format = model.map_or(pa_types::ai::EditFormat::Edit, |selector| {
+        let registry = pa_core::models::ModelRegistry::create(
+            pa_core::auth::AuthStorage::create(agent_dir),
+            agent_dir.join("models.json"),
+        );
+        let known = registry.get_all().iter().find(|candidate| {
+            format!("{}/{}", candidate.provider, candidate.id) == selector
+                || candidate.id == selector
+        });
+        let model_id = known.map_or_else(
+            || selector.split_once('/').map_or(selector, |(_, id)| id),
+            |known| known.id.as_str(),
+        );
+        pa_core::models::resolve_edit_format(
+            settings.get_apply_patch(),
+            model_id,
+            known.and_then(|known| known.edit_format),
+        )
+    });
     let resources = load_resources(ResourceLoaderOptions {
         extra_builtin_skill_overrides: skill_overrides,
         system_prompt: None,
-        ..ResourceLoaderOptions::new(cwd.to_path_buf(), agent_dir)
+        ..ResourceLoaderOptions::new(cwd.to_path_buf(), agent_dir.to_path_buf())
     })?;
     let breakdown = pa_core::prompts::system_prompt::system_prompt_breakdown(
         &pa_core::prompts::BuildSystemPromptOptions {
@@ -115,7 +136,11 @@ fn assemble_breakdown(
                 .iter()
                 .map(|file| (file.path.display().to_string(), file.content.clone()))
                 .collect(),
-            skills: resources.skills.clone(),
+            skills: pa_core::session_engine::runtime_wiring::skills_for_edit_format(
+                resources.skills.clone(),
+                edit_format,
+            ),
+            edit_format,
             // The shipped model-tool surface: `python_repl` only; bash/edit are kernel-resident
             // programmatic tools.
             selected_tools: Some(vec![pa_types::ai::PYTHON_TOOL_NAME]),
@@ -218,10 +243,73 @@ mod tests {
         assert_eq!(run_prompt_command(&["--help".to_string()]), 0);
     }
 
+    /// GPT-5.1 gets the `apply_patch` guidance and skill; `gpt-5`, a
+    /// non-OpenAI model, and GPT-5.1 under `"applyPatch": "off"` get today's
+    /// prompt byte for byte; a models.json `editFormat` flips the default.
+    #[test]
+    fn the_edit_guidance_follows_the_resolved_edit_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent_dir = dir.path().join("agent");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        let prompt = |model: &str| {
+            let (breakdown, _errors) = assemble_breakdown(dir.path(), &agent_dir, Some(model))
+                .expect("the prompt assembles");
+            breakdown
+        };
+        let today = prompt("anthropic/claude-fable-5");
+        assert!(today.segments[0].text.contains("- `edit.run("));
+        let gpt_5_1 = prompt("openai-codex/gpt-5.1");
+        assert!(gpt_5_1.segments[0]
+            .text
+            .contains("- `apply_patch(patch: str)"));
+        assert_eq!(
+            gpt_5_1.segments[0].source,
+            "prompts/layers/core.md + apply-patch-core.md"
+        );
+        // The skills inventory follows the same decision as the guidance.
+        assert!(gpt_5_1.assembled[gpt_5_1.cached_prefix_len..].contains("<name>apply-patch</name>"));
+        assert!(!today.assembled.contains("<name>apply-patch</name>"));
+        assert_eq!(
+            prompt("openai-codex/gpt-5").assembled[..today.cached_prefix_len],
+            today.assembled[..today.cached_prefix_len]
+        );
+
+        std::fs::write(
+            agent_dir.join("models.json"),
+            r#"{ "providers": {
+                "openai-codex": { "modelOverrides": { "gpt-5.1": { "editFormat": "edit" } } },
+                "anthropic": { "modelOverrides": { "claude-fable-5": { "editFormat": "apply_patch" } } }
+            } }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            prompt("openai-codex/gpt-5.1").assembled[..today.cached_prefix_len],
+            today.assembled[..today.cached_prefix_len]
+        );
+        assert_eq!(
+            prompt("anthropic/claude-fable-5").segments[0].text,
+            gpt_5_1.segments[0].text
+        );
+
+        std::fs::remove_file(agent_dir.join("models.json")).unwrap();
+        std::fs::write(
+            agent_dir.join("settings.json"),
+            r#"{ "applyPatch": "off" }"#,
+        )
+        .unwrap();
+        let off = prompt("openai-codex/gpt-5.1");
+        assert_eq!(off.cached_prefix_len, today.cached_prefix_len);
+        assert_eq!(
+            off.assembled[..off.cached_prefix_len],
+            today.assembled[..today.cached_prefix_len]
+        );
+    }
+
     #[test]
     fn assembles_the_layered_prompt_for_a_directory() {
         let dir = tempfile::tempdir().unwrap();
-        let (breakdown, errors) = assemble_breakdown(dir.path(), Some("mock/mock-1")).unwrap();
+        let (breakdown, errors) =
+            assemble_breakdown(dir.path(), &dir.path().join("agent"), Some("mock/mock-1")).unwrap();
         assert!(errors.is_empty());
         assert!(breakdown.assembled.starts_with("# prime-agent harness"));
         assert!(breakdown

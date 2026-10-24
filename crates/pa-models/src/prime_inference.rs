@@ -517,6 +517,7 @@ pub fn build_prime_inference_models(
             // Catalog chain models (the live Prime Inference snapshot)
             // stay capped: only explicit configuration flips the flag.
             max_tokens_explicit: false,
+            edit_format: None,
             featured: template.and_then(|t| t.featured),
             headers: None,
             compat: Some(compat),
@@ -1007,6 +1008,7 @@ mod tests {
             context_window: 100_000,
             max_tokens: 10_000,
             max_tokens_explicit: false,
+            edit_format: None,
             featured: Some(true),
             headers: None,
             compat: Some(ModelCompat::from_kind(CompatKind::OpenAiCompletions(

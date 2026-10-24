@@ -15,12 +15,13 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use pa_core::prompts::layers::{CORE_LAYER, OPINIONATED_LAYER, USAGE_LAYER};
+use pa_core::prompts::layers::{layer_for_edit_format, CORE_LAYER, OPINIONATED_LAYER, USAGE_LAYER};
 use pa_core::prompts::model_prompts::MODEL_PROMPTS_TOML;
 use pa_core::prompts::system_prompt::{
     system_prompt_breakdown, BuildSystemPromptOptions, SegmentKind,
 };
 use pa_core::skills::load_skills_from_dir;
+use pa_types::ai::EditFormat;
 
 /// The workspace bundled skills directory (source-checkout layout):
 /// pa-core lives at `<root>/crates/pa-core`.
@@ -444,11 +445,11 @@ fn required_surface_tokens() -> BTreeSet<String> {
     required
 }
 
-/// Surface tokens documented in the core layer: bullet entries whose first
-/// backtick token is a lowercase module path.
-fn documented_surface_tokens() -> BTreeSet<String> {
+/// Surface tokens documented in a core layer variant: bullet entries whose
+/// first backtick token is a lowercase module path.
+fn documented_surface_tokens(core_layer: &str) -> BTreeSet<String> {
     let mut documented = BTreeSet::new();
-    for line in CORE_LAYER.lines() {
+    for line in core_layer.lines() {
         let Some(rest) = line.trim_start().strip_prefix("- `") else {
             continue;
         };
@@ -471,44 +472,58 @@ fn documented_surface_tokens() -> BTreeSet<String> {
     documented
 }
 
+/// The kernel import of the `apply-patch` skill, bound only in sessions whose edit format is
+/// `apply_patch` (so only that core-layer variant documents it).
+const APPLY_PATCH_IMPORT: &str = "apply_patch";
+
+/// Each core-layer variant documents exactly the surface its sessions bind: the `edit` variant
+/// everything but `apply_patch`, the `apply_patch` variant everything.
 #[test]
 fn core_layer_documents_the_real_tool_surface() {
-    let documented = documented_surface_tokens();
     let allowed = allowed_surface_tokens();
-    let required = required_surface_tokens();
+    for edit_format in [EditFormat::Edit, EditFormat::ApplyPatch] {
+        let documented = documented_surface_tokens(&layer_for_edit_format(CORE_LAYER, edit_format));
+        let required: BTreeSet<String> = match edit_format {
+            EditFormat::Edit => required_surface_tokens()
+                .into_iter()
+                .filter(|token| token.split('.').next() != Some(APPLY_PATCH_IMPORT))
+                .collect(),
+            EditFormat::ApplyPatch => required_surface_tokens(),
+        };
 
-    assert!(
-        !required.is_empty() && !documented.is_empty(),
-        "surface extraction produced nothing; the guard would be vacuous"
-    );
-
-    for token in &documented {
-        let root = token.split('.').next().expect("non-empty token");
-        let known = allowed.contains(token)
-            || allowed.contains(root)
-            || allowed
-                .iter()
-                .any(|candidate| candidate.starts_with(&format!("{root}.")));
         assert!(
-            known,
-            "prompt documents unknown tool {token:?}: a tool-surface change must \
-             update prompts/layers/core.md (and this test's token mapping)"
+            !required.is_empty() && !documented.is_empty(),
+            "surface extraction produced nothing; the guard would be vacuous"
         );
-    }
 
-    for token in &required {
-        let documented_form = documented.contains(token)
-            || documented
-                .iter()
-                .any(|entry| entry.starts_with(&format!("{token}.")))
-            || documented
-                .iter()
-                .any(|entry| entry.starts_with(token.as_str()) && entry.contains('.'));
-        assert!(
-            documented_form,
-            "tool {token:?} is on the registered surface but the prompt does not \
-             document it: update prompts/layers/core.md"
-        );
+        for token in &documented {
+            let root = token.split('.').next().expect("non-empty token");
+            let known = allowed.contains(token)
+                || allowed.contains(root)
+                || allowed
+                    .iter()
+                    .any(|candidate| candidate.starts_with(&format!("{root}.")));
+            assert!(
+                known,
+                "{edit_format:?} prompt documents unknown tool {token:?}: a tool-surface change \
+                 must update prompts/layers/core.md (and this test's token mapping)"
+            );
+        }
+
+        for token in &required {
+            let documented_form = documented.contains(token)
+                || documented
+                    .iter()
+                    .any(|entry| entry.starts_with(&format!("{token}.")))
+                || documented
+                    .iter()
+                    .any(|entry| entry.starts_with(token.as_str()) && entry.contains('.'));
+            assert!(
+                documented_form,
+                "tool {token:?} is on the registered surface but the {edit_format:?} prompt \
+                 does not document it: update prompts/layers/core.md"
+            );
+        }
     }
 }
 
@@ -532,13 +547,18 @@ const TS_PACKAGED_SKILL_SET: &[&str] = &[
     "websearch",
 ];
 
-/// The bundled skills directory matches the TS packaged set name-for-name: the generic `mcp` skill
-/// is present and markdown-only, and the retired per-service pair (linear/notion) is gone.
+/// Deliberate Rust-only bundled skills, absent from the TS packaged set: `apply-patch` (bound only
+/// for models whose edit format is `apply_patch`, so TS-equivalent sessions never see it).
+const RUST_ONLY_PACKAGED_SKILLS: &[&str] = &["apply-patch"];
+
+/// The bundled skills directory matches the TS packaged set name-for-name (plus the deliberate
+/// Rust-only skills): the generic `mcp` skill is present and markdown-only, and the retired
+/// per-service pair (linear/notion) is gone.
 #[test]
 fn bundled_skills_match_the_ts_packaged_set() {
     let skills = sorted_bundled_skills();
     let names: Vec<&str> = skills.iter().map(|skill| skill.name.as_str()).collect();
-    let mut expected = TS_PACKAGED_SKILL_SET.to_vec();
+    let mut expected = [TS_PACKAGED_SKILL_SET, RUST_ONLY_PACKAGED_SKILLS].concat();
     expected.sort_unstable();
     assert_eq!(
         names, expected,

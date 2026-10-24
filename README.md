@@ -173,3 +173,35 @@ For per-model early compaction, use the existing provider-scoped
 
 Use the actual model ID for your provider. This sets that model's effective context
 window; it does not change every model's global compaction percentage.
+
+### Edit format (`apply_patch`)
+
+Models trained on OpenAI's V4A patch format edit files from the Python REPL with
+`await apply_patch('''*** Begin Patch ... *** End Patch''')`. The whole patch is
+validated before any file is written, and every hunk is then applied through `edit`.
+Other models keep using `edit.run(path, old_str, new_str)`.
+
+The per-model `editFormat` option in `models.json` (`"edit"` or `"apply_patch"`) picks
+the format. It works on `modelOverrides` entries and custom `models[]` entries:
+
+```json
+{
+  "providers": {
+    "openai": {
+      "modelOverrides": {
+        "gpt-5.1-codex-mini": { "editFormat": "edit" }
+      }
+    },
+    "my-proxy": {
+      "models": [{ "id": "gpt-6.1-sol", "editFormat": "apply_patch" }]
+    }
+  }
+}
+```
+
+If `editFormat` is unset, GPT-5.1 and newer (`gpt-5.1`, `gpt-5.2`, `gpt-6-luna`, also
+behind a provider prefix such as `openai/gpt-5.1`) use `apply_patch` and every other
+model uses `edit`. Set `"applyPatch": "off"` in `settings.json` to make every model use
+`edit` (the default is `"auto"`). The format is chosen when the session starts.
+`prime-agent prompt --model <provider/id>` shows the chosen variant in the core and
+usage layer sources.

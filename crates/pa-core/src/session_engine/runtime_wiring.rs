@@ -217,6 +217,31 @@ pub fn model_visible_skills(skills: Vec<Skill>, handlers: &HostRequestHandlers) 
         .collect()
 }
 
+/// The bundled skill that binds `apply_patch` in the kernel.
+pub const APPLY_PATCH_SKILL_NAME: &str = "apply-patch";
+
+/// The host request the `apply_patch` skill reports its adoption counters
+/// over (`{"files", "hunks", "failure"}`; no paths or content).
+pub const APPLY_PATCH_REPORT_REQUEST: &str = "apply_patch.report";
+
+/// The skill list for a session's resolved edit format: the `apply-patch`
+/// skill stays only for [`EditFormat::ApplyPatch`]. The kernel bootstrap and
+/// the prompt's skills inventory both read the filtered list, so the prompt
+/// never lists a skill the kernel does not bind.
+#[must_use]
+pub fn skills_for_edit_format(
+    skills: Vec<Skill>,
+    edit_format: pa_types::ai::EditFormat,
+) -> Vec<Skill> {
+    match edit_format {
+        pa_types::ai::EditFormat::ApplyPatch => skills,
+        pa_types::ai::EditFormat::Edit => skills
+            .into_iter()
+            .filter(|skill| skill.name != APPLY_PATCH_SKILL_NAME)
+            .collect(),
+    }
+}
+
 /// Kernel-side Python skill modules, pre-imported at bootstrap.
 #[must_use]
 pub fn kernel_python_skills(skills: &[Skill]) -> Vec<KernelPythonSkill> {
@@ -566,6 +591,24 @@ mod tests {
             &handlers,
         );
         assert_eq!(visible.len(), 3);
+    }
+
+    #[test]
+    fn the_apply_patch_skill_follows_the_edit_format() {
+        let names = |edit_format| {
+            skills_for_edit_format(
+                vec![skill_named("edit"), skill_named(APPLY_PATCH_SKILL_NAME)],
+                edit_format,
+            )
+            .into_iter()
+            .map(|skill| skill.name)
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(names(pa_types::ai::EditFormat::Edit), ["edit"]);
+        assert_eq!(
+            names(pa_types::ai::EditFormat::ApplyPatch),
+            ["edit", APPLY_PATCH_SKILL_NAME]
+        );
     }
 
     #[test]
