@@ -199,9 +199,11 @@ the format. It works on `modelOverrides` entries and custom `models[]` entries:
 }
 ```
 
-If `editFormat` is unset, GPT-5.1 and newer (`gpt-5.1`, `gpt-5.2`, `gpt-6-luna`, also
-behind a provider prefix such as `openai/gpt-5.1`) use `apply_patch` and every other
-model uses `edit`. Set `"applyPatch": "off"` in `settings.json` to make every model use
+If `editFormat` is unset, GPT-5.1 and newer (`gpt-5.1`, `gpt-5.2`, `gpt-5.10`,
+`gpt-6-luna`) use `apply_patch` and every other model uses `edit`. The model name is
+read through provider spellings: a provider prefix (`openai/gpt-5.1`), a variant suffix
+(`openai/gpt-5.1:nitro`), a fine-tune (`ft:gpt-5.1:org::id`), or a dotted vendor prefix
+(`openai.gpt-5.1`). Set `"applyPatch": "off"` in `settings.json` to make every model use
 `edit` (the default is `"auto"`). The format is chosen when the session starts.
 `prime-agent prompt --model <provider/id>` shows the chosen variant in the core and
 usage layer sources.
