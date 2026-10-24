@@ -215,6 +215,17 @@ impl Worker {
                 return response_failure(None, "create", &format!("{error:#}"), None);
             }
         };
+        // A spawned child's `env=` overrides (literals and pass-through
+        // names), validated again here: the durable create is replayed
+        // from disk.
+        let kernel_env = match pa_core::kernel::KernelEnvOverrides::from_json(
+            payload.get("kernelEnv").unwrap_or(&Value::Null),
+        ) {
+            Ok(kernel_env) => kernel_env,
+            Err(error) => {
+                return response_failure(None, "create", &error.to_string(), None);
+            }
+        };
 
         // Set by the fresh-path arm when the name landed in its single rewrite:
         // the shared name persist must not append a second `session_info` line.
@@ -624,6 +635,7 @@ impl Worker {
             child_script: child_script.clone(),
             semantic_spawn,
             remote_kernel,
+            kernel_env,
         }) {
             return response_failure(None, "create", &error.to_string(), None);
         }

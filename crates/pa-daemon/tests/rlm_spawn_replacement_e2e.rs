@@ -227,7 +227,9 @@ fn children(socket: &Path, agent_dir: &Path, script: &Path) -> SupervisorChildSe
 }
 
 fn spawn_request(name: &str, prompt: &str) -> RlmSpawnRequest {
+    env: pa_core::kernel::KernelEnvOverrides::default(),
     RlmSpawnRequest {
+        env: pa_core::kernel::KernelEnvOverrides::default(),
         cwd: None,
         host: None,
         prompt: prompt.to_string(),

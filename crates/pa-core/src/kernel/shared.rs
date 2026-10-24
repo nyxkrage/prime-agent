@@ -390,6 +390,10 @@ pub struct KernelManagerOptions {
     pub stderr_log_path: Option<std::path::PathBuf>,
     /// Run the kernel on a remote host over SSH instead of locally.
     pub remote: Option<RemoteKernelTarget>,
+    /// The spawn's `rlm.spawn(env=...)` overrides, resolved at each kernel
+    /// start: set in the local kernel's process env, or sent to a remote
+    /// kernel over its stdin (never on the ssh command line).
+    pub env_overrides: crate::kernel::env_overrides::KernelEnvOverrides,
 }
 
 /// Shutdown options: whether to flush a final namespace snapshot and drain

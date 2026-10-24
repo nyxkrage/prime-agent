@@ -651,6 +651,9 @@ impl RlmSubagentHost for InlineHost {
                     "rlm.spawn cwd= requires a daemon-backed session; print mode runs subagents in-process in this session's working directory"
                 );
             }
+            // A pass-through the orchestrator lacks fails the spawn, naming
+            // it, instead of the child's first kernel start.
+            request.env.resolve(|key| std::env::var(key).ok())?;
             let recipe = Arc::clone(&node.recipe);
             let config = &recipe.options.config;
             let child_id = format!("sub-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
@@ -812,6 +815,7 @@ impl RlmSubagentHost for InlineHost {
                 thinking,
                 semantic_parent_session_id: Some(node.session_id.clone()),
                 spawned_by_request_id: request.spawned_by_request_id.clone(),
+                kernel_env: request.env.clone(),
             };
             let headless = crate::print_runtime::build_engine(
                 &recipe.options,
@@ -1289,6 +1293,7 @@ mod tests {
         Arc::get_mut(&mut node).unwrap().max_depth = 2;
         let gate = node.spawn_gate.lock().await;
         let mut spawn = InlineHost(Arc::clone(&node)).spawn(RlmSpawnRequest {
+            env: pa_core::kernel::KernelEnvOverrides::default(),
             cwd: None,
             host: None,
             prompt: "finish the task".to_string(),
@@ -1322,6 +1327,7 @@ mod tests {
         let mut node = root_node(&options, &manager, Some(json!({ "responses": ["parent"] })));
         Arc::get_mut(&mut node).unwrap().max_depth = 2;
         let request = |host, cwd| RlmSpawnRequest {
+            env: pa_core::kernel::KernelEnvOverrides::default(),
             cwd,
             host,
             prompt: "work".to_string(),

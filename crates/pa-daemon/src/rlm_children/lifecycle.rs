@@ -84,6 +84,7 @@ impl SupervisorChildSessionsInner {
         identity: &ParentIdentity,
         launch_env: Option<std::collections::BTreeMap<String, String>>,
         remote: Option<&pa_core::kernel::RemoteKernelTarget>,
+        kernel_env: &pa_core::kernel::KernelEnvOverrides,
     ) -> Result<CreatedChild> {
         let mut config = json!({
             "cwd": cwd,
@@ -116,6 +117,13 @@ impl SupervisorChildSessionsInner {
             if let Some(cwd) = &remote.cwd {
                 config["remoteCwd"] = json!(cwd);
             }
+        }
+        // The spawn's `env=` rides the durable create (literal values and
+        // pass-through names as `null`, never a pass-through value): the
+        // child worker resolves the pass-throughs from its own env, which
+        // is this worker's (`launch_env`), at every kernel start.
+        if !kernel_env.is_empty() {
+            config["kernelEnv"] = kernel_env.to_json();
         }
         if let Some(script) = &identity.child_script {
             config["script"] = json!(script);
@@ -200,6 +208,7 @@ impl SupervisorChildSessionsInner {
                 identity,
                 launch_env,
                 /*remote*/ None,
+                &pa_core::kernel::KernelEnvOverrides::default(),
             )
             .await?;
         // A failed prompt tears the just-created session down (TS kills the

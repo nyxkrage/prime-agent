@@ -21,6 +21,7 @@ use crate::kernel::rlm_runtime::{
     normalize_requested_rlm_subagent_session_name, normalize_requested_rlm_subagent_thinking_level,
     RlmModelInfo, DEFAULT_RLM_MODEL_SEARCH_LIMIT, MAX_RLM_MODEL_SEARCH_LIMIT,
 };
+use crate::kernel::env_overrides::KernelEnvRefusal;
 use crate::kernel::shared::{host_handler, HostRequestHandlers};
 use crate::models::registry::ModelRegistry;
 
@@ -157,6 +158,9 @@ pub struct RlmSpawnRequest {
     /// local one otherwise. `None` keeps the default (the remote login
     /// directory, or the parent's cwd for a local child).
     pub cwd: Option<String>,
+    /// The child kernel's `env=` overrides (validated; pass-throughs by
+    /// name only). Never inherited: a child's own spawns name theirs again.
+    pub env: crate::kernel::env_overrides::KernelEnvOverrides,
 }
 
 /// An explicit `rlm.spawn(host=...)` placement.
@@ -636,7 +640,18 @@ fn register_run(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmHostBridge>)
                 let Some(prompt) = data.get("prompt").and_then(Value::as_str) else {
                     anyhow::bail!("rlm.spawn prompt must be a string");
                 };
-                let mut request = spawn_request_from_payload(prompt, data)?;
+                // An `env=` refusal (here or in the host's placement-aware
+                // checks) counts, never by name or value.
+                let note_env_refusal = |error: anyhow::Error| {
+                    if error.downcast_ref::<KernelEnvRefusal>().is_some() {
+                        if let Some(counters) = bridge.spawn_counters.get() {
+                            counters.note_rlm_spawn_env_refused();
+                        }
+                    }
+                    error
+                };
+                let mut request =
+                    spawn_request_from_payload(prompt, data).map_err(note_env_refusal)?;
                 // TS `_startRlmChildRun`: the spawning request is the turn
                 // whose tool call is executing now (the anchor is computed
                 // before the spawn admission's first await); a spawn
@@ -655,9 +670,14 @@ fn register_run(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmHostBridge>)
                     None => None,
                 };
                 let placement = request.host.clone();
-                let handle = bridge.host.spawn(request).await?;
+                let env = request.env.clone();
+                let handle = bridge
+                    .host
+                    .spawn(request)
+                    .await
+                    .map_err(note_env_refusal)?;
                 if let Some(counters) = bridge.spawn_counters.get() {
-                    counters.note_rlm_spawn(placement.as_ref());
+                    counters.note_rlm_spawn(placement.as_ref(), &env);
                 }
                 // TS `_findLastAssistantMessage` at spawn: the spawning
                 // assistant row (persisted at `message_end` before tool
@@ -678,7 +698,7 @@ fn spawn_request_from_payload(prompt: &str, data: &Value) -> anyhow::Result<RlmS
     reject_unsupported_kwargs(
         &kwargs,
         OPERATION,
-        &["name", "model", "thinking", "host", "cwd"],
+        &["name", "model", "thinking", "host", "cwd", "env"],
     )?;
     let name = optional_string_kwarg(&kwargs, "name", OPERATION)?;
     let name = normalize_requested_rlm_subagent_session_name(name, OPERATION)?;
@@ -708,6 +728,11 @@ fn spawn_request_from_payload(prompt: &str, data: &Value) -> anyhow::Result<RlmS
         Some("") => anyhow::bail!("rlm.spawn cwd must be a non-empty string"),
         Some(cwd) => Some(cwd.to_string()),
     };
+    // Authoritative: the kernel wrapper's checks are a courtesy, and a
+    // pass-through arrives as `null`, never as a value.
+    let env = crate::kernel::env_overrides::KernelEnvOverrides::from_json(
+        kwargs.get("env").unwrap_or(&Value::Null),
+    )?;
     Ok(RlmSpawnRequest {
         prompt: prompt.to_string(),
         name,
@@ -716,6 +741,7 @@ fn spawn_request_from_payload(prompt: &str, data: &Value) -> anyhow::Result<RlmS
         spawned_by_request_id: None,
         host,
         cwd,
+        env,
     })
 }
 

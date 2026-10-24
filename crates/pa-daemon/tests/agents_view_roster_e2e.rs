@@ -421,6 +421,7 @@ async fn rlm_children_key_the_roster_by_parent_path_and_child_id() {
 
     let handle = children
         .spawn(RlmSpawnRequest {
+            env: pa_core::kernel::KernelEnvOverrides::default(),
             cwd: None,
             host: None,
             prompt: "ship the roster lane".to_string(),

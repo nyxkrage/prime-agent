@@ -135,6 +135,20 @@ impl RlmSubagentHost for SupervisorChildSessions {
                         pa_core::kernel::RemoteKernelTarget::validated(host, request.cwd.clone())
                     })
                     .transpose()?;
+                // The `env=` checks that need the placement and this
+                // machine: the global kill switch refuses pass-throughs to a
+                // remote host (an inherited placement too), and a
+                // pass-through the orchestrator lacks fails the spawn here,
+                // naming it, instead of the child's first kernel start.
+                if remote.is_some() {
+                    let passthrough_allowed = pa_core::settings::SettingsManager::create(
+                        identity.cwd.as_deref().unwrap_or("/"),
+                        &this.agent_dir,
+                    )
+                    .remote_env_passthrough_allowed();
+                    request.env.check_remote_passthrough(passthrough_allowed)?;
+                }
+                request.env.resolve(|key| std::env::var(key).ok())?;
                 // A local child's `cwd` moves its session (relative to the
                 // parent's cwd, like `rlm.create_session`, and it must
                 // exist); a remote child's names the remote kernel's
@@ -182,6 +196,7 @@ impl RlmSubagentHost for SupervisorChildSessions {
                         // worker's env (filtered) instead.
                         Some(pa_types::daemon::launch_env::collect_process_launch_env()),
                         remote.as_ref(),
+                        &request.env,
                     )
                     .await?;
                 let record = ChildRecord {

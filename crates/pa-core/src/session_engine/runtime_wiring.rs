@@ -259,6 +259,7 @@ pub fn kernel_provisioner(
     on_unavailable_skills: Option<crate::kernel::provisioner::UnavailableSkillsCallback>,
     on_bootstrap_result: Option<crate::kernel::provisioner::KernelBootstrapResultHandler>,
     remote: Option<crate::kernel::shared::RemoteKernelTarget>,
+    env_overrides: crate::kernel::env_overrides::KernelEnvOverrides,
 ) -> Arc<KernelProvisioner> {
     let mut env = HashMap::with_capacity(3);
     env.insert(
@@ -309,6 +310,7 @@ pub fn kernel_provisioner(
             on_unavailable_skills,
             on_bootstrap_result,
             remote,
+            env_overrides,
         },
     ))
 }

@@ -280,6 +280,9 @@ impl Supervisor {
             // reconnect to the same host, not fall back to a local kernel.
             "remoteHost",
             "remoteCwd",
+            // A spawned child's `env=` overrides (literal values and
+            // pass-through names only): a respawned worker re-resolves them.
+            "kernelEnv",
             "systemPrompt",
             "appendSystemPrompt",
             "skills",

@@ -176,6 +176,7 @@ async fn turn_boundary_host_requests_round_trip_through_a_real_kernel() {
 
     let engine = create_session(SessionEngineConfig {
         remote_kernel: None,
+        kernel_env: pa_core::kernel::KernelEnvOverrides::default(),
         on_late_sent_agent_message: None,
         semantic_edges: None,
         cron_store: None,

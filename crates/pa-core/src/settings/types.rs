@@ -370,6 +370,10 @@ pub struct Settings {
     /// Rust-only daemon-level model allowlist: a model outside fails loudly instead
     /// of resolving, with no fallback. `None` is unrestricted.
     pub allowed_models: Option<Vec<String>>,
+    /// Rust-only kill switch for `rlm.spawn(host=..., env={K: None})`: `false`
+    /// refuses passing orchestrator env values to remote hosts (literal
+    /// values stay allowed). Read from global scope only; unset is `true`.
+    pub remote_env_passthrough: Option<bool>,
     pub tree_filter_mode: Option<String>,
     /// `chatDetail`: the conversation-detail level Ctrl+O cycles and persists
     /// ("overview"/"details"/"all"); `None` reads as the `overview` startup level.

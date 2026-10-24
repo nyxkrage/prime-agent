@@ -105,6 +105,7 @@ async fn faux_engine_with_telemetry(
         .expect("a session manager");
     let engine = create_session(SessionEngineConfig {
         remote_kernel: None,
+        kernel_env: pa_core::kernel::KernelEnvOverrides::default(),
         on_late_sent_agent_message: None,
         semantic_edges: None,
         cron_store: None,

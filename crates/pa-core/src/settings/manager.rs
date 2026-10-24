@@ -605,6 +605,39 @@ impl SettingsManager {
         (!patterns.is_empty()).then_some(patterns)
     }
 
+    /// Whether `rlm.spawn(host=..., env={K: None})` may pass orchestrator
+    /// env values to a remote host (settings `remoteEnvPassthrough`).
+    /// Rust-only kill switch, read from global scope only so a project
+    /// cannot turn it back on; unset (or `null`) is `true`. It fails
+    /// closed: a value that is not a bool, or a global settings document
+    /// that could not be loaded, refuses pass-through.
+    #[must_use]
+    pub fn remote_env_passthrough_allowed(&self) -> bool {
+        if self
+            .errors
+            .iter()
+            .any(|error| error.scope == SettingsScope::Global)
+        {
+            return false;
+        }
+        let Some(raw) = &self.global_raw else {
+            return true;
+        };
+        let Some(raw) = raw.as_object() else {
+            return false;
+        };
+        match raw.get(crate::kernel::env_overrides::REMOTE_ENV_PASSTHROUGH_SETTING) {
+            None | Some(serde_json::Value::Null) => true,
+            Some(serde_json::Value::Bool(allowed)) => *allowed,
+            Some(
+                serde_json::Value::Number(_)
+                | serde_json::Value::String(_)
+                | serde_json::Value::Array(_)
+                | serde_json::Value::Object(_),
+            ) => false,
+        }
+    }
+
     /// The persisted default a fresh session starts from; the stored
     /// string is the same vocabulary `get_default_service_tier` parses.
     ///
@@ -1039,6 +1072,46 @@ mod tests {
         );
         manager.reload().unwrap();
         assert_eq!(manager.get_default_model(), Some("z-ai/glm-5.3"));
+    }
+
+    /// The `remoteEnvPassthrough` kill switch: unset is on, a global `false`
+    /// turns it off, a project `true` cannot turn it back on, and a
+    /// malformed value or an unparseable global document fails closed.
+    #[test]
+    fn remote_env_passthrough_reads_global_only_and_fails_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().join("cwd");
+        let agent_dir = dir.path().join("agent");
+        std::fs::create_dir_all(cwd.join(".prime/agent")).unwrap();
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(
+            cwd.join(".prime/agent/settings.json"),
+            r#"{ "remoteEnvPassthrough": true }"#,
+        )
+        .unwrap();
+        let allowed = |global: Option<&str>| {
+            let path = agent_dir.join("settings.json");
+            match global {
+                Some(text) => std::fs::write(&path, text).unwrap(),
+                None => {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+            SettingsManager::create(&cwd, &agent_dir).remote_env_passthrough_allowed()
+        };
+        assert_eq!(
+            [
+                allowed(None),
+                allowed(Some("{}")),
+                allowed(Some(r#"{ "remoteEnvPassthrough": null }"#)),
+                allowed(Some(r#"{ "remoteEnvPassthrough": true }"#)),
+                allowed(Some(r#"{ "remoteEnvPassthrough": false }"#)),
+                allowed(Some(r#"{ "remoteEnvPassthrough": "true" }"#)),
+                allowed(Some(r#"{ "remoteEnvPassthrough": 1 }"#)),
+                allowed(Some("{ not json")),
+            ],
+            [true, true, true, true, false, false, false, false]
+        );
     }
 
     /// `factory.enabled` reads the GLOBAL scope only (the agent-dir

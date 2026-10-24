@@ -290,6 +290,9 @@ impl Worker {
                 // The moved-to session's placement sidecar (read in the
                 // prepare phase): a remote child keeps its host.
                 remote_kernel,
+                // Spawn-time env overrides belong to the spawned session;
+                // the moved-to session starts without them.
+                kernel_env: pa_core::kernel::KernelEnvOverrides::default(),
                 rlm_depth,
                 rlm_max_depth: None,
                 cwd: Some(summary.cwd.clone()),

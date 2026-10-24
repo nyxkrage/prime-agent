@@ -919,6 +919,7 @@ impl SessionEngine for AgentSessionEngine {
             .expect("semantic identity lock") = semantic_identity;
         (*self.remote_kernel.lock().expect("remote kernel lock"))
             .clone_from(&identity.remote_kernel);
+        (*self.kernel_env.lock().expect("kernel env lock")).clone_from(&identity.kernel_env);
         if let Some(children) = &self.children {
             let parent = ParentIdentity {
                 rlm_depth: identity.rlm_depth,

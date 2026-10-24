@@ -14,6 +14,8 @@
 //! | characters accepted in a remote `cwd` | [`REMOTE_PATH_CHARS`] |
 //! | local kernel env forwarded to the remote kernel | [`REMOTE_KERNEL_FORWARDED_ENV`] |
 //! | host requests a remote kernel may send | [`REMOTE_KERNEL_HOST_REQUESTS`] |
+//! | `rlm.spawn(env=...)` names no spawn may set | [`KERNEL_ENV_RESERVED`] |
+//! | `rlm.spawn(env=...)` size caps | [`KERNEL_ENV_MAX_NAME_BYTES`], [`KERNEL_ENV_MAX_ENTRIES`], [`KERNEL_ENV_MAX_TOTAL_BYTES`] |
 //!
 //! Settings and state read remotely: none. The remote kernel's agent dir is
 //! an empty scratch dir under the install root; the runtime refuses
@@ -69,6 +71,75 @@ pub(crate) const REMOTE_PATH_CHARS: &str =
 /// orphan journal, `RLM_REMOTE_HOST`, `RLM_REMOTE_INSTALL_DIR`, and
 /// `RLM_HOST_HEARTBEAT_TIMEOUT_MS`.
 pub(crate) const REMOTE_KERNEL_FORWARDED_ENV: &[&str] = &["RLM_SESSION_ID"];
+
+/// One rule of [`KERNEL_ENV_RESERVED`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReservedEnvName {
+    /// Every name starting with this prefix.
+    Prefix(&'static str),
+    /// Exactly this name.
+    Exact(&'static str),
+}
+
+/// Env var names an `rlm.spawn(env=...)` override may never set, as a
+/// literal or as a pass-through (`None`), on a local or a remote kernel.
+/// The kernel launchers own these: `RLM_*` and `PRIME_AGENT_*` carry the
+/// kernel's identity and wiring (session id and dirs, the owner pid, the
+/// orphan journal, the remote host, install dir, and heartbeat timeout, the
+/// bash shell and command prefix), `PYTHON*` steers the interpreter
+/// (`PYTHONPATH`, `PYTHONUTF8`, `PYTHONHOME`), and `PATH`, `HOME`, and
+/// `VIRTUAL_ENV` locate the venv and the user. Every key either launcher
+/// sets (`kernel_spawn_env`, `remote_kernel_command`, `rlm/remote.py`)
+/// falls under one of these rules.
+pub(crate) const KERNEL_ENV_RESERVED: &[ReservedEnvName] = &[
+    ReservedEnvName::Prefix("RLM_"),
+    ReservedEnvName::Prefix("PRIME_AGENT_"),
+    ReservedEnvName::Prefix("PYTHON"),
+    ReservedEnvName::Exact("PATH"),
+    ReservedEnvName::Exact("HOME"),
+    ReservedEnvName::Exact("VIRTUAL_ENV"),
+];
+
+/// The longest env var name an override may set.
+pub(crate) const KERNEL_ENV_MAX_NAME_BYTES: usize = 128;
+/// The most variables one spawn may set.
+pub(crate) const KERNEL_ENV_MAX_ENTRIES: usize = 64;
+/// The most bytes (names plus values) one spawn's overrides may carry,
+/// checked for the literal values in the request and again for the
+/// resolved values once the pass-throughs are filled in.
+pub(crate) const KERNEL_ENV_MAX_TOTAL_BYTES: usize = 64 * 1024;
+
+/// Why an `rlm.spawn(env=...)` name is refused, or `None` when it may be
+/// set: names match `[A-Z_][A-Z0-9_]*`, fit [`KERNEL_ENV_MAX_NAME_BYTES`],
+/// and fall under no [`KERNEL_ENV_RESERVED`] rule.
+pub(crate) fn kernel_env_name_refusal(name: &str) -> Option<String> {
+    let well_formed = name
+        .bytes()
+        .next()
+        .is_some_and(|first| first.is_ascii_uppercase() || first == b'_')
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_');
+    if !well_formed {
+        return Some(format!(
+            "rlm.spawn env name {name:?} is invalid: names must match [A-Z_][A-Z0-9_]*"
+        ));
+    }
+    if name.len() > KERNEL_ENV_MAX_NAME_BYTES {
+        return Some(format!(
+            "rlm.spawn env name {name:?} is longer than {KERNEL_ENV_MAX_NAME_BYTES} bytes"
+        ));
+    }
+    let reserved = KERNEL_ENV_RESERVED.iter().any(|rule| match rule {
+        ReservedEnvName::Prefix(prefix) => name.starts_with(prefix),
+        ReservedEnvName::Exact(exact) => name == *exact,
+    });
+    reserved.then(|| {
+        format!(
+            "rlm.spawn env name {name} is reserved: the kernel launcher owns RLM_*, PRIME_AGENT_*, PYTHON*, PATH, HOME, and VIRTUAL_ENV"
+        )
+    })
+}
 
 /// Whether a remote kernel may send a host request kind, and why not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

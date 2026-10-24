@@ -542,6 +542,7 @@ async fn an_rlm_spawn_child_inherits_the_parent_worker_env() {
     });
     let handle = children
         .spawn(RlmSpawnRequest {
+            env: pa_core::kernel::KernelEnvOverrides::default(),
             cwd: None,
             host: None,
             prompt: "ship the lane".to_string(),

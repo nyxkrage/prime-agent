@@ -284,6 +284,9 @@ pub struct AgentSessionEngine {
     /// This session's remote SSH kernel placement (seeded by the create's
     /// RLM identity); every engine build runs its kernel there.
     remote_kernel: std::sync::Mutex<Option<pa_core::kernel::RemoteKernelTarget>>,
+    /// This session's `rlm.spawn(env=...)` overrides (seeded by the
+    /// create's RLM identity); every engine build applies them to its kernel.
+    kernel_env: std::sync::Mutex<pa_core::kernel::KernelEnvOverrides>,
     /// The depth bound's source stamp (`default` | `env` | `global` |
     /// `inherited` | `chat`).
     rlm_max_depth_source: std::sync::Mutex<&'static str>,

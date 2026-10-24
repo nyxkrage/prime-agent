@@ -7,11 +7,20 @@
 //! [`crate::kernel::remote_policy`]: the forwarded env, the validated
 //! `cwd`, and (in `host_requests.rs`) the host requests the remote kernel
 //! may send back.
+//!
+//! The launcher's own env (`exec env K=V ...`) is visible in the remote
+//! `ps` and may land in sshd logs, so it carries only non-secret wiring:
+//! the scratch agent dir, the host label, the install dir, the heartbeat
+//! timeout, and the session id. The spawn's `env=` overrides never touch
+//! the command line: the host sends them as one `kernel_env` frame on the
+//! kernel's stdin right after the stdio sentinel and before `ready`, and
+//! the runtime applies them to `os.environ` before any user code runs.
 
 use std::fmt::Write as _;
 use std::time::Duration;
 
 use super::{json, lock, Arc, Inner, KernelStartOptions, KernelState};
+use crate::kernel::env_overrides::ResolvedKernelEnv;
 use crate::kernel::bootstrap::{
     ensure_remote_kernel_python, sh_quote, RemoteHost, RemoteKernelInstall,
 };
@@ -37,6 +46,7 @@ impl Inner {
         self: &Arc<Self>,
         target: &RemoteKernelTarget,
         options: &KernelStartOptions,
+        resolved_env: &ResolvedKernelEnv,
     ) -> anyhow::Result<(tokio::process::Command, String)> {
         let remote = RemoteHost::new(&target.host, &self.options.env)?;
         if let Some(cwd) = &target.cwd {
@@ -96,11 +106,29 @@ impl Inner {
         }
         let _ = write!(script, " {} -m rlm.repl", sh_quote(&install.python));
         let mut command = remote.command(&format!("exec /bin/sh -c {}", sh_quote(&script)));
+        // Always sent (an empty env too): the runtime of a remote kernel
+        // reads exactly one `kernel_env` frame before it serves requests.
+        let env_frame: serde_json::Map<String, serde_json::Value> = resolved_env
+            .values()
+            .iter()
+            .map(|(key, value)| (key.clone(), serde_json::Value::String(value.clone())))
+            .collect();
+        *lock(&self.remote_env_frame) =
+            Some(json!({ "type": "kernel_env", "env": env_frame }));
         // The kernel's teardown signals the ssh process; the remote runtime
         // sees stdin EOF (or its sshd parent exit, or the heartbeat stop)
         // and shuts down.
         command.kill_on_drop(false);
         Ok((command, format!("{} on {}", install.python, remote.label())))
+    }
+
+    /// Write this start's pending `kernel_env` frame (once) to the remote
+    /// kernel's stdin. A local kernel has none.
+    pub(super) async fn send_remote_env_frame(&self) -> anyhow::Result<()> {
+        let Some(frame) = lock(&self.remote_env_frame).take() else {
+            return Ok(());
+        };
+        self.write_line(&frame).await
     }
 
     /// Send a heartbeat frame to a remote kernel every

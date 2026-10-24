@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
+import os
+import re
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -93,6 +96,46 @@ class RlmSubagentRegistryTest(unittest.TestCase):
         self.assertEqual(result.rlm_child_id, "sub-a1b2c3d4")
         self.assertEqual(result.name, "api-reviewer")
         self.assertEqual(result.model, "deepseek/deepseek-v4-flash")
+
+    def test_forwards_env_with_passthroughs_as_null_never_a_value(self) -> None:
+        host_request = AsyncMock(
+            return_value={
+                "rlm_child_id": "sub-a1b2c3d4",
+                "name": "train",
+                "session_dir": "/tmp/parent/sub-a1b2c3d4",
+                "model": "deepseek/deepseek-v4-flash",
+            }
+        )
+        with (
+            patch.dict(os.environ, {"HF_TOKEN": "hf-kernel-side-value"}),
+            patch.object(rlm_module, "host_request", host_request),
+        ):
+            asyncio.run(
+                rlm_module.rlm.spawn(
+                    "train it", name="train", host="gpu1", env={"EPOCHS": "3", "HF_TOKEN": None}
+                )
+            )
+        host_request.assert_awaited_once_with(
+            "rlm.run",
+            {
+                "prompt": "train it",
+                "kwargs": {"name": "train", "host": "gpu1", "env": {"EPOCHS": "3", "HF_TOKEN": None}},
+            },
+        )
+        # JSON null on the wire: the kernel never reads or sends the value.
+        self.assertNotIn("hf-kernel-side-value", json.dumps(host_request.await_args.args))
+
+    def test_rejects_a_malformed_env_before_the_host_request(self) -> None:
+        host_request = AsyncMock()
+        with patch.object(rlm_module, "host_request", host_request):
+            for env, message in [
+                (["EPOCHS"], "env must be a dict of str to str | None, got list"),
+                ({1: "x"}, "env names must be str, got int"),
+                ({"EPOCHS": 3}, "env value for EPOCHS must be a str or None, got int"),
+            ]:
+                with self.assertRaisesRegex(TypeError, re.escape(message)):
+                    asyncio.run(rlm_module.rlm.spawn("x", name="bad", env=env))
+        host_request.assert_not_awaited()
 
     def test_requires_an_explicit_child_name(self) -> None:
         host_request = AsyncMock()

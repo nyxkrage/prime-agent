@@ -28,6 +28,7 @@ class HeartbeatTest(unittest.TestCase):
             }
         )
         self.addCleanup(repl.close)
+        repl.send({"type": "kernel_env", "env": {}})
         event, _ = repl.ready()
         self.assertEqual(event["event"], "ready")
         return repl
@@ -67,6 +68,36 @@ class HeartbeatTest(unittest.TestCase):
         repl.send({"type": "heartbeat"})
         events = repl.execute("c1", "print('local')")
         self.assertNotIn("error", [e.get("event") for e in events])
+        self.assertEqual(repl.shutdown(), 0)
+
+
+class KernelEnvTest(unittest.TestCase):
+    """The ``kernel_env`` frame: a remote kernel's spawn env, read from stdin
+    before ``ready`` and applied before any user code runs."""
+
+    def test_a_remote_kernel_applies_the_env_frame_before_ready(self) -> None:
+        repl = ReplProcess(env={"RLM_REMOTE_HOST": "box", "PA_TEST_ENV": "inherited"})
+        self.addCleanup(repl.close)
+        repl.send({"type": "kernel_env", "env": {"PA_TEST_ENV": "from-frame", "EPOCHS": "3"}})
+        event, _ = repl.ready()
+        self.assertEqual(event["event"], "ready")
+        events = repl.execute("c1", "import os\nprint(os.environ['PA_TEST_ENV'], os.environ['EPOCHS'])")
+        self.assertEqual("".join(e.get("text", "") for e in events if e.get("event") == "stdout"), "from-frame 3\n")
+        self.assertEqual(repl.shutdown(), 0)
+
+    def test_a_malformed_env_frame_exits_before_ready(self) -> None:
+        repl = ReplProcess(env={"RLM_REMOTE_HOST": "box"})
+        self.addCleanup(repl.close)
+        repl.send({"type": "execute", "id": "c1", "code": "print(1)"})
+        with self.assertRaises(EOFError):
+            repl.ready()
+        self.assertEqual(repl.proc.wait(timeout=10), 1)
+
+    def test_a_local_kernel_reads_no_env_frame(self) -> None:
+        repl = ReplProcess()
+        self.addCleanup(repl.close)
+        event, _ = repl.ready()
+        self.assertEqual(event["event"], "ready")
         self.assertEqual(repl.shutdown(), 0)
 
 

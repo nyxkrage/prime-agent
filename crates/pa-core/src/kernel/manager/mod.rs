@@ -351,6 +351,13 @@ pub(crate) struct Inner {
     resolved_python: Mutex<Option<std::path::PathBuf>>,
     /// The provisioned remote environment of a remote kernel, reused across restarts.
     resolved_remote: Mutex<Option<crate::kernel::bootstrap::RemoteKernelInstall>>,
+    /// The pass-through values of this start's `rlm.spawn(env=...)`, masked
+    /// in the output streamed back to the model (best effort).
+    redactions: Mutex<Arc<Vec<String>>>,
+    /// The `kernel_env` frame a remote kernel reads from stdin right after
+    /// the launcher's stdio sentinel, taken by the stdout reader when the
+    /// sentinel arrives (`remote.rs`).
+    remote_env_frame: Mutex<Option<Value>>,
     guarded: Mutex<Guarded>,
     child: Mutex<Option<ChildHandle>>,
     busy_notify: Notify,
@@ -427,6 +434,8 @@ impl ReplKernelManager {
             freshness_stat_probe: std::sync::atomic::AtomicBool::new(false),
             resolved_python: Mutex::new(None),
             resolved_remote: Mutex::new(None),
+            redactions: Mutex::new(Arc::new(Vec::new())),
+            remote_env_frame: Mutex::new(None),
             guarded: Mutex::new(Guarded {
                 state: KernelState::Idle,
                 start_generation: 0,

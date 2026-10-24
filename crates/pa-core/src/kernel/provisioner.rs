@@ -136,6 +136,8 @@ pub struct IpythonKernelProvisionerOptions {
     pub on_bootstrap_result: Option<KernelBootstrapResultHandler>,
     /// Run the kernel on a remote host over SSH (`rlm.spawn(..., host=...)`).
     pub remote: Option<crate::kernel::shared::RemoteKernelTarget>,
+    /// The spawn's `rlm.spawn(env=...)` overrides.
+    pub env_overrides: crate::kernel::env_overrides::KernelEnvOverrides,
 }
 
 /// Why and how long one startup failed, published through the shared startup
@@ -1107,6 +1109,7 @@ async fn start_kernel_impl(
         bootstrap_code: Some(bootstrap_code.clone()),
         stderr_log_path,
         remote: options.remote.clone(),
+        env_overrides: options.env_overrides.clone(),
     });
 
     emit_startup_progress(inner, on_progress, memo, "Starting Python kernel...");

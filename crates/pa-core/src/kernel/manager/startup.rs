@@ -140,11 +140,32 @@ impl Inner {
         // kernel that is still booting.
         live_kernels::add(self);
 
+        // The spawn's `env=` overrides resolve against the environment a
+        // local kernel gets (this process's env under the kernel env), at
+        // every start, so a pass-through value never leaves this process
+        // except to the kernel itself.
+        let resolved_env = self
+            .options
+            .env_overrides
+            .resolve(|key| {
+                self.options
+                    .env
+                    .get(key)
+                    .cloned()
+                    .or_else(|| std::env::var(key).ok())
+            })
+            .map_err(anyhow::Error::from);
+        if let Ok(resolved) = &resolved_env {
+            *lock(&self.redactions) = Arc::new(resolved.redactions().to_vec());
+        }
         // A remote kernel provisions its host and launches over ssh; a local
         // kernel resolves its interpreter. Both then share the spawn path.
-        let launch = match &self.options.remote {
-            Some(target) => self.remote_kernel_command(target, options).await,
-            None => self.resolve_python(options).await.map(|python| {
+        let launch = match (&self.options.remote, resolved_env) {
+            (_, Err(error)) => Err(error),
+            (Some(target), Ok(resolved)) => {
+                self.remote_kernel_command(target, options, &resolved).await
+            }
+            (None, Ok(resolved)) => self.resolve_python(options).await.map(|python| {
                 let mut command = tokio::process::Command::new(&python);
                 command
                     .args(["-m", "rlm.repl"])
@@ -157,9 +178,12 @@ impl Inner {
                 if let Some(cwd) = &self.options.cwd {
                     command.current_dir(cwd);
                 }
+                // Literal overrides win over the inherited env; a
+                // pass-through sets the value the kernel would inherit anyway.
                 command
                     .env_clear()
-                    .envs(kernel_spawn_env(&self.options.env));
+                    .envs(kernel_spawn_env(&self.options.env))
+                    .envs(resolved.values().iter().cloned());
                 (command, python.display().to_string())
             }),
         };
@@ -339,6 +363,21 @@ impl Inner {
                                         != super::remote::REMOTE_KERNEL_STDIO_SENTINEL.as_bytes();
                                     consumed = end + 1;
                                     scan_from = consumed;
+                                    // The launcher reached its `exec`: only the
+                                    // kernel reads stdin from here on, so the
+                                    // env frame goes out now, before anything
+                                    // else is written (rc files never see it).
+                                    if !awaiting_sentinel {
+                                        let Some(inner) = inner.upgrade() else {
+                                            return;
+                                        };
+                                        if let Err(error) = inner.send_remote_env_frame().await {
+                                            inner.fail_protocol_frame(
+                                                generation,
+                                                &format!("could not send the kernel env: {error}"),
+                                            );
+                                        }
+                                    }
                                     continue;
                                 }
                                 // An invalid-UTF-8 stream ends the reader, like
@@ -402,11 +441,20 @@ impl Inner {
                             let Some(inner) = inner.upgrade() else {
                                 break;
                             };
-                            inner.append_kernel_stderr_text(&decoded);
+                            // Pass-through values stay out of the stderr
+                            // tail and the log too (best effort, per chunk).
+                            let redactions = Arc::clone(&lock(&inner.redactions));
+                            let masked =
+                                crate::kernel::env_overrides::redact(&decoded, &redactions);
+                            inner.append_kernel_stderr_text(&masked);
+                            let bytes = match &masked {
+                                std::borrow::Cow::Borrowed(_) => &buffer[..n],
+                                std::borrow::Cow::Owned(masked) => masked.as_bytes(),
+                            };
                             if let Some(log) = &log {
                                 let mut log = lock(log);
                                 if log.budget >= n as u64 {
-                                    let _ = log.file.write_all(&buffer[..n]);
+                                    let _ = log.file.write_all(bytes);
                                     let _ = log.file.flush();
                                     log.budget -= n as u64;
                                 } else if log.budget > 0 {

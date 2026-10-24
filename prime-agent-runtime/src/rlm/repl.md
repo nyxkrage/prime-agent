@@ -22,6 +22,13 @@ event.
   each channel, not across them.
 - fd 0 is rebound to `/dev/null` after the reader thread takes it, so user
   `input()` sees EOF instead of consuming protocol frames.
+- A remote kernel (`RLM_REMOTE_HOST` set) reads exactly one frame before
+  anything else, `{"type":"kernel_env","env":{str:str}}`: its
+  `rlm.spawn(env=...)` values, which it applies to `os.environ` before the
+  owner watchdog, the reader thread, `ready`, or any cell. The host writes it
+  right after the launcher's stdio sentinel, so the values never ride the ssh
+  command line or the launcher's `exec env` args (visible in the remote `ps`).
+  A missing or malformed frame exits the runtime before `ready`.
 
 ## Requests
 

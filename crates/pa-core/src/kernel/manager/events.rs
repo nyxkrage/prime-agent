@@ -9,8 +9,55 @@ use super::{
     MAX_ATTACHMENT_DATA_CHARS, MAX_BACKGROUND_OUTPUT_CHARS,
 };
 
+use crate::kernel::env_overrides::redact;
+
 impl Inner {
+    /// Mask this start's pass-through values (`rlm.spawn(env={K: None})`)
+    /// in the output the model reads back: streams, results, and errors.
+    /// Best effort (a value split across two chunks passes): hygiene that
+    /// keeps a printed secret out of the transcript, not a boundary.
+    fn redact_event(&self, event: Event) -> Event {
+        let redactions = Arc::clone(&lock(&self.redactions));
+        if redactions.is_empty() {
+            return event;
+        }
+        let redact = |text: String| match redact(&text, &redactions) {
+            std::borrow::Cow::Borrowed(_) => text,
+            std::borrow::Cow::Owned(masked) => masked,
+        };
+        match event {
+            Event::Stdout { id, text } => Event::Stdout {
+                id,
+                text: redact(text),
+            },
+            Event::Stderr { id, text } => Event::Stderr {
+                id,
+                text: redact(text),
+            },
+            Event::Result { id, text } => Event::Result {
+                id,
+                text: redact(text),
+            },
+            Event::Error {
+                id,
+                ename,
+                evalue,
+                traceback,
+            } => Event::Error {
+                id,
+                ename,
+                evalue: redact(evalue),
+                traceback: traceback.into_iter().map(redact).collect(),
+            },
+            event @ (Event::Ready { .. }
+            | Event::Display { .. }
+            | Event::HostRequest { .. }
+            | Event::Done { .. }) => event,
+        }
+    }
+
     pub(crate) fn handle_event(self: &Arc<Self>, event: Event) {
+        let event = self.redact_event(event);
         match event {
             Event::Display { id, ref data } => {
                 if let Some(activity) = data.get(BASH_ACTIVITY_DISPLAY_MIME) {

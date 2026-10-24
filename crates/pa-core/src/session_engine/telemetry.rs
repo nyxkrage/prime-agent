@@ -331,6 +331,9 @@ struct CounterValues {
     rlm_child_cost: f64,
     rlm_spawn_count: u64,
     rlm_remote_spawn_count: u64,
+    rlm_spawn_env_literal_key_count: u64,
+    rlm_spawn_env_passthrough_key_count: u64,
+    rlm_spawn_env_refused_count: u64,
     /// `feature_<name>_<outcome>_count` over the fixed feature vocabulary.
     feature_outcomes: std::collections::BTreeMap<String, u64>,
 }
@@ -380,9 +383,17 @@ impl SessionCounters {
     /// One admitted `rlm.spawn`, split by explicit placement (the host
     /// name never uploads). An inherited placement counts as local: only
     /// depth-0 sessions report, and they have no remote placement to inherit.
-    pub(crate) fn note_rlm_spawn(&self, host: Option<&super::rlm_host::RlmSpawnHost>) {
+    /// `env` is the spawn's `env=`: its literal and pass-through keys
+    /// count, never a name or a value.
+    pub(crate) fn note_rlm_spawn(
+        &self,
+        host: Option<&super::rlm_host::RlmSpawnHost>,
+        env: &crate::kernel::env_overrides::KernelEnvOverrides,
+    ) {
         self.with(|values| {
             values.rlm_spawn_count += 1;
+            values.rlm_spawn_env_literal_key_count += env.literal_count() as u64;
+            values.rlm_spawn_env_passthrough_key_count += env.passthrough_count() as u64;
             match host {
                 Some(super::rlm_host::RlmSpawnHost::Remote(_)) => {
                     values.rlm_remote_spawn_count += 1;
@@ -390,6 +401,12 @@ impl SessionCounters {
                 Some(super::rlm_host::RlmSpawnHost::Local) | None => {}
             }
         });
+    }
+
+    /// One `rlm.spawn` refused over its `env=` (a bad name or value, a
+    /// missing pass-through, or the `remoteEnvPassthrough` kill switch).
+    pub(crate) fn note_rlm_spawn_env_refused(&self) {
+        self.with(|values| values.rlm_spawn_env_refused_count += 1);
     }
 
     fn write_into(&self, properties: &mut Properties) {
@@ -420,6 +437,18 @@ impl SessionCounters {
                 ),
                 ("rlm_spawn_count", values.rlm_spawn_count),
                 ("rlm_remote_spawn_count", values.rlm_remote_spawn_count),
+                (
+                    "rlm_spawn_env_literal_key_count",
+                    values.rlm_spawn_env_literal_key_count,
+                ),
+                (
+                    "rlm_spawn_env_passthrough_key_count",
+                    values.rlm_spawn_env_passthrough_key_count,
+                ),
+                (
+                    "rlm_spawn_env_refused_count",
+                    values.rlm_spawn_env_refused_count,
+                ),
             ] {
                 properties.set(key, Value::from(value));
             }

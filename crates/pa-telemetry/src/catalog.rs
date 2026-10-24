@@ -698,6 +698,13 @@ const AGENT_SESSION_ENDED: EventRule = EventRule {
         // on a remote SSH host (counts only, never the host).
         ("rlm_spawn_count", optional(count())),
         ("rlm_remote_spawn_count", optional(count())),
+        // `rlm.spawn(env=...)` adoption: keys set to a literal and keys
+        // passed through from the orchestrator, summed over admitted
+        // spawns, plus spawns refused over their env (counts only, never
+        // a name or a value).
+        ("rlm_spawn_env_literal_key_count", optional(count())),
+        ("rlm_spawn_env_passthrough_key_count", optional(count())),
+        ("rlm_spawn_env_refused_count", optional(count())),
         ("feature_model_initiated_count", optional(count())),
         ("feature_model_completed_count", optional(count())),
         ("feature_model_failed_count", optional(count())),

@@ -355,6 +355,7 @@ async fn subscribe_after_spawn_then_shutdown_seeds_the_passive_child() {
     });
     let handle = children
         .spawn(RlmSpawnRequest {
+            env: pa_core::kernel::KernelEnvOverrides::default(),
             cwd: None,
             host: None,
             prompt: "ship the seed lane".to_string(),

@@ -109,6 +109,10 @@ pub struct SessionEngineConfig {
     /// Run this session's Python kernel on a remote SSH host (an
     /// `rlm.spawn(..., host=...)` child). `None` runs it locally.
     pub remote_kernel: Option<crate::kernel::shared::RemoteKernelTarget>,
+    /// This session's `rlm.spawn(env=...)` overrides, applied to every
+    /// kernel start (local or remote). Empty for a session nobody spawned
+    /// with `env=`; a child never inherits its parent's.
+    pub kernel_env: crate::kernel::env_overrides::KernelEnvOverrides,
 }
 
 pub struct SessionEngine {
@@ -520,6 +524,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         on_unavailable_skills,
         on_bootstrap_result,
         config.remote_kernel.clone(),
+        config.kernel_env.clone(),
     );
     let mut tools = config.tools.clone();
     if !tools.iter().any(|tool| tool.name() == PYTHON_TOOL_NAME) {

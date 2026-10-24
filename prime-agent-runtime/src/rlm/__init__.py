@@ -186,6 +186,7 @@ async def spawn(
     thinking: str | None = None,
     host: str | None = None,
     cwd: str | None = None,
+    env: dict[str, str | None] | None = None,
 ) -> RLMSpawnHandle:
     """Spawn a recursive Prime Agent child and return once its task is admitted.
 
@@ -199,9 +200,21 @@ async def spawn(
     remote child default to the same host; ``host="local"`` spawns locally.
     ``cwd`` sets the child's working directory (a remote path for a remote
     child; defaults to the remote login directory or the parent's cwd).
+    ``env`` sets variables in the child's kernel environment (local or remote):
+    a ``str`` value is set as given; ``None`` copies the orchestrator's value
+    of that name, resolved by the host, so the value never appears in your
+    code, the transcript, or logs (a variable the orchestrator lacks fails the
+    spawn). Names match ``[A-Z_][A-Z0-9_]*``; ``RLM_*``, ``PRIME_AGENT_*``,
+    ``PYTHON*``, ``PATH``, ``HOME``, and ``VIRTUAL_ENV`` are reserved. A child
+    never inherits its parent's ``env``: each spawn names its variables
+    again. A value sent to a host is trusted to that host (root there can
+    read it). Pass-through values of 8+ characters are masked as ``***`` in
+    the child's output (best effort). The global ``remoteEnvPassthrough``
+    setting can refuse ``None`` values for ``host=`` spawns.
     """
     if not isinstance(prompt, str):
         raise TypeError(f"prompt must be str, got {type(prompt).__name__}")
+    env_kwarg = _spawn_env_kwarg(env)
     kwargs: dict[str, Any] = {"name": name}
     if model is not None:
         kwargs["model"] = model
@@ -211,9 +224,29 @@ async def spawn(
         kwargs["host"] = host
     if cwd is not None:
         kwargs["cwd"] = cwd
+    if env_kwarg is not None:
+        kwargs["env"] = env_kwarg
     # Wire type stays "rlm.run" so kernels and hosts of different versions stay compatible.
     payload = await host_request("rlm.run", {"prompt": prompt, "kwargs": kwargs})
     return _spawn_handle_from_payload(payload)
+
+
+def _spawn_env_kwarg(env: Any) -> dict[str, str | None] | None:
+    """Check ``rlm.spawn(env=...)``'s shape early (the host validates names,
+    reserved names, and sizes authoritatively); ``None`` values stay ``None``
+    (JSON null), so a pass-through never carries a value."""
+    if env is None:
+        return None
+    if not isinstance(env, dict):
+        raise TypeError(f"env must be a dict of str to str | None, got {type(env).__name__}")
+    checked: dict[str, str | None] = {}
+    for key, value in env.items():
+        if not isinstance(key, str):
+            raise TypeError(f"env names must be str, got {type(key).__name__}")
+        if value is not None and not isinstance(value, str):
+            raise TypeError(f"env value for {key} must be a str or None, got {type(value).__name__}")
+        checked[key] = value
+    return checked
 
 
 def _model_from_payload(payload: Any) -> RLMModel:
@@ -663,8 +696,11 @@ class _RLMNamespace:
         thinking: str | None = None,
         host: str | None = None,
         cwd: str | None = None,
+        env: dict[str, str | None] | None = None,
     ) -> RLMSpawnHandle:
-        return await spawn(prompt, name=name, model=model, thinking=thinking, host=host, cwd=cwd)
+        return await spawn(
+            prompt, name=name, model=model, thinking=thinking, host=host, cwd=cwd, env=env
+        )
 
     async def create_session(
         self,

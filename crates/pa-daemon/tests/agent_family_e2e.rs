@@ -419,6 +419,7 @@ async fn parent_child_agent_message_round_trip_end_to_end() {
     });
     let handle = children
         .spawn(RlmSpawnRequest {
+            env: pa_core::kernel::KernelEnvOverrides::default(),
             cwd: None,
             host: None,
             prompt: "work on the lane".to_string(),
@@ -751,6 +752,7 @@ async fn family_edges_never_cross_families_end_to_end() {
         });
         let handle = children
             .spawn(RlmSpawnRequest {
+                env: pa_core::kernel::KernelEnvOverrides::default(),
                 cwd: None,
                 host: None,
                 prompt: "work on the lane".to_string(),
@@ -894,6 +896,7 @@ async fn family_edges_never_cross_families_end_to_end() {
     });
     let grandkid_handle = kid_children
         .spawn(RlmSpawnRequest {
+            env: pa_core::kernel::KernelEnvOverrides::default(),
             cwd: None,
             host: None,
             prompt: "grandkid work".to_string(),
@@ -1215,6 +1218,7 @@ async fn parent_renames_a_child_end_to_end() {
     });
     let handle = children
         .spawn(RlmSpawnRequest {
+            env: pa_core::kernel::KernelEnvOverrides::default(),
             cwd: None,
             host: None,
             prompt: "work on the lane".to_string(),

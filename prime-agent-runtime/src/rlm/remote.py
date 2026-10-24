@@ -14,7 +14,12 @@ while its agent loop stays on the orchestrator's. The host marks it with
   the groups of kernels that died without cleaning up (SIGKILL, OOM) on
   the next remote kernel start;
 - holds a shared lock on its install dir so the installer's garbage
-  collection never removes an install a kernel is running from.
+  collection never removes an install a kernel is running from;
+- reads its ``rlm.spawn(env=...)`` values from one ``kernel_env`` frame,
+  the first line the host writes to its stdin, and applies them to
+  ``os.environ`` before any user code runs. The values never ride the ssh
+  command line or the launcher's ``exec env`` args, which the remote ``ps``
+  (and possibly sshd logs) show.
 """
 
 from __future__ import annotations
@@ -30,6 +35,10 @@ from collections.abc import Callable
 REMOTE_HOST_ENV = "RLM_REMOTE_HOST"
 INSTALL_DIR_ENV = "RLM_REMOTE_INSTALL_DIR"
 HEARTBEAT_TIMEOUT_ENV = "RLM_HOST_HEARTBEAT_TIMEOUT_MS"
+
+KERNEL_ENV_FRAME = "kernel_env"
+# Far above the host's 64 KiB payload cap, JSON escaping included.
+_MAX_KERNEL_ENV_FRAME_BYTES = 1 << 20
 
 _last_host_frame = time.monotonic()
 # The shared flock on the install's .inuse file, held for the kernel's life.
@@ -153,6 +162,40 @@ def _hold_install(install_dir: str) -> None:
     os.utime(last_used)
 
 
+def read_kernel_env(stdin_fd: int) -> dict[str, str]:
+    """Read the one ``kernel_env`` frame a remote kernel's host sends first.
+
+    Byte by byte, so nothing past the frame's newline is consumed: the
+    protocol reader takes the fd over afterwards."""
+    line = bytearray()
+    while True:
+        byte = os.read(stdin_fd, 1)
+        if not byte:
+            raise RuntimeError("stdin closed before the host sent the kernel env")
+        if byte == b"\n":
+            break
+        line += byte
+        if len(line) > _MAX_KERNEL_ENV_FRAME_BYTES:
+            raise RuntimeError(f"the kernel env frame exceeds {_MAX_KERNEL_ENV_FRAME_BYTES} bytes")
+    frame = json.loads(line)
+    if not isinstance(frame, dict) or frame.get("type") != KERNEL_ENV_FRAME:
+        raise RuntimeError("the host's first frame is not the kernel env")
+    env = frame.get("env")
+    if not isinstance(env, dict) or not all(
+        isinstance(key, str) and isinstance(value, str) for key, value in env.items()
+    ):
+        raise RuntimeError("the kernel env frame must map str names to str values")
+    return env
+
+
+def apply_kernel_env(stdin_fd: int) -> None:
+    """Apply a remote kernel's ``rlm.spawn(env=...)`` values; a no-op locally
+    (a local kernel gets them in its process env)."""
+    if remote_host() is None:
+        return
+    os.environ.update(read_kernel_env(stdin_fd))
+
+
 def configure(on_silence: Callable[[], None]) -> None:
     """Set up a remote kernel before the protocol starts; a no-op locally.
 
@@ -200,8 +243,10 @@ def configure(on_silence: Callable[[], None]) -> None:
 
 __all__ = [
     "RemoteKernelRefusal",
+    "apply_kernel_env",
     "configure",
     "note_host_frame",
+    "read_kernel_env",
     "reap_stale_kernels",
     "refuse_on_remote",
     "remote_host",

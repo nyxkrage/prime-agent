@@ -507,6 +507,21 @@ pub(crate) struct ChildEngineOverrides {
     pub thinking: pa_types::ai::ModelThinkingLevel,
     pub semantic_parent_session_id: Option<String>,
     pub spawned_by_request_id: Option<String>,
+    /// The spawn's `rlm.spawn(env=...)` overrides for the child's kernel.
+    pub kernel_env: pa_core::kernel::KernelEnvOverrides,
+}
+
+impl HeadlessEmbedding {
+    /// The kernel env overrides of this engine: a spawned child's own
+    /// `env=`, none for a root (never inherited down the tree).
+    fn kernel_env(&self) -> pa_core::kernel::KernelEnvOverrides {
+        match self {
+            HeadlessEmbedding::Child(overrides) => overrides.kernel_env.clone(),
+            HeadlessEmbedding::Root { .. } | HeadlessEmbedding::Rpc => {
+                pa_core::kernel::KernelEnvOverrides::default()
+            }
+        }
+    }
 }
 
 /// A child's model source: a real-provider child carries its resolved
@@ -805,6 +820,7 @@ pub(crate) async fn build_headless_engine_with(
     let engine = pa_core::session_engine::engine::create_session(
         pa_core::session_engine::engine::SessionEngineConfig {
             remote_kernel: None,
+            kernel_env: embedding.kernel_env(),
             on_late_sent_agent_message,
             cron_store: None,
             semantic_edges,
