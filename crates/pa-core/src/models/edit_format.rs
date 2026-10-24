@@ -79,21 +79,20 @@ pub fn edit_format_for_model_reference(
         agent_dir.join("models.json"),
     );
     let all = registry.get_all();
-    let resolved: Option<Model> = match model {
-        Some(reference) => super::resolve_cli_model(None, reference, all).model,
-        None => {
-            let available: Vec<Model> = registry.get_available().into_iter().cloned().collect();
-            super::find_initial_model(&super::InitialModelOptions {
-                cli_provider: None,
-                cli_model: None,
-                scoped_models: &[],
-                is_continuing: false,
-                default_provider: settings.get_default_provider(),
-                default_model_id: settings.get_default_model(),
-                all_models: all,
-                available_models: &available,
-            })
-        }
+    let resolved: Option<Model> = if let Some(reference) = model {
+        super::resolve_cli_model(None, reference, all).model
+    } else {
+        let available: Vec<Model> = registry.get_available().into_iter().cloned().collect();
+        super::find_initial_model(&super::InitialModelOptions {
+            cli_provider: None,
+            cli_model: None,
+            scoped_models: &[],
+            is_continuing: false,
+            default_provider: settings.get_default_provider(),
+            default_model_id: settings.get_default_model(),
+            all_models: all,
+            available_models: &available,
+        })
     };
     match (resolved, model) {
         (Some(resolved), _) => resolve_edit_format(
