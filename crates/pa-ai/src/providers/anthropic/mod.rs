@@ -10,6 +10,7 @@ use crate::event_stream::{
     create_assistant_message_event_stream, AssistantMessageEvent, AssistantMessageEventStream,
 };
 use crate::models::clamp_thinking_level;
+use crate::providers::opencode_session::push_opencode_session_header;
 use crate::providers::simple_options::{adjust_max_tokens_for_thinking, build_base_options};
 use crate::registry::Provider;
 use crate::types::{
@@ -418,6 +419,7 @@ pub(crate) fn build_request_headers(
     }
 
     let mut pairs = headers_to_pairs(&default_headers);
+    push_opencode_session_header(&mut pairs, model, session_id);
     // The Anthropic SDK always sends the API version; mirror it.
     pairs.insert(0, ("anthropic-version".into(), "2023-06-01".into()));
     if model.provider == "cloudflare-ai-gateway" || model.provider == "github-copilot" || is_oauth {

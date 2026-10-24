@@ -15,6 +15,7 @@ use crate::providers::openai_responses_shared::{
     ConvertResponsesMessagesOptions, ConvertResponsesToolsOptions, ReasoningSummary,
     ResponsesStreamHooks, OPENAI_TOOL_CALL_PROVIDERS,
 };
+use crate::providers::opencode_session::push_opencode_session_header;
 use crate::providers::simple_options::build_base_options;
 use crate::registry::Provider;
 use crate::types::{
@@ -182,6 +183,8 @@ fn build_headers(
             headers.push((name.clone(), value.clone()));
         }
     }
+    // Not `cache_session_id`: opencode needs its routing session even with caching off.
+    push_opencode_session_header(&mut headers, model, options.base.session_id.as_deref());
     headers.push(("Authorization".into(), format!("Bearer {api_key}")));
     headers
 }
@@ -493,6 +496,25 @@ impl Provider for OpenAIResponsesProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `opencode-go` rejects a request without a routing session (`MissingSessionID`); with caching
+    /// off there is no cache session, but the routing header still ships.
+    #[test]
+    fn opencode_keeps_its_routing_session_with_caching_off() {
+        let model = crate::models_generated::get_model("opencode-go", "gpt-5.6-luna")
+            .expect("the catalog carries opencode-go luna");
+        let options = OpenAIResponsesOptions::from_base(StreamOptions {
+            session_id: Some("s-1".into()),
+            ..StreamOptions::default()
+        });
+        assert_eq!(
+            build_headers(model, "k", &options, None),
+            vec![
+                ("x-opencode-session".to_string(), "s-1".to_string()),
+                ("Authorization".to_string(), "Bearer k".to_string()),
+            ]
+        );
+    }
 
     /// A responses-served model with a wire `compat` object (the whole model need not be
     /// responses-shaped for the compat resolution).

@@ -10,6 +10,7 @@ use crate::providers::openai_completions::has_tool_history;
 use crate::providers::openai_completions::{
     OpenAICompatCacheControl, OpenAICompletionsOptions, ResolvedCompat,
 };
+use crate::providers::opencode_session::push_opencode_session_header;
 use crate::types::{CacheRetention, Context, Model, ModelExt, ModelThinkingLevel};
 
 // Long by design: mirrors the provider's stream shape.
@@ -347,8 +348,8 @@ pub(crate) fn build_headers(
         }
     }
 
+    push_opencode_session_header(&mut headers, model, conversation_id);
     headers.insert(0, ("Authorization".into(), format!("Bearer {api_key}")));
-    let _ = conversation_id;
     headers
 }
 
@@ -388,6 +389,22 @@ mod tests {
                 name.eq_ignore_ascii_case("X-Prime-Team-ID") && value == "auth-owner-team"
             }),
             "the auth owner's header must ship: {headers:?}"
+        );
+    }
+
+    /// `opencode-go` rejects a request without a routing session (`MissingSessionID`); with caching
+    /// off there is no cache session, but the routing header still ships.
+    #[test]
+    fn opencode_keeps_its_routing_session_with_caching_off() {
+        let model = models_generated::get_model("opencode-go", "deepseek-v4-flash")
+            .expect("the catalog carries opencode-go deepseek");
+        let compat = crate::providers::openai_completions::get_compat(model);
+        assert_eq!(
+            build_headers(model, "k", None, None, &compat, Some("s-1")),
+            vec![
+                ("Authorization".to_string(), "Bearer k".to_string()),
+                ("x-opencode-session".to_string(), "s-1".to_string()),
+            ]
         );
     }
 

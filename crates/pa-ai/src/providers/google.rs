@@ -15,6 +15,7 @@ use crate::providers::google_shared::{
     get_google_thinking_budget, get_thinking_level, API_GOOGLE_GENERATIVE_AI,
 };
 use crate::providers::google_stream::GoogleStreamState;
+use crate::providers::opencode_session::push_opencode_session_header;
 use crate::providers::simple_options::build_base_options;
 use crate::registry::Provider;
 use crate::types::{
@@ -277,6 +278,7 @@ async fn run_stream(
             headers.push(("session_id".into(), session_id.clone()));
         }
     }
+    push_opencode_session_header(&mut headers, model, options.base.session_id.as_deref());
     headers.push(("x-goog-api-key".into(), api_key));
 
     let mut response: HttpResponse = send(RequestOptions {
