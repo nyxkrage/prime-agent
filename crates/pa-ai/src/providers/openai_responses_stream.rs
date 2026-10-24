@@ -495,17 +495,17 @@ impl<'a> ResponsesStreamProcessor<'a> {
                 }
             }
             "response.output_item.done" => {
-                if let Some(index) = output_index {
-                    self.slots.remove(&index);
-                }
+                // Read the finishing block's index before dropping its slot: removing first left
+                // every branch below without a block, so no signature or `*_end` was recorded.
+                let content_index = self
+                    .current_slot(output_index)
+                    .map(|slot| slot.content_index);
+                let slot = output_index.and_then(|index| self.slots.remove(&index));
                 let item = event.get("item").cloned().unwrap_or(Value::Null);
                 let item_type = item
                     .get("type")
                     .and_then(|value| value.as_str())
                     .unwrap_or("");
-                let content_index = self
-                    .current_slot(output_index)
-                    .map(|slot| slot.content_index);
                 match item_type {
                     "reasoning" => {
                         if let Some(content_index) = content_index {
@@ -616,18 +616,12 @@ impl<'a> ResponsesStreamProcessor<'a> {
                         }
                     }
                     "function_call" => {
-                        let content_index = content_index.or_else(|| {
-                            output_index
-                                .and_then(|index| self.slots.get(&index))
-                                .map(|slot| slot.content_index)
-                        });
                         if let Some(content_index) = content_index {
                             if self.block_kind(content_index) == Some("toolCall") {
-                                let slot_json =
-                                    match self.slots.get(&output_index.unwrap_or_default()) {
-                                        Some(slot) => slot.partial_json.text().to_string(),
-                                        None => String::new(),
-                                    };
+                                let slot_json = match &slot {
+                                    Some(slot) => slot.partial_json.text().to_string(),
+                                    None => String::new(),
+                                };
                                 let arguments_text = item
                                     .get("arguments")
                                     .and_then(|value| value.as_str())
@@ -974,7 +968,6 @@ mod tests {
     /// opencode-go `gpt-5.6-luna` capture. Regression: the slot was removed before its content
     /// index was read, so every finalize branch was skipped and replay lost the reasoning.
     #[tokio::test]
-    #[ignore = "fails until output_item.done reads the slot before removing it"]
     async fn output_item_done_finalizes_signatures_for_reasoning_message_and_tool_call() {
         let reasoning_done = json!({
             "id": "rs_1", "type": "reasoning", "encrypted_content": "gAAAA-final",
