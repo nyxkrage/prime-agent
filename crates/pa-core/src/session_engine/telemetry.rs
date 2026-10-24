@@ -382,7 +382,7 @@ impl SessionCounters {
     /// [`crate::session_engine::runtime_wiring::APPLY_PATCH_REPORT_REQUEST`]:
     /// `{"files": n, "hunks": n, "failure": reason | null}`. Counts only;
     /// the report carries no paths or content.
-    pub fn note_apply_patch(&self, report: &Value) {
+    pub(crate) fn note_apply_patch(&self, report: &Value) {
         let files = report["files"].as_u64().unwrap_or(0);
         let hunks = report["hunks"].as_u64().unwrap_or(0);
         let increments = match report["failure"].as_str() {

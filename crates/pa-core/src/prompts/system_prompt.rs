@@ -131,7 +131,7 @@ pub fn system_prompt_breakdown(options: &BuildSystemPromptOptions) -> SystemProm
                 ),
                 pa_types::ai::EditFormat::ApplyPatch => (
                     "prompts/layers/core.md + apply-patch-core.md",
-                    "prompts/layers/usage.md + apply-patch-usage.md",
+                    "prompts/layers/usage.md + apply-patch-usage*.md",
                 ),
             };
             segments.push(PromptSegment::static_segment(
@@ -569,7 +569,7 @@ mod tests {
         };
         let mut expected_sources = sources(&edit);
         expected_sources[0].1 = "prompts/layers/core.md + apply-patch-core.md";
-        expected_sources[1].1 = "prompts/layers/usage.md + apply-patch-usage.md";
+        expected_sources[1].1 = "prompts/layers/usage.md + apply-patch-usage*.md";
         assert_eq!(sources(&apply_patch), expected_sources);
         assert!(apply_patch.segments[0]
             .text

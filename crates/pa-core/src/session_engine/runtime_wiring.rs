@@ -218,11 +218,11 @@ pub fn model_visible_skills(skills: Vec<Skill>, handlers: &HostRequestHandlers) 
 }
 
 /// The bundled skill that binds `apply_patch` in the kernel.
-pub const APPLY_PATCH_SKILL_NAME: &str = "apply-patch";
+pub(crate) const APPLY_PATCH_SKILL_NAME: &str = "apply-patch";
 
 /// The host request the `apply_patch` skill reports its adoption counters
 /// over (`{"files", "hunks", "failure"}`; no paths or content).
-pub const APPLY_PATCH_REPORT_REQUEST: &str = "apply_patch.report";
+pub(crate) const APPLY_PATCH_REPORT_REQUEST: &str = "apply_patch.report";
 
 /// The skill list for a session's resolved edit format: the `apply-patch`
 /// skill stays only for [`EditFormat::ApplyPatch`]. The kernel bootstrap and

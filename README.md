@@ -177,8 +177,9 @@ window; it does not change every model's global compaction percentage.
 ### Edit format (`apply_patch`)
 
 Models trained on OpenAI's V4A patch format edit files from the Python REPL with
-`await apply_patch('''*** Begin Patch ... *** End Patch''')`. The whole patch is
-validated before any file is written, and every hunk is then applied through `edit`.
+`await apply_patch('''*** Begin Patch ... *** End Patch''')`, in the format of OpenAI
+Codex's `apply_patch`. The whole patch is checked before any file is written and applied
+all or nothing; each changed hunk shows its diff like an `edit` call.
 Other models keep using `edit.run(path, old_str, new_str)`.
 
 The per-model `editFormat` option in `models.json` (`"edit"` or `"apply_patch"`) picks

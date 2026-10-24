@@ -10,15 +10,19 @@ pub const USAGE_LAYER: &str = include_str!("layers/usage.md");
 pub const OPINIONATED_LAYER: &str = include_str!("layers/opinionated.md");
 
 /// The edit-guidance slots of the static layers: the line starting with the
-/// prefix (one in `core.md`, one in `usage.md`) is the `edit` guidance, and
+/// prefix (one in `core.md`, two in `usage.md`) is the `edit` guidance, and
 /// the paired file (one or more whole lines) replaces it for models whose
 /// edit format is `apply_patch`.
 /// The choice is per model, so each model's static prefix stays cache-stable.
-const EDIT_GUIDANCE_SLOTS: [(&str, &str); 2] = [
+const EDIT_GUIDANCE_SLOTS: [(&str, &str); 3] = [
     ("- `edit.run(", include_str!("layers/apply-patch-core.md")),
     (
         "- Edits of existing files must be performed using `edit`",
         include_str!("layers/apply-patch-usage.md"),
+    ),
+    (
+        "- Agents use Python for reading files and searching in them",
+        include_str!("layers/apply-patch-usage-variables.md"),
     ),
 ];
 

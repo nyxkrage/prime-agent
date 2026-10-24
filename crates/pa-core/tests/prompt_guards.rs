@@ -547,8 +547,9 @@ const TS_PACKAGED_SKILL_SET: &[&str] = &[
     "websearch",
 ];
 
-/// Deliberate Rust-only bundled skills, absent from the TS packaged set: `apply-patch` (bound only
-/// for models whose edit format is `apply_patch`, so TS-equivalent sessions never see it).
+/// Deliberate Rust-only bundled skills, absent from the TS packaged set: `apply-patch`, bound only
+/// for models whose edit format is `apply_patch` (by default GPT-5.1 and newer, so a session on
+/// such a model sees it unless `"applyPatch": "off"` is set).
 const RUST_ONLY_PACKAGED_SKILLS: &[&str] = &["apply-patch"];
 
 /// The bundled skills directory matches the TS packaged set name-for-name (plus the deliberate

@@ -645,7 +645,7 @@ def _commit(workspace: _Workspace) -> None:
             pass
 
 
-async def _report(files: int, hunks: int, failure: str | None) -> None:
+async def _report(files: int, hunks: int, *, failure: str | None) -> None:
     """Adoption counters to the host (best-effort; absent outside a kernel)."""
     try:
         from rlm import host_request
@@ -688,7 +688,7 @@ async def run(patch: str) -> list[dict[str, Any]]:
         workspace, events = _validate(operations)
         _commit(workspace)
     except PatchError as error:
-        await _report(0, 0, error.reason)
+        await _report(0, 0, failure=error.reason)
         raise
     for path, old_str, new_str, start_line in events:
         edit._emit_diff(path, old_str, new_str, start_line)
@@ -701,5 +701,5 @@ async def run(patch: str) -> list[dict[str, Any]]:
         }
         for operation in operations
     ]
-    await _report(len(summary), sum(entry["hunks"] for entry in summary), None)
+    await _report(len(summary), sum(entry["hunks"] for entry in summary), failure=None)
     return summary
