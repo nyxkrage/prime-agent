@@ -1,18 +1,23 @@
-"""Apply OpenAI V4A patches: validate the whole patch in memory, then write
-every update hunk through the ``edit`` skill.
+"""Apply V4A patches (the OpenAI Codex ``apply_patch`` format) from the kernel.
 
-Phase 1 parses the patch and resolves every hunk into an exact
-``old_str -> new_str`` pair, replaying the pairs in memory with the rule
-``edit.run`` enforces (``old_str`` occurs exactly once in the current
-content). Any failure raises :class:`PatchError` and nothing is written.
-Phase 2 calls ``edit.run`` once per pair in the validated order, so file
-writes and diff display events are exactly what direct ``edit`` calls
-produce. Added files are written here (with a diff display event); deleted
-and moved files are unlinked/renamed here.
+Parsing and matching follow Codex's ``codex-rs/apply-patch`` (the lenient
+streaming parser, ``seek_sequence``'s whitespace/punctuation tolerance, the
+line-based replacement with preserved line endings, and the Add/Delete/Move
+semantics). The one deliberate difference is atomicity: Codex applies file by
+file and can stop halfway, while here the whole patch is first replayed
+against an in-memory view of the filesystem (contents, existence, directory
+structure, write access), then every change is staged next to its target and
+committed only once all of it is staged. A patch that fails anywhere before
+the commit leaves every file as it was. Each changed hunk emits the same diff
+display event as the equivalent ``edit.run`` call.
 """
 
 from __future__ import annotations
 
+import os
+import re
+import secrets
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -21,24 +26,46 @@ import edit
 
 _BEGIN = "*** Begin Patch"
 _END = "*** End Patch"
-_ADD = "*** Add File:"
-_DELETE = "*** Delete File:"
-_UPDATE = "*** Update File:"
-_MOVE = "*** Move to:"
+_ADD = "*** Add File: "
+_DELETE = "*** Delete File: "
+_UPDATE = "*** Update File: "
+_MOVE = "*** Move to: "
 _END_OF_FILE = "*** End of File"
+_CONTEXT = "@@ "
+_EMPTY_CONTEXT = "@@"
+_HEREDOC_OPENERS = ("<<EOF", "<<'EOF'", '<<"EOF"')
 
 # Host request carrying the adoption counters (no paths, no content).
 _REPORT_REQUEST = "apply_patch.report"
 
+_LINE_ENDING = re.compile(r"\r\n|\r|\n")
+
+# seek_sequence's last pass: typographic punctuation and odd spaces read as ASCII.
+_PUNCTUATION = str.maketrans(
+    {
+        **dict.fromkeys("‐‑‒–—―−", "-"),
+        **dict.fromkeys("‘’‚‛", "'"),
+        **dict.fromkeys("“”„‟", '"'),
+        **dict.fromkeys(
+            "            　",
+            " ",
+        ),
+    }
+)
+
 
 class PatchError(ValueError):
-    """A patch that failed to parse, validate, or apply.
+    """A patch that failed to parse, validate, or write.
 
     ``reason`` is one of ``parse``, ``context_not_found``, ``file_missing``,
-    ``file_exists``, ``apply_failed`` (keep in sync with
-    ``APPLY_PATCH_FAILURE_REASONS`` in ``crates/pa-telemetry/src/catalog.rs``).
-    Only ``apply_failed`` can leave files partially changed (a file changed
-    on disk between validation and write).
+    ``path_conflict``, ``not_writable``, ``unreadable``, ``apply_failed``
+    (keep in sync with ``APPLY_PATCH_FAILURE_REASONS`` in
+    ``crates/pa-telemetry/src/catalog.rs``). Every reason except
+    ``apply_failed`` is raised before anything is written. ``apply_failed``
+    means a filesystem write failed: while staging (every staged change is
+    rolled back, so no file changed) or, if the filesystem changed under the
+    patch between staging and commit, during the commit (the message names
+    what was already written).
     """
 
     def __init__(self, message: str, *, reason: str) -> None:
@@ -46,296 +73,576 @@ class PatchError(ValueError):
         self.reason = reason
 
 
+def _invalid_patch(message: str) -> PatchError:
+    return PatchError(f"Invalid patch: {message}", reason="parse")
+
+
+def _invalid_hunk(message: str, line_number: int) -> PatchError:
+    return PatchError(f"Invalid patch hunk on line {line_number}: {message}", reason="parse")
+
+
 @dataclass
-class _Hunk:
-    anchors: list[str] = field(default_factory=list)
-    lines: list[tuple[str, str]] = field(default_factory=list)
+class _Chunk:
+    """One ``@@`` section: ``old`` lines replaced by ``new`` lines."""
+
+    context: str | None = None
+    old: list[str] = field(default_factory=list)
+    new: list[str] = field(default_factory=list)
+    # (old index, new index) of lines parsed as context, kept from the file.
+    context_indices: list[tuple[int, int]] = field(default_factory=list)
     at_eof: bool = False
+
+    def push_context(self, line: str) -> None:
+        self.context_indices.append((len(self.old), len(self.new)))
+        self.old.append(line)
+        self.new.append(line)
 
 
 @dataclass
 class _Operation:
-    kind: str  # "update" | "add" | "delete"
+    kind: str  # "add" | "delete" | "update"
     path: str
+    line_number: int
     move_to: str | None = None
-    hunks: list[_Hunk] = field(default_factory=list)
-    added: str = ""
+    chunks: list[_Chunk] = field(default_factory=list)
+    contents: str = ""
+
+
+class _Parser:
+    """Codex's ``StreamingPatchParser`` fed one whole patch."""
+
+    def __init__(self) -> None:
+        self.mode = "not_started"  # | started | add | delete | update | ended
+        self.operations: list[_Operation] = []
+        self.line_number = 0
+
+    def _unexpected(self, line: str) -> PatchError:
+        return _invalid_hunk(
+            f"Unexpected line found in update hunk: '{line}'. Every line should start with "
+            "' ' (context line), '+' (added line), or '-' (removed line)",
+            self.line_number,
+        )
+
+    def _ensure_update_is_not_empty(self, line: str) -> None:
+        if not self.operations or self.operations[-1].kind != "update":
+            return
+        operation = self.operations[-1]
+        if not operation.chunks and self.mode == "update":
+            raise _invalid_hunk(
+                f"Update file hunk for path '{operation.path}' is empty", operation.line_number
+            )
+        if operation.chunks and not operation.chunks[-1].old and not operation.chunks[-1].new:
+            if line == _END:
+                raise _invalid_hunk("Update hunk does not contain any lines", self.line_number)
+            raise self._unexpected(line)
+
+    def _header_or_end(self, line: str) -> bool:
+        if line == _END:
+            self._ensure_update_is_not_empty(line)
+            self.mode = "ended"
+            return True
+        for marker, kind in ((_ADD, "add"), (_DELETE, "delete"), (_UPDATE, "update")):
+            if line.startswith(marker):
+                self._ensure_update_is_not_empty(line)
+                self.operations.append(_Operation(kind, line[len(marker) :], self.line_number))
+                self.mode = kind
+                return True
+        return False
+
+    def process(self, line: str) -> None:
+        self.line_number += 1
+        trimmed = line.strip()
+        if self.mode == "not_started":
+            if trimmed != _BEGIN:
+                raise _invalid_patch("The first line of the patch must be '*** Begin Patch'")
+            self.mode = "started"
+            return
+        if self.mode == "ended":
+            if trimmed:
+                raise _invalid_patch("The last line of the patch must be '*** End Patch'")
+            return
+        if self.mode != "update":
+            if self._header_or_end(trimmed):
+                return
+            if self.mode != "add" or not line.startswith("+"):
+                raise _invalid_hunk(
+                    f"'{trimmed}' is not a valid hunk header. Valid hunk headers: "
+                    "'*** Add File: {path}', '*** Delete File: {path}', '*** Update File: {path}'",
+                    self.line_number,
+                )
+            self.operations[-1].contents += f"{line[1:]}\n"
+            return
+        # Inside an update only unindented headers count; an indented one is
+        # a context line (Codex).
+        update_line = line.rstrip()
+        if self._header_or_end(update_line):
+            return
+        operation = self.operations[-1]
+        chunks = operation.chunks
+        is_context = update_line == _EMPTY_CONTEXT or update_line.startswith(_CONTEXT)
+        if chunks and chunks[-1].at_eof:
+            if not update_line:
+                return
+            if not is_context:
+                raise _invalid_hunk(
+                    f"Expected update hunk to start with a @@ context marker, got: '{line}'",
+                    self.line_number,
+                )
+        if not chunks and operation.move_to is None and update_line.startswith(_MOVE):
+            operation.move_to = update_line[len(_MOVE) :]
+            return
+        last_is_empty = bool(chunks) and not chunks[-1].old and not chunks[-1].new
+        if is_context:
+            # Consecutive `@@` lines (nested anchors) are rejected, as in Codex.
+            if last_is_empty:
+                raise self._unexpected(line)
+            context = None if update_line == _EMPTY_CONTEXT else update_line[len(_CONTEXT) :]
+            chunks.append(_Chunk(context=context))
+            return
+        if update_line == _END_OF_FILE:
+            if last_is_empty:
+                raise _invalid_hunk("Update hunk does not contain any lines", self.line_number)
+            if chunks:
+                chunks[-1].at_eof = True
+            return
+        if line == "" or line[0] in " +-":
+            if not chunks:
+                # The first chunk of a file may omit its `@@` line.
+                chunks.append(_Chunk())
+            if line == "":
+                chunks[-1].push_context("")
+            elif line[0] == " ":
+                chunks[-1].push_context(line[1:])
+            elif line[0] == "+":
+                chunks[-1].new.append(line[1:])
+            else:
+                chunks[-1].old.append(line[1:])
+            return
+        if chunks and (chunks[-1].old or chunks[-1].new):
+            raise _invalid_hunk(
+                f"Expected update hunk to start with a @@ context marker, got: '{line}'",
+                self.line_number,
+            )
+        raise self._unexpected(line)
 
 
 def _parse(patch: str) -> list[_Operation]:
-    lines = patch.strip().split("\n")
-    lines = [line[:-1] if line.endswith("\r") else line for line in lines]
-    if lines[0].strip() != _BEGIN:
-        raise PatchError(f"patch must start with {_BEGIN!r}", reason="parse")
-    if len(lines) < 2 or lines[-1].strip() != _END:
-        raise PatchError(f"patch must end with {_END!r}", reason="parse")
-    body = lines[1:-1]
-    operations: list[_Operation] = []
-    index = 0
+    """Codex's ``parse_patch`` (lenient mode): envelope, heredoc tolerance, hunks."""
+    stripped = patch.strip()
+    lines = [line.removesuffix("\r") for line in stripped.split("\n")] if stripped else []
 
-    def header_path(line: str, header: str) -> str:
-        path = line[len(header) :].strip()
-        if not path:
-            raise PatchError(f"line {index + 2}: {header!r} needs a path", reason="parse")
-        return path
+    def check_envelope(candidate: list[str]) -> list[str]:
+        first = candidate[0].strip() if candidate else None
+        last = candidate[-1].strip() if candidate else None
+        if first == _BEGIN and last == _END:
+            return candidate
+        if first is not None and first != _BEGIN:
+            raise _invalid_patch("The first line of the patch must be '*** Begin Patch'")
+        raise _invalid_patch("The last line of the patch must be '*** End Patch'")
 
-    while index < len(body):
-        line = body[index]
-        if not line.strip():
-            index += 1
-            continue
-        if line.startswith(_ADD):
-            operation = _Operation("add", header_path(line, _ADD))
-            index += 1
-            added: list[str] = []
-            while index < len(body) and not body[index].startswith("*** "):
-                if not body[index].startswith("+"):
-                    raise PatchError(
-                        f"{operation.path}: every line of an added file must start with '+'",
-                        reason="parse",
-                    )
-                added.append(body[index][1:])
-                index += 1
-            operation.added = "".join(f"{text}\n" for text in added)
-            operations.append(operation)
-        elif line.startswith(_DELETE):
-            operations.append(_Operation("delete", header_path(line, _DELETE)))
-            index += 1
-        elif line.startswith(_UPDATE):
-            operation = _Operation("update", header_path(line, _UPDATE))
-            index += 1
-            if index < len(body) and body[index].startswith(_MOVE):
-                operation.move_to = header_path(body[index], _MOVE)
-                index += 1
-            hunk: _Hunk | None = None
-            while index < len(body):
-                line = body[index]
-                if line.strip() == _END_OF_FILE:
-                    if hunk is None:
-                        raise PatchError(
-                            f"{operation.path}: {_END_OF_FILE!r} outside a hunk", reason="parse"
-                        )
-                    hunk.at_eof = True
-                    hunk = None
-                elif line.startswith("*** "):
-                    break
-                elif line.startswith("@@"):
-                    anchor = line[2:].strip()
-                    if hunk is None or hunk.lines:
-                        hunk = _Hunk()
-                        operation.hunks.append(hunk)
-                    if anchor:
-                        hunk.anchors.append(anchor)
-                elif line[:1] in (" ", "-", "+") or line == "":
-                    if hunk is None:
-                        # The first hunk of a file may omit its `@@` line.
-                        hunk = _Hunk()
-                        operation.hunks.append(hunk)
-                    # A bare empty line has kind "": an empty context line,
-                    # unless it trails the hunk (blank separator lines).
-                    hunk.lines.append((line[:1], line[1:]))
-                else:
-                    raise PatchError(
-                        f"{operation.path}: unexpected line {line!r} "
-                        "(hunk lines start with ' ', '-', or '+')",
-                        reason="parse",
-                    )
-                index += 1
-            for number, parsed in enumerate(operation.hunks, start=1):
-                while parsed.lines and parsed.lines[-1][0] == "":
-                    parsed.lines.pop()
-                parsed.lines = [(kind or " ", text) for kind, text in parsed.lines]
-                if not any(kind in "-+" for kind, _ in parsed.lines):
-                    raise PatchError(
-                        f"{operation.path}: hunk {number}: no '-' or '+' lines", reason="parse"
-                    )
-            if not operation.hunks and operation.move_to is None:
-                raise PatchError(f"{operation.path}: update has no hunks", reason="parse")
-            operations.append(operation)
-        else:
-            raise PatchError(
-                f"line {index + 2}: expected a file header, got {line!r}", reason="parse"
-            )
-    if not operations:
-        raise PatchError("patch contains no file operations", reason="parse")
-    return operations
+    try:
+        lines = check_envelope(lines)
+    except PatchError:
+        # A heredoc-wrapped patch (`<<'EOF'` ... `EOF`) is unwrapped.
+        if not (len(lines) >= 4 and lines[0] in _HEREDOC_OPENERS and lines[-1].endswith("EOF")):
+            raise
+        lines = check_envelope(lines[1:-1])
+    parser = _Parser()
+    for line in lines[:-1]:
+        parser.process(line.removesuffix("\r"))
+    parser.line_number += 1
+    parser._ensure_update_is_not_empty(_END)
+    return parser.operations
 
 
-def _split_lines(content: str) -> list[str]:
-    """Lines with their terminators; the last one may lack ``\\n``."""
-    parts = content.split("\n")
-    lines = [f"{part}\n" for part in parts[:-1]]
-    if parts[-1]:
-        lines.append(parts[-1])
-    return lines
-
-
-def _seek(texts: list[str], pattern: list[str], start: int, at_eof: bool) -> int | None:
-    """First line index >= start where ``pattern`` matches: exactly, then
-    ignoring trailing whitespace, then ignoring surrounding whitespace.
-    An end-of-file hunk tries the last possible position first."""
-    last = len(texts) - len(pattern)
-    if last < start:
+def _seek(lines: list[str], pattern: list[str], start: int, at_eof: bool) -> int | None:
+    """Codex's ``seek_sequence``: the first index >= ``start`` where ``pattern``
+    matches, exactly, then ignoring trailing whitespace, then surrounding
+    whitespace, then typographic punctuation. An end-of-file pattern is only
+    tried at the last possible position."""
+    if not pattern:
+        return start
+    last = len(lines) - len(pattern)
+    if last < 0:
         return None
-    positions = list(range(start, last + 1))
-    if at_eof:
-        positions = [last] + positions[:-1]
-    for normalize in (lambda text: text, str.rstrip, str.strip):
-        for position in positions:
-            if all(
-                normalize(texts[position + offset]) == normalize(expected)
-                for offset, expected in enumerate(pattern)
-            ):
-                return position
+    first = max(last, start) if at_eof else start
+    for normalize in (
+        None,
+        str.rstrip,
+        str.strip,
+        lambda text: text.strip().translate(_PUNCTUATION),
+    ):
+        for index in range(first, last + 1):
+            window = lines[index : index + len(pattern)]
+            if normalize is None:
+                if window == pattern:
+                    return index
+            elif all(normalize(got) == normalize(want) for got, want in zip(window, pattern)):
+                return index
     return None
 
 
-def _resolve(content: str, cursor: int, hunk: _Hunk, label: str) -> tuple[str, str, int]:
-    """One hunk -> ``(old_str, new_str, cursor after the hunk)``.
+# (start line, old line count, new lines)
+_Replacement = tuple[int, int, list[str]]
 
-    The hunk's lines are located at line granularity (Codex semantics:
-    anchors, then the first match after ``cursor``); ``old_str`` is then
-    widened by whole surrounding lines until it occurs exactly once in
-    ``content``, which is what ``edit.run`` requires. Context lines keep the
-    file's own text, so whitespace-tolerant matches never rewrite them.
-    """
-    lines = _split_lines(content)
-    texts = [line.rstrip("\n") for line in lines]
-    for anchor in hunk.anchors:
-        found = next(
-            (index for index in range(cursor, len(texts)) if texts[index].strip() == anchor),
-            None,
-        )
-        if found is None:
-            raise PatchError(
-                f"{label}: anchor {anchor!r} not found", reason="context_not_found"
-            )
-        cursor = found + 1
-    pattern = [text for kind, text in hunk.lines if kind != "+"]
-    if pattern:
-        start = _seek(texts, pattern, cursor, hunk.at_eof)
+
+def _replacements(
+    texts: list[str], chunks: list[_Chunk], path: str
+) -> list[tuple[int, int, list[_Replacement]]]:
+    """Codex's ``compute_replacements``, grouped per chunk as
+    ``(span start, span length, replacements)`` in file order."""
+    spans: list[tuple[int, int, list[_Replacement]]] = []
+    line_index = 0
+    for number, chunk in enumerate(chunks, start=1):
+        if chunk.context is not None:
+            found = _seek(texts, [chunk.context], line_index, False)
+            if found is None:
+                raise PatchError(
+                    f"Failed to find context '{chunk.context}' in {path} (hunk {number})",
+                    reason="context_not_found",
+                )
+            line_index = found + 1
+        if not chunk.old:
+            # A pure addition goes at the end of the file (Codex).
+            spans.append((len(texts), 0, [(len(texts), 0, list(chunk.new))]))
+            continue
+        pattern, new = chunk.old, chunk.new
+        start = _seek(texts, pattern, line_index, chunk.at_eof)
+        if start is None and pattern[-1] == "":
+            # A trailing empty line stands for the file's final newline.
+            pattern = pattern[:-1]
+            if new and new[-1] == "":
+                new = new[:-1]
+            start = _seek(texts, pattern, line_index, chunk.at_eof)
         if start is None:
-            preview = "\n".join(pattern[:3])
+            joined = "\n".join(chunk.old)
             raise PatchError(
-                f"{label}: context not found:\n{preview}", reason="context_not_found"
+                f"Failed to find expected lines in {path} (hunk {number}):\n{joined}",
+                reason="context_not_found",
             )
-    else:
-        # A pure insertion goes right after its anchor, or at end of file.
-        start = cursor if hunk.anchors else len(lines)
-    end = start + len(pattern)
+        # Context lines stay as the file has them (text and line ending).
+        replacements: list[_Replacement] = []
+        old_start = new_start = 0
+        for old_context, new_context in chunk.context_indices:
+            if old_context >= len(pattern) or new_context >= len(new):
+                break
+            if (old_start, new_start) != (old_context, new_context):
+                replacements.append(
+                    (start + old_start, old_context - old_start, new[new_start:new_context])
+                )
+            old_start, new_start = old_context + 1, new_context + 1
+        if (old_start, new_start) != (len(pattern), len(new)):
+            replacements.append((start + old_start, len(pattern) - old_start, new[new_start:]))
+        spans.append((start, len(pattern), replacements))
+        line_index = start + len(pattern)
+    spans.sort(key=lambda span: span[0])
+    return spans
 
-    replacement: list[str] = []
-    position = start
-    for kind, text in hunk.lines:
-        if kind == " ":
-            replacement.append(lines[position])
-            position += 1
-        elif kind == "-":
-            position += 1
-        else:
-            replacement.append(f"{text}\n")
 
-    # Widen by whole lines until the span's text starts at exactly one offset
-    # (overlapping occurrences included), so edit.run's single replacement
-    # lands on this span and nowhere else.
-    offsets = [0]
-    for line in lines:
-        offsets.append(offsets[-1] + len(line))
-    low, high = start, end
-    grow_up = True
-    while True:
-        old_str = "".join(lines[low:high])
-        if content.find(old_str) == offsets[low] == content.rfind(old_str):
-            break
-        if (grow_up and low > 0) or high >= len(lines):
-            low -= 1
-        else:
-            high += 1
-        grow_up = not grow_up
-    # Every new line ends with "\n", except that a file which ended without
-    # a newline still does.
-    region = lines[low:start] + replacement + lines[end:high]
-    new_str = "".join(line if line.endswith("\n") else f"{line}\n" for line in region)
-    if new_str and old_str and not old_str.endswith("\n"):
-        new_str = new_str[:-1]
-    return old_str, new_str, start + len(replacement)
+def _rebuild(
+    lines: list[tuple[str, str | None]],
+    offset: int,
+    replacements: list[_Replacement],
+    ending: str,
+) -> tuple[str, int]:
+    """``lines`` (starting at file line ``offset``) with ``replacements``
+    applied: kept lines keep their endings, new lines get ``ending``, and
+    every line ends with a newline (Codex). Returns ``(text, line count)``."""
+    rebuilt: list[tuple[str, str | None]] = []
+    cursor = 0
+    for start, old_len, new_lines in replacements:
+        rebuilt.extend(lines[cursor : start - offset])
+        rebuilt.extend((text, ending) for text in new_lines)
+        cursor = start - offset + old_len
+    rebuilt.extend(lines[cursor:])
+    return "".join(f"{text}{line_end or ending}" for text, line_end in rebuilt), len(rebuilt)
+
+
+def _update(
+    content: str, chunks: list[_Chunk], path: str
+) -> tuple[str, list[tuple[str, str, int]]]:
+    """New contents plus one ``(old_str, new_str, start_line)`` display event
+    per changed chunk, as the equivalent sequence of ``edit.run`` calls
+    would report them."""
+    lines: list[tuple[str, str | None]] = []
+    position = 0
+    for match in _LINE_ENDING.finditer(content):
+        lines.append((content[position : match.start()], match.group()))
+        position = match.end()
+    if position < len(content):
+        lines.append((content[position:], None))
+    ending = next((line_end for _, line_end in lines if line_end), "\n")
+    spans = _replacements([text for text, _ in lines], chunks, path)
+    events: list[tuple[str, str, int]] = []
+    shift = 0
+    for start, length, replacements in spans:
+        span = lines[start : start + length]
+        old_str = "".join(f"{text}{line_end or ''}" for text, line_end in span)
+        new_str, new_length = _rebuild(span, start, replacements, ending)
+        if old_str != new_str:
+            events.append((old_str, new_str, start + 1 + shift))
+        shift += new_length - length
+    new_content, _ = _rebuild(
+        lines, 0, [replacement for _, _, group in spans for replacement in group], ending
+    )
+    return new_content, events
 
 
 class _Workspace:
-    """The in-memory view of every file the patch touches."""
+    """The patch's in-memory view of the filesystem.
+
+    ``files`` maps a path to its planned content (``None``: removed);
+    ``dirs`` holds the directories the patch creates. Paths are keyed by
+    their absolute spelling with the parent directory resolved, so a leaf
+    symlink stays its own entry: Delete and Move remove the link itself,
+    while reads and writes follow it to the file it names (Codex's default
+    ``follow_symlinks``).
+    """
 
     def __init__(self) -> None:
-        self._contents: dict[Path, str | None] = {}
+        self.files: dict[Path, str | None] = {}
+        self.dirs: set[Path] = set()
+        self._texts: dict[Path, str] = {}
 
     @staticmethod
-    def key(path: str) -> Path:
-        return Path(path).expanduser().resolve()
+    def lexical(path: str) -> Path:
+        absolute = Path(os.path.abspath(Path(path).expanduser()))
+        return absolute.parent.resolve() / absolute.name
 
-    def exists(self, path: str) -> bool:
-        key = self.key(path)
-        if key in self._contents:
-            return self._contents[key] is not None
-        return key.exists()
+    def target(self, lexical: Path) -> Path:
+        if lexical not in self.files and lexical.is_symlink():
+            return Path(os.path.realpath(lexical))
+        return lexical
+
+    def _is_dir(self, path: Path) -> bool:
+        return path not in self.files and (path in self.dirs or path.is_dir())
+
+    def _check_dir_writable(self, directory: Path, path: str) -> None:
+        if directory not in self.dirs and not os.access(directory, os.W_OK | os.X_OK):
+            raise PatchError(
+                f"Failed to write file {path}: directory {directory} is not writable",
+                reason="not_writable",
+            )
 
     def read(self, path: str) -> str:
-        key = self.key(path)
-        if key in self._contents:
-            content = self._contents[key]
+        """The text an update of ``path`` starts from."""
+        target = self.target(self.lexical(path))
+        if target in self.files:
+            content = self.files[target]
             if content is None:
-                raise PatchError(f"{path}: deleted earlier in this patch", reason="file_missing")
+                raise PatchError(
+                    f"Failed to read file to update {path}: No such file or directory",
+                    reason="file_missing",
+                )
             return content
-        if not key.is_file():
-            raise PatchError(f"{path}: file not found", reason="file_missing")
+        if target in self._texts:
+            return self._texts[target]
+        if self._is_dir(target):
+            raise PatchError(
+                f"Failed to read file to update {path}: Is a directory", reason="path_conflict"
+            )
         try:
-            # Read exactly as edit.run reads, so validation sees its content.
-            content = key.read_text(encoding="utf-8")
+            text = target.read_bytes().decode("utf-8")
+        except FileNotFoundError:
+            raise PatchError(
+                f"Failed to read file to update {path}: No such file or directory",
+                reason="file_missing",
+            ) from None
         except (OSError, UnicodeDecodeError) as error:
-            raise PatchError(f"{path}: cannot read: {error}", reason="file_missing") from error
-        self._contents[key] = content
-        return content
+            raise PatchError(
+                f"Failed to read file to update {path}: {error}", reason="unreadable"
+            ) from error
+        self._texts[target] = text
+        return text
 
-    def write(self, path: str, content: str | None) -> None:
-        self._contents[self.key(path)] = content
+    def write(self, path: str, content: str) -> tuple[Path, str]:
+        """Plan ``content`` at ``path`` (creating missing parent directories,
+        replacing an existing file); returns the written file and the text
+        it replaces (``""`` for a new or non-text file)."""
+        target = self.target(self.lexical(path))
+        if self._is_dir(target):
+            raise PatchError(f"Failed to write file {path}: Is a directory", reason="path_conflict")
+        missing: list[Path] = []
+        for parent in target.parents:
+            if parent in self.files:
+                if self.files[parent] is not None:
+                    raise PatchError(
+                        f"Failed to create parent directories for {path}: {parent} is a file",
+                        reason="path_conflict",
+                    )
+                missing.append(parent)
+            elif self._is_dir(parent):
+                self._check_dir_writable(parent, path)
+                break
+            elif os.path.lexists(parent):
+                raise PatchError(
+                    f"Failed to create parent directories for {path}: {parent} is not a directory",
+                    reason="path_conflict",
+                )
+            else:
+                missing.append(parent)
+        on_disk = target not in self.files and os.path.lexists(target)
+        if on_disk and not os.access(target, os.W_OK):
+            raise PatchError(
+                f"Failed to write file {path}: Permission denied", reason="not_writable"
+            )
+        try:
+            previous = self.read(path) if target in self.files or on_disk else ""
+        except PatchError:
+            previous = ""
+        self.dirs.update(missing)
+        self.files[target] = content
+        return target, previous
+
+    def delete(self, path: str) -> None:
+        """Plan the removal of ``path`` (a symlink itself, not its target)."""
+        lexical = self.lexical(path)
+        if lexical in self.files:
+            if self.files[lexical] is None:
+                raise PatchError(
+                    f"Failed to delete file {path}: No such file or directory",
+                    reason="file_missing",
+                )
+        else:
+            target = self.target(lexical)
+            if self._is_dir(lexical) or self._is_dir(target):
+                raise PatchError(
+                    f"Failed to delete file {path}: path is a directory", reason="path_conflict"
+                )
+            exists = (
+                self.files[target] is not None if target in self.files else os.path.exists(target)
+            )
+            if not exists:
+                raise PatchError(
+                    f"Failed to delete file {path}: No such file or directory",
+                    reason="file_missing",
+                )
+            self._check_dir_writable(lexical.parent, path)
+        self.files[lexical] = None
 
 
-def _validate(operations: list[_Operation]) -> list[list[tuple[str, str]]]:
-    """Phase 1: the ``(old_str, new_str)`` pairs per operation, or PatchError."""
+def _validate(
+    operations: list[_Operation],
+) -> tuple[_Workspace, list[tuple[str, str, str, int]]]:
+    """Phase 1: replay every operation in memory, in patch order, as Codex
+    would apply it; returns the final view and the diff display events."""
+    if not operations:
+        raise PatchError("No files were modified.", reason="parse")
     workspace = _Workspace()
-    plan: list[list[tuple[str, str]]] = []
+    events: list[tuple[str, str, str, int]] = []
     for operation in operations:
-        pairs: list[tuple[str, str]] = []
         if operation.kind == "add":
-            if workspace.exists(operation.path):
-                raise PatchError(f"{operation.path}: file already exists", reason="file_exists")
-            workspace.write(operation.path, operation.added)
+            target, previous = workspace.write(operation.path, operation.contents)
+            events.append((str(target), previous, operation.contents, 1))
         elif operation.kind == "delete":
-            workspace.read(operation.path)
-            workspace.write(operation.path, None)
+            workspace.delete(operation.path)
         else:
             content = workspace.read(operation.path)
-            cursor = 0
-            for number, hunk in enumerate(operation.hunks, start=1):
-                # Resolved against the content as earlier hunks left it (the
-                # replay edit.run will see), so an earlier hunk's new text can
-                # never make a later hunk ambiguous at write time.
-                old_str, new_str, cursor = _resolve(
-                    content, cursor, hunk, f"{operation.path}: hunk {number}"
-                )
-                content = content.replace(old_str, new_str, 1)
-                pairs.append((old_str, new_str))
-            if operation.move_to is not None:
-                moved = workspace.key(operation.move_to) != workspace.key(operation.path)
-                if moved and workspace.exists(operation.move_to):
-                    raise PatchError(
-                        f"{operation.path}: move target {operation.move_to} already exists",
-                        reason="file_exists",
-                    )
-                workspace.write(operation.path, None)
-                workspace.write(operation.move_to, content)
+            new_content, hunk_events = _update(content, operation.chunks, operation.path)
+            destination = operation.move_to
+            if destination is None or workspace.lexical(destination) == workspace.lexical(
+                operation.path
+            ):
+                target, _ = workspace.write(operation.path, new_content)
             else:
-                workspace.write(operation.path, content)
-        plan.append(pairs)
-    return plan
+                target, _ = workspace.write(destination, new_content)
+                workspace.delete(operation.path)
+            events.extend((str(target), old, new, line) for old, new, line in hunk_events)
+    return workspace, events
+
+
+def _sibling(path: Path) -> Path:
+    return path.parent / f".{path.name}.apply-patch-{secrets.token_hex(4)}"
+
+
+def _commit(workspace: _Workspace) -> None:
+    """Phase 2: stage every change (removed files renamed aside, missing
+    directories created, new files created with ``open(path, "x")``,
+    replacements written to sibling temp files), rolling everything back if
+    any step fails; then swap the temp files in and drop the set-aside
+    files."""
+    asides: list[tuple[Path, Path]] = []
+    made_dirs: list[Path] = []
+    created: list[Path] = []
+    temps: list[tuple[Path, Path]] = []
+    current = ""
+    try:
+        for path, content in workspace.files.items():
+            if content is None and os.path.lexists(path):
+                current = str(path)
+                aside = _sibling(path)
+                os.rename(path, aside)
+                asides.append((path, aside))
+        for directory in sorted(workspace.dirs, key=lambda directory: len(directory.parts)):
+            if not directory.is_dir():
+                current = str(directory)
+                os.mkdir(directory)
+                made_dirs.append(directory)
+        for path, content in workspace.files.items():
+            if content is None:
+                continue
+            current = str(path)
+            data = content.encode("utf-8")
+            if os.path.lexists(path):
+                temp = _sibling(path)
+                handle = open(temp, "xb")
+                temps.append((temp, path))
+                with handle:
+                    handle.write(data)
+                existing = os.stat(path)
+                os.chmod(temp, stat.S_IMODE(existing.st_mode))
+                try:
+                    os.chown(temp, existing.st_uid, existing.st_gid)
+                except OSError:
+                    pass
+            else:
+                # Created with "x": a file that appeared since validation is
+                # never clobbered (the patch fails and rolls back instead).
+                handle = open(path, "xb")
+                created.append(path)
+                with handle:
+                    handle.write(data)
+    except OSError as error:
+        for path in [temp for temp, _ in temps] + created:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        for directory in reversed(made_dirs):
+            try:
+                os.rmdir(directory)
+            except OSError:
+                pass
+        for path, aside in reversed(asides):
+            try:
+                os.rename(aside, path)
+            except OSError:
+                pass
+        raise PatchError(
+            f"Failed to write {current}: {error}; no file was changed", reason="apply_failed"
+        ) from error
+    done: list[str] = [str(path) for path in created]
+    for index, (temp, path) in enumerate(temps):
+        try:
+            os.replace(temp, path)
+        except OSError as error:
+            for leftover, _ in temps[index:]:
+                try:
+                    os.unlink(leftover)
+                except OSError:
+                    pass
+            raise PatchError(
+                f"Failed to write {path}: {error} (the filesystem changed while the patch was "
+                f"being applied); already written: {done}; set aside, not yet removed: "
+                f"{[str(aside) for _, aside in asides]}",
+                reason="apply_failed",
+            ) from error
+        done.append(str(path))
+    for _, aside in asides:
+        try:
+            os.unlink(aside)
+        except OSError:
+            pass
 
 
 async def _report(files: int, hunks: int, failure: str | None) -> None:
@@ -351,64 +658,48 @@ async def _report(files: int, hunks: int, failure: str | None) -> None:
 async def run(patch: str) -> list[dict[str, Any]]:
     """Apply one V4A patch (``*** Begin Patch`` ... ``*** End Patch``).
 
-    Every file and hunk is validated in memory first; on any failure a
-    :class:`PatchError` names the file, the hunk, and the reason, and no file
-    is touched. Then each update hunk is written through ``edit.run`` (same
-    writes and diff display as direct ``edit`` calls), added files are
-    created, deleted files unlinked, and moved files renamed.
+    The whole patch is parsed and replayed in memory first; any failure
+    raises :class:`PatchError` and no file is touched. Then every change is
+    staged and committed together, and each changed hunk emits the same diff
+    display event as the equivalent ``edit.run`` call.
 
     Args:
-        patch: The patch text. Sections: ``*** Update File: <path>``
-            (optionally followed by ``*** Move to: <path>``), ``*** Add File:
-            <path>`` (``+`` lines), ``*** Delete File: <path>``. Update hunks
-            start with ``@@`` or ``@@ <anchor line>``, then `` ``/``-``/``+``
-            lines; ``*** End of File`` anchors a hunk at the end of the file.
+        patch: The patch text. Sections: ``*** Add File: <path>`` (``+``
+            lines; replaces an existing file), ``*** Delete File: <path>``,
+            ``*** Update File: <path>`` (optionally followed by ``*** Move to:
+            <path>``, which replaces an existing destination). Update hunks
+            start with ``@@`` or ``@@ <line>`` (the hunk is searched after the
+            first line matching it), then `` ``/``-``/``+`` lines;
+            ``*** End of File`` pins a hunk to the end of the file. Hunks
+            apply in order, each searched after the previous one; a hunk with
+            no context or ``-`` lines appends to the end of the file.
 
     Returns:
         One summary per file operation, in patch order:
         ``{"path", "operation", "hunks", "move_to"}``.
 
     Raises:
-        PatchError: The patch is malformed, a file is missing or already
-            exists, or a hunk's context is not found.
+        PatchError: The patch is malformed, a file is missing, unreadable,
+            or not writable, a path is blocked, a hunk's lines are not found,
+            or a write failed (see :class:`PatchError`).
     """
     try:
         operations = _parse(patch)
-        plan = _validate(operations)
+        workspace, events = _validate(operations)
+        _commit(workspace)
     except PatchError as error:
         await _report(0, 0, error.reason)
         raise
-    summary: list[dict[str, Any]] = []
-    for operation, pairs in zip(operations, plan):
-        try:
-            if operation.kind == "add":
-                target = Path(operation.path).expanduser()
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(operation.added, encoding="utf-8")
-                edit._emit_diff(str(target.resolve()), "", operation.added, 1)
-            elif operation.kind == "delete":
-                Path(operation.path).expanduser().unlink()
-            else:
-                for old_str, new_str in pairs:
-                    await edit.run(operation.path, old_str, new_str)
-                if operation.move_to is not None:
-                    target = Path(operation.move_to).expanduser()
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    Path(operation.path).expanduser().replace(target)
-        except (OSError, ValueError) as error:
-            await _report(len(summary), sum(entry["hunks"] for entry in summary), "apply_failed")
-            raise PatchError(
-                f"{operation.path}: applying failed after validation (the file changed "
-                f"on disk?): {error}; earlier files of this patch were already written",
-                reason="apply_failed",
-            ) from error
-        summary.append(
-            {
-                "path": operation.path,
-                "operation": operation.kind,
-                "hunks": len(pairs),
-                "move_to": operation.move_to,
-            }
-        )
+    for path, old_str, new_str, start_line in events:
+        edit._emit_diff(path, old_str, new_str, start_line)
+    summary = [
+        {
+            "path": operation.path,
+            "operation": operation.kind,
+            "hunks": len(operation.chunks),
+            "move_to": operation.move_to,
+        }
+        for operation in operations
+    ]
     await _report(len(summary), sum(entry["hunks"] for entry in summary), None)
     return summary

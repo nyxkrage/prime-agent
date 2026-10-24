@@ -270,7 +270,9 @@ pub const APPLY_PATCH_FAILURE_REASONS: &[&str] = &[
     "parse",
     "context_not_found",
     "file_missing",
-    "file_exists",
+    "path_conflict",
+    "not_writable",
+    "unreadable",
     "apply_failed",
 ];
 
@@ -770,7 +772,9 @@ const AGENT_SESSION_ENDED: EventRule = EventRule {
             optional(count()),
         ),
         ("apply_patch_failure_file_missing_count", optional(count())),
-        ("apply_patch_failure_file_exists_count", optional(count())),
+        ("apply_patch_failure_path_conflict_count", optional(count())),
+        ("apply_patch_failure_not_writable_count", optional(count())),
+        ("apply_patch_failure_unreadable_count", optional(count())),
         ("apply_patch_failure_apply_failed_count", optional(count())),
     ],
 };

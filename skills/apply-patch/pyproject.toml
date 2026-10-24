@@ -1,11 +1,11 @@
-# Kernel-side package for the bundled apply-patch skill. It writes every
-# update hunk through the bundled `edit` skill, which the kernel always
-# installs alongside it; `edit` is not published on PyPI, so it is
-# intentionally not declared as a dependency.
+# Kernel-side package for the bundled apply-patch skill. It reports every
+# changed hunk through the bundled `edit` skill's diff display, and the kernel
+# always installs `edit` alongside it; `edit` is not published on PyPI, so it
+# is intentionally not declared as a dependency.
 [project]
 name = "apply-patch"
 version = "0.1.0"
-description = "Prime Agent apply-patch skill: OpenAI V4A patches, validated whole, applied through edit"
+description = "Prime Agent apply-patch skill: V4A patches (Codex apply_patch format), validated whole, applied all or nothing"
 requires-python = ">=3.10"
 dependencies = []
 
