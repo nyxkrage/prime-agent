@@ -231,14 +231,13 @@ async fn run_stream(
         // Retry a stale previous_response_id once on a fresh connection (the failed attempt's
         // cleanup dropped the cached one); the retry resends the full request body.
         let mut chain_reset_retried = false;
-        let freeform_tools = FreeformToolArguments::from_tools(context.tools.as_deref());
         loop {
             let attempt = run_websocket_attempt(
                 model,
                 &options,
                 &body,
                 &websocket_headers,
-                &freeform_tools,
+                context,
                 output,
                 writer,
                 &mut websocket_started,
@@ -390,7 +389,7 @@ async fn run_websocket_attempt(
     options: &OpenAICodexResponsesOptions,
     body: &Value,
     websocket_headers: &[(String, String)],
-    freeform_tools: &FreeformToolArguments,
+    context: &Context,
     output: &mut AssistantMessage,
     writer: &AssistantMessageEventWriter,
     websocket_started: &mut bool,
@@ -448,7 +447,7 @@ async fn run_websocket_attempt(
             apply_service_tier_pricing: Some(Box::new(move |usage, service_tier| {
                 apply_codex_service_tier_pricing(usage, service_tier.as_deref(), &model_id);
             })),
-            freeform_tools: freeform_tools.clone(),
+            freeform_tools: FreeformToolArguments::from_tools(context.tools.as_deref()),
         };
         let mut start_emitted = false;
         let mut processor = ResponsesStreamProcessor::new(model, output, writer, hooks);
@@ -500,11 +499,14 @@ async fn run_websocket_attempt(
             {
                 keep_connection = false;
             } else if use_cached_context && connection.cached && output.response_id.is_some() {
+                // Convert with this request's tools: the next request replays the turn in the shape
+                // those tools call for (a freeform call as `custom_tool_call`), and the
+                // continuation delta needs an exact prefix match against it.
                 let response_items = convert_responses_messages(
                     model,
                     &Context {
                         messages: vec![assistant_as_message(output)],
-                        tools: None,
+                        tools: context.tools.clone(),
                         system_prompt: None,
                     },
                     &OPENAI_TOOL_CALL_PROVIDERS,
@@ -514,7 +516,10 @@ async fn run_websocket_attempt(
                 )
                 .into_iter()
                 .filter(|item| {
-                    item.get("type").and_then(Value::as_str) != Some("function_call_output")
+                    !matches!(
+                        item.get("type").and_then(Value::as_str),
+                        Some("function_call_output" | "custom_tool_call_output")
+                    )
                 })
                 .collect::<Vec<_>>();
                 let continuation = ContinuationState {
@@ -1542,6 +1547,137 @@ mod tests {
         assert!(
             bodies[2].get("previous_response_id").is_none(),
             "the retry sends the full context: {bodies:?}"
+        );
+    }
+
+    /// The events of a turn that calls the freeform `python_repl` tool as a `custom_tool_call`.
+    fn codex_custom_tool_call_events(response_id: &str) -> Vec<Value> {
+        let item = |status: &str, input: &str| {
+            json!({
+                "type": "custom_tool_call",
+                "id": "ctc_1",
+                "status": status,
+                "name": "python_repl",
+                "call_id": "call_1",
+                "input": input,
+            })
+        };
+        vec![
+            json!({ "type": "response.created", "response": { "id": response_id } }),
+            json!({
+                "type": "response.output_item.added",
+                "output_index": 0,
+                "item": item("in_progress", ""),
+            }),
+            json!({
+                "type": "response.custom_tool_call_input.delta",
+                "output_index": 0,
+                "item_id": "ctc_1",
+                "delta": "print(1)",
+            }),
+            json!({
+                "type": "response.custom_tool_call_input.done",
+                "output_index": 0,
+                "item_id": "ctc_1",
+                "input": "print(1)",
+            }),
+            json!({
+                "type": "response.output_item.done",
+                "output_index": 0,
+                "item": item("completed", "print(1)"),
+            }),
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": response_id,
+                    "status": "completed",
+                    "usage": { "input_tokens": 5, "output_tokens": 3, "total_tokens": 8 },
+                },
+            }),
+        ]
+    }
+
+    /// Regression: after a turn that called a freeform tool, the follow-up continues the cached
+    /// websocket chain (a `previous_response_id` delta carrying only the tool result) instead of
+    /// resending the full body. The continuation baseline must replay the call in the shape the
+    /// request's tools give it (`custom_tool_call`, `ctc_` id), not as a `function_call`.
+    #[tokio::test]
+    async fn freeform_tool_turn_continues_the_cached_chain() {
+        let server = spawn_scripted_codex_server(vec![vec![
+            codex_custom_tool_call_events("resp_1"),
+            codex_response_events("resp_2", "msg_2", "Done"),
+        ]])
+        .await;
+        let model = codex_test_model(server.port);
+        let session_id = format!("session-freeform-continuation-{}", std::process::id());
+        let options = codex_test_options(&server, &session_id);
+        let tools = Some(vec![crate::types::Tool {
+            name: "python_repl".into(),
+            description: "Run Python.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": { "code": { "type": "string" } },
+                "required": ["code"],
+            }),
+            freeform_argument: Some("code".into()),
+        }]);
+        let first_context = Context {
+            tools: tools.clone(),
+            ..codex_test_context("Say hello")
+        };
+        let first = stream_openai_codex_responses(&model, &first_context, Some(&options))
+            .result()
+            .await;
+        assert_eq!(first.stop_reason, StopReason::ToolUse);
+        assert_eq!(first.response_id.as_deref(), Some("resp_1"));
+
+        let mut messages = first_context.messages.clone();
+        messages.extend([
+            crate::types::Message::Assistant(first),
+            crate::types::Message::ToolResult(crate::types::ToolResultMessage {
+                tool_call_id: "call_1|ctc_1".into(),
+                tool_name: "python_repl".into(),
+                content: vec![crate::types::UserOrToolContent::Text(
+                    crate::types::TextContent {
+                        text: "1".into(),
+                        text_signature: None,
+                        rest: Map::default(),
+                    },
+                )],
+                details: None,
+                is_error: false,
+                timestamp: 2,
+                rest: Map::default(),
+            }),
+        ]);
+        let second = stream_openai_codex_responses(
+            &model,
+            &Context {
+                messages,
+                ..first_context
+            },
+            Some(&options),
+        )
+        .result()
+        .await;
+        assert_eq!(second.stop_reason, StopReason::Stop);
+
+        let bodies = server.sent_bodies.lock().expect("bodies").clone();
+        assert_eq!(bodies.len(), 2, "{bodies:?}");
+        assert_eq!(
+            (
+                bodies[1].get("previous_response_id"),
+                bodies[1].get("input")
+            ),
+            (
+                Some(&json!("resp_1")),
+                Some(&json!([{
+                    "type": "custom_tool_call_output",
+                    "call_id": "call_1",
+                    "output": "1",
+                }]))
+            ),
+            "the follow-up sends only the tool result as a continuation delta"
         );
     }
 }
