@@ -403,3 +403,60 @@ fn bash_minority_cell_stays_python() {
     );
     assert_eq!(bash_dominated_stats(&card), None);
 }
+
+/// Plain `python_repl` cells (no `apply_patch` call, including cells that
+/// only mention it in a comment, a string, or an attribute read) render
+/// exactly the rows recorded before `apply_patch` literal colouring
+/// existed: every span's text and style, expanded, at two widths.
+#[test]
+fn plain_cells_render_the_recorded_rows() {
+    let corpus_path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/golden/ipython_plain_cells.json"
+    );
+    let corpus: Value =
+        serde_json::from_str(&std::fs::read_to_string(corpus_path).expect("corpus file"))
+            .expect("corpus JSON");
+    let cases = corpus["cases"].as_array().expect("cases array");
+    assert_eq!(cases.len(), PLAIN_CELLS.len(), "one recorded case per cell");
+    for (case, code) in cases.iter().zip(PLAIN_CELLS) {
+        assert_eq!(case["code"], *code);
+        assert_eq!(plain_cell_rows(code), case["rows"], "rows for {code:?}");
+    }
+}
+
+/// The plain-cell corpus: every highlighter scope, every string form, a
+/// streaming (unterminated) literal, CRLF, and `apply_patch` mentions that
+/// are not calls with a literal.
+const PLAIN_CELLS: [&str; 12] = [
+    "for i in range(3):\n    print(f'line {i}')",
+    "def gutter_probe(count=7, x1=None, *args, **kw):\n    \"\"\"Doc.\"\"\"\n    return count + 0x1F + 1.5e3j\n\nclass Foo(Bar):\n    pass",
+    "a = r'raw\\d' + b\"bytes\" + rb'x' + Rb\"y\" + BR'z' + u'uni' + F\"{a!r}\" + fr'{b}' + RF\"c\"\nb = 'it\\'s' \"say \\\"hi\\\"\"",
+    "s = '''one\n\"\"\" not the end\nthree'''\nt = \"\"\"a ''' b\"\"\"",
+    "# apply_patch('''*** Begin Patch''') in a comment\nx = 1  # trailing apply_patch(\"*** End Patch\")",
+    "msg = \"apply_patch('*** Begin Patch')\"\nprint(apply_patch.__doc__)\nhelp(apply_patch)",
+    "patch = build()\nawait apply_patch(patch + suffix)\nawait apply_patch(make_patch())",
+    "text = '''*** Begin Patch\n*** Update File: a.py\n@@\n-old\n+new\n*** End Patch'''\nprint(text)",
+    "value = 1\r\nprint(value)\r\n",
+    "partial = '''still streaming\n-not a patch\n+just text",
+    "x = (1,\n     2) \\\n    + 3\nlambda y: y if y else None",
+    "!ls -la\nimport os\nos.listdir('.')",
+];
+
+/// The expanded card rows as `[[text, style], ...]` per row, the shape the
+/// golden corpus records (styles in their `Debug` form).
+fn plain_cell_rows(code: &str) -> Value {
+    let card = cell_card(code, json!({ "status": "ok", "durationMs": 1 }), false, false);
+    let rows: Vec<Value> = [100, 24]
+        .into_iter()
+        .flat_map(|width| render(&card, 0, Detail::All, &theme(), width, true))
+        .map(|row| {
+            Value::Array(
+                row.iter()
+                    .map(|span| json!([span.content, format!("{:?}", span.style)]))
+                    .collect(),
+            )
+        })
+        .collect();
+    Value::Array(rows)
+}
