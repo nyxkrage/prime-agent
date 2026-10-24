@@ -76,6 +76,7 @@ class RLMSubagent:
     label: str | None = None
     last_activity_at: float | None = None
     activity_stale_ms: float | None = None
+    host: str | None = None
 
 
 @dataclass(frozen=True)
@@ -182,6 +183,8 @@ async def spawn(
     name: str,
     model: str | None = None,
     thinking: str | None = None,
+    host: str | None = None,
+    cwd: str | None = None,
 ) -> RLMSpawnHandle:
     """Spawn a recursive Prime Agent child and return once its task is admitted.
 
@@ -189,6 +192,12 @@ async def spawn(
     ``model`` selects a child with an exact ``provider/model`` selector.
     ``thinking`` sets the child reasoning level (e.g. 'off', 'low', 'medium', 'high');
     defaults to the parent level; levels invalid for the resolved model fail the spawn.
+    ``host`` runs the child's Python REPL (its ``bash``, files, and compute) on a
+    remote machine over SSH (``user@host``, a ``~/.ssh/config`` alias, or
+    ``host:port``); the agent loop and model calls stay local. Children of a
+    remote child default to the same host; ``host="local"`` spawns locally.
+    ``cwd`` sets the child's working directory (a remote path for a remote
+    child; defaults to the remote login directory or the parent's cwd).
     """
     if not isinstance(prompt, str):
         raise TypeError(f"prompt must be str, got {type(prompt).__name__}")
@@ -197,6 +206,10 @@ async def spawn(
         kwargs["model"] = model
     if thinking is not None:
         kwargs["thinking"] = thinking
+    if host is not None:
+        kwargs["host"] = host
+    if cwd is not None:
+        kwargs["cwd"] = cwd
     # Wire type stays "rlm.run" so kernels and hosts of different versions stay compatible.
     payload = await host_request("rlm.run", {"prompt": prompt, "kwargs": kwargs})
     return _spawn_handle_from_payload(payload)
@@ -333,6 +346,7 @@ def _subagent_from_payload(payload: Any, operation: str = "rlm.list_subagents") 
         label=_optional_str_field(payload, "label", operation),
         last_activity_at=_optional_int_field(payload, "last_activity_at", operation),
         activity_stale_ms=_optional_int_field(payload, "activity_stale_ms", operation),
+        host=_optional_str_field(payload, "host", operation),
     )
 
 
@@ -639,8 +653,10 @@ class _RLMNamespace:
         name: str,
         model: str | None = None,
         thinking: str | None = None,
+        host: str | None = None,
+        cwd: str | None = None,
     ) -> RLMSpawnHandle:
-        return await spawn(prompt, name=name, model=model, thinking=thinking)
+        return await spawn(prompt, name=name, model=model, thinking=thinking, host=host, cwd=cwd)
 
     async def create_session(
         self,

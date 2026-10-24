@@ -83,6 +83,7 @@ impl SupervisorChildSessionsInner {
         runtime_metadata: Option<Value>,
         identity: &ParentIdentity,
         launch_env: Option<std::collections::BTreeMap<String, String>>,
+        remote: Option<&pa_core::kernel::RemoteKernelTarget>,
     ) -> Result<CreatedChild> {
         let mut config = json!({
             "cwd": cwd,
@@ -104,6 +105,14 @@ impl SupervisorChildSessionsInner {
         }
         if let Some(request_id) = spawned_by_request_id {
             config["spawnedByRequestId"] = json!(request_id);
+        }
+        // A remote child's kernel placement rides the durable create, so a
+        // respawned worker reconnects to the same host.
+        if let Some(remote) = remote {
+            config["remoteHost"] = json!(remote.host);
+            if let Some(cwd) = &remote.cwd {
+                config["remoteCwd"] = json!(cwd);
+            }
         }
         if let Some(script) = &identity.child_script {
             config["script"] = json!(script);
@@ -187,6 +196,7 @@ impl SupervisorChildSessionsInner {
                 runtime_metadata,
                 identity,
                 launch_env,
+                /*remote*/ None,
             )
             .await?;
         // A failed prompt tears the just-created session down (TS kills the

@@ -635,6 +635,16 @@ impl RlmSubagentHost for InlineHost {
             if node.depth >= node.max_depth {
                 return Err(rlm_depth_limit_error(node.depth, node.max_depth));
             }
+            // Inline children share this process's kernel wiring: a remote
+            // kernel needs the daemon's per-child worker.
+            if matches!(
+                request.host,
+                Some(pa_core::session_engine::rlm_host::RlmSpawnHost::Remote(_))
+            ) {
+                anyhow::bail!(
+                    "rlm.spawn host= requires a daemon-backed session; print mode runs subagents in-process on this machine"
+                );
+            }
             let recipe = Arc::clone(&node.recipe);
             let config = &recipe.options.config;
             let child_id = format!("sub-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
@@ -1042,6 +1052,7 @@ fn roster_entry(
     unsettled: bool,
 ) -> RlmSubagentEntry {
     RlmSubagentEntry {
+        host: None,
         rlm_child_id: child.rlm_child_id.clone(),
         active_session_id: Some(child.node.session_id.clone()),
         session_id: Some(child.node.session_id.clone()),
@@ -1272,6 +1283,8 @@ mod tests {
         Arc::get_mut(&mut node).unwrap().max_depth = 2;
         let gate = node.spawn_gate.lock().await;
         let mut spawn = InlineHost(Arc::clone(&node)).spawn(RlmSpawnRequest {
+            cwd: None,
+            host: None,
             prompt: "finish the task".to_string(),
             name: Some("late".to_string()),
             model: None,

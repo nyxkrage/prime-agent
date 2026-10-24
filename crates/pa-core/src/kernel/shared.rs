@@ -340,6 +340,18 @@ pub struct KernelSnapshotConfig {
     pub debounce_ms: Option<u64>,
 }
 
+/// A kernel that runs on another machine over SSH (`rlm.spawn(..., host=...)`).
+/// Only the kernel runs remotely. The agent loop, model calls, and session
+/// persistence stay local.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteKernelTarget {
+    /// SSH destination as `ssh` understands it (`user@host`, a config
+    /// alias), or `[user@]host:port`.
+    pub host: String,
+    /// The remote working directory. `None` means the remote login directory.
+    pub cwd: Option<String>,
+}
+
 /// Options for constructing a [`ReplKernelManager`].
 #[derive(Clone, Default)]
 pub struct KernelManagerOptions {
@@ -359,6 +371,8 @@ pub struct KernelManagerOptions {
     pub bootstrap_code: Option<String>,
     /// File receiving the kernel process's stderr, rotated once at each spawn.
     pub stderr_log_path: Option<std::path::PathBuf>,
+    /// Run the kernel on a remote host over SSH instead of locally.
+    pub remote: Option<RemoteKernelTarget>,
 }
 
 /// Shutdown options: whether to flush a final namespace snapshot and drain

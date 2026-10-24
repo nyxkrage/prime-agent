@@ -32,6 +32,7 @@ async fn result_clipping_counts_characters_and_preserves_follow_up_cells() {
     std::fs::write(&python, FAKE_RUNTIME).expect("write fake runtime");
     std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).expect("chmod");
     let manager = ReplKernelManager::new(KernelManagerOptions {
+        remote: None,
         python: Some(python),
         cwd: Some(dir.path().to_path_buf()),
         env: HashMap::new(),

@@ -106,6 +106,9 @@ pub struct SessionEngineConfig {
     /// request ids on the wire).
     pub semantic_edges: Option<super::semantic_edges::SemanticEdgeIdentity>,
     pub on_late_sent_agent_message: Option<crate::tools::ipython::LateSentAgentMessageHandler>,
+    /// Run this session's Python kernel on a remote SSH host (an
+    /// `rlm.spawn(..., host=...)` child). `None` runs it locally.
+    pub remote_kernel: Option<crate::kernel::shared::RemoteKernelTarget>,
 }
 
 pub struct SessionEngine {
@@ -344,6 +347,13 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     {
         session_counters.set_telemetry_enabled(telemetry_switch.enabled.clone());
     }
+    // Admitted `rlm.spawn` calls count their placement (local vs remote).
+    if config.telemetry.is_some() {
+        let _ = wiring
+            .rlm
+            .spawn_counters
+            .set(std::sync::Arc::clone(&session_counters));
+    }
     // The `mcp.*` host requests (config/refresh/begin_login) the kernel's
     // generic MCP registry sends while listing or calling generic servers.
     // Telemetry counts connector use (never the server name) when the
@@ -509,6 +519,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         config.on_background_work_settled.clone(),
         on_unavailable_skills,
         on_bootstrap_result,
+        config.remote_kernel.clone(),
     );
     let mut tools = config.tools.clone();
     if !tools.iter().any(|tool| tool.name() == PYTHON_TOOL_NAME) {

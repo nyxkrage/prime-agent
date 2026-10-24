@@ -12,8 +12,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use pa_core::kernel::rlm_runtime::create_default_rlm_subagent_session_name;
 use pa_core::session_engine::rlm_host::{
     RlmChildResult, RlmCreateSessionHandle, RlmCreateSessionRequest, RlmDeleteSubagentResult,
-    RlmHostFuture, RlmSpawnHandle, RlmSpawnRequest, RlmSubagentActivity, RlmSubagentEntry,
-    RlmSubagentHost,
+    RlmHostFuture, RlmSpawnHandle, RlmSpawnHost, RlmSpawnRequest, RlmSubagentActivity,
+    RlmSubagentEntry, RlmSubagentHost,
 };
 use pa_core::session_engine::rlm_notices::{
     create_rlm_child_failure_message, create_rlm_child_terminal_notice, RlmChildTerminalNotice,
@@ -100,6 +100,9 @@ pub struct ParentIdentity {
     pub thinking: Option<String>,
     /// Verification seam: create children with a scripted engine file.
     pub child_script: Option<String>,
+    /// The SSH host this session's kernel runs on (a remote child); its
+    /// own children inherit it unless they spawn with `host="local"`.
+    pub remote_host: Option<String>,
 }
 
 impl ParentIdentity {
@@ -157,6 +160,9 @@ struct ChildRecord {
     session_dir: String,
     model: String,
     label: String,
+    /// The SSH host the child's kernel runs on; `None` for a local child
+    /// (and for a row reseeded from the ledger, which does not record it).
+    host: Option<String>,
     started_at_ms: u64,
     /// Terminal state (`done` | `error` | `cancelled`); running while absent.
     settled_status: Option<&'static str>,
@@ -260,6 +266,9 @@ impl ChildRecord {
         }
         if let Some(error) = &self.error {
             snapshot["error"] = json!(error);
+        }
+        if let Some(host) = &self.host {
+            snapshot["host"] = json!(host);
         }
         snapshot
     }
@@ -736,6 +745,7 @@ impl SupervisorChildSessions {
             .lock()
             .await
             .push(Arc::new(Mutex::new(ChildRecord {
+                host: None,
                 rlm_child_id: identity.rlm_child_id,
                 session_name: identity.session_name,
                 active_session_id: identity.active_session_id,
@@ -837,6 +847,7 @@ impl SupervisorChildSessions {
             label: (!record.label.is_empty()).then(|| record.label.clone()),
             last_activity_at: Some(record.started_at_ms),
             activity_stale_ms: None,
+            host: record.host.clone(),
         }
     }
 

@@ -140,8 +140,31 @@ impl Inner {
         // kernel that is still booting.
         live_kernels::add(self);
 
-        let python = match self.resolve_python(options).await {
-            Ok(python) => python,
+        // A remote kernel provisions its host and launches over ssh; a local
+        // kernel resolves its interpreter. Both then share the spawn path.
+        let launch = match &self.options.remote {
+            Some(target) => self.remote_kernel_command(target, options).await,
+            None => self.resolve_python(options).await.map(|python| {
+                let mut command = tokio::process::Command::new(&python);
+                command
+                    .args(["-m", "rlm.repl"])
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped());
+                // Hidden window on Windows (TS `spawnHidden`); the kernel stays in
+                // this process's group - its lifecycle is supervised directly.
+                crate::platform::process::set_no_window(command.as_std_mut());
+                if let Some(cwd) = &self.options.cwd {
+                    command.current_dir(cwd);
+                }
+                command
+                    .env_clear()
+                    .envs(kernel_spawn_env(&self.options.env));
+                (command, python.display().to_string())
+            }),
+        };
+        let (mut command, launch_label) = match launch {
+            Ok(launch) => launch,
             Err(error) => {
                 if self.start_stale(self.current_generation()) {
                     // Never touch a newer start's state.
@@ -163,21 +186,6 @@ impl Inner {
             return Err(anyhow!("Kernel was disposed during startup"));
         }
 
-        let env = kernel_spawn_env(&self.options.env);
-        let cwd = self.options.cwd.clone();
-        let mut command = tokio::process::Command::new(&python);
-        command
-            .args(["-m", "rlm.repl"])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-        // Hidden window on Windows (TS `spawnHidden`); the kernel stays in
-        // this process's group - its lifecycle is supervised directly.
-        crate::platform::process::set_no_window(command.as_std_mut());
-        if let Some(cwd) = &cwd {
-            command.current_dir(cwd);
-        }
-        command.env_clear().envs(env);
         let child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {
@@ -195,10 +203,7 @@ impl Inner {
                     let _ = tx.send(Err(anyhow!("spawn error: {error}")));
                 }
                 self.cleanup_resources(Signal::Term);
-                return Err(anyhow!(
-                    "failed to spawn kernel python {}: {error}",
-                    python.display()
-                ));
+                return Err(anyhow!("failed to spawn kernel {launch_label}: {error}"));
             }
         };
         let pid = child.id().map_or(-1, |p| p as i32);
@@ -451,6 +456,16 @@ impl Inner {
                     exit.code.map_or("null".to_string(), |c| c.to_string()),
                     exit.signal.map_or("null".to_string(), |s| s.to_string()),
                 ));
+                // A remote kernel's exit is usually a dropped connection: the
+                // in-flight cell fails naming the host instead of the generic
+                // shutdown text.
+                if let Some(remote) = &inner.options.remote {
+                    inner.reject_active_execution(&format!(
+                        "Remote kernel on {} exited (code={}): the SSH connection closed or the remote Python died",
+                        remote.host,
+                        exit.code.map_or("null".to_string(), |c| c.to_string()),
+                    ));
+                }
             }
             live_kernels::remove(&inner);
             // This exit is part of an in-flight graceful shutdown(): that call owns
@@ -529,7 +544,7 @@ impl Inner {
 /// read UTF-8 regardless of the active legacy code page, overriding any
 /// provisioner-provided `PYTHONUTF8`) and the owner pid the runtime journals
 /// its process groups under.
-fn kernel_spawn_env(options_env: &HashMap<String, String>) -> HashMap<String, String> {
+pub(super) fn kernel_spawn_env(options_env: &HashMap<String, String>) -> HashMap<String, String> {
     let mut env: HashMap<String, String> = std::env::vars().collect();
     for (key, value) in options_env {
         env.insert(key.clone(), value.clone());

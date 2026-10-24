@@ -206,6 +206,7 @@ fn children_host(
         String::new(),
     );
     sessions.set_identity(ParentIdentity {
+        remote_host: None,
         rlm_depth: depth,
         rlm_max_depth: 3,
         // Off-catalog on purpose: scripted children do not resolve models.
@@ -221,6 +222,8 @@ fn children_host(
 
 fn spawn_request(name: &str, prompt: &str) -> RlmSpawnRequest {
     RlmSpawnRequest {
+        cwd: None,
+        host: None,
         prompt: prompt.to_string(),
         name: Some(name.to_string()),
         model: None,

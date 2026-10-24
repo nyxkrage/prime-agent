@@ -276,6 +276,10 @@ impl Supervisor {
             // respawned child keeps its provenance (its ledger
             // re-registers idempotently either way).
             "spawnedByRequestId",
+            // A remote child's kernel placement: a respawned worker must
+            // reconnect to the same host, not fall back to a local kernel.
+            "remoteHost",
+            "remoteCwd",
             "systemPrompt",
             "appendSystemPrompt",
             "skills",

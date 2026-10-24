@@ -212,6 +212,7 @@ fn children(socket: &Path, agent_dir: &Path, script: &Path) -> SupervisorChildSe
         String::new(),
     );
     sessions.set_identity(ParentIdentity {
+        remote_host: None,
         rlm_depth: 0,
         rlm_max_depth: 2,
         // Off-catalog on purpose: scripted children do not resolve models.
@@ -227,6 +228,8 @@ fn children(socket: &Path, agent_dir: &Path, script: &Path) -> SupervisorChildSe
 
 fn spawn_request(name: &str, prompt: &str) -> RlmSpawnRequest {
     RlmSpawnRequest {
+        cwd: None,
+        host: None,
         prompt: prompt.to_string(),
         name: Some(name.to_string()),
         model: None,

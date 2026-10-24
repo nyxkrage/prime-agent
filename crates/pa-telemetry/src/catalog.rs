@@ -694,6 +694,10 @@ const AGENT_SESSION_ENDED: EventRule = EventRule {
         ("rlm_child_cache_read_tokens", optional(tokens())),
         ("rlm_child_cache_write_tokens", optional(tokens())),
         ("rlm_child_cost", optional(cost())),
+        // `rlm.spawn` adoption: every admitted spawn, and the ones placed
+        // on a remote SSH host (counts only, never the host).
+        ("rlm_spawn_count", optional(count())),
+        ("rlm_remote_spawn_count", optional(count())),
         ("feature_model_initiated_count", optional(count())),
         ("feature_model_completed_count", optional(count())),
         ("feature_model_failed_count", optional(count())),

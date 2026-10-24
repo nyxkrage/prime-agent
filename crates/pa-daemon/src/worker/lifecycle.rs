@@ -284,6 +284,9 @@ impl Worker {
         match self
             .engine
             .configure_rlm_identity(crate::engine::RlmSessionIdentity {
+                // A replacement runtime opens a saved session as a
+                // top-level runtime, which runs its kernel locally.
+                remote_kernel: None,
                 rlm_depth,
                 rlm_max_depth: None,
                 cwd: Some(summary.cwd.clone()),

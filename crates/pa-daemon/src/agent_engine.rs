@@ -281,6 +281,9 @@ pub struct AgentSessionEngine {
     /// This session's RLM recursion depth (0 for top-level): gates the kernel `refine.*` host
     /// requests.
     rlm_depth: std::sync::atomic::AtomicU32,
+    /// This session's remote SSH kernel placement (seeded by the create's
+    /// RLM identity); every engine build runs its kernel there.
+    remote_kernel: std::sync::Mutex<Option<pa_core::kernel::RemoteKernelTarget>>,
     /// The depth bound's source stamp (`default` | `env` | `global` |
     /// `inherited` | `chat`).
     rlm_max_depth_source: std::sync::Mutex<&'static str>,

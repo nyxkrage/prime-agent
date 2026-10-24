@@ -258,6 +258,7 @@ pub fn kernel_provisioner(
     on_background_work_settled: Option<crate::kernel::shared::BackgroundWorkSettledCallback>,
     on_unavailable_skills: Option<crate::kernel::provisioner::UnavailableSkillsCallback>,
     on_bootstrap_result: Option<crate::kernel::provisioner::KernelBootstrapResultHandler>,
+    remote: Option<crate::kernel::shared::RemoteKernelTarget>,
 ) -> Arc<KernelProvisioner> {
     let mut env = HashMap::with_capacity(3);
     env.insert(
@@ -307,6 +308,7 @@ pub fn kernel_provisioner(
             on_background_work_settled,
             on_unavailable_skills,
             on_bootstrap_result,
+            remote,
         },
     ))
 }

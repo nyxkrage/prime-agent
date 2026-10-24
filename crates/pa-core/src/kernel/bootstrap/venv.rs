@@ -19,6 +19,7 @@ use super::{
 // composition root).
 mod layout;
 mod probe;
+mod remote;
 mod runtime_source;
 mod skills;
 mod uv;
@@ -30,6 +31,9 @@ pub use layout::{kernel_venv_dir, kernel_venv_python};
 pub use probe::invalidate_runtime_probe_cache;
 #[cfg(test)]
 use probe::{installed_rlm_dir, lock_probe_memo, runtime_probe_key};
+pub(crate) use remote::{
+    ensure_remote_kernel_python, sh_quote, RemoteKernelInstall, SshDestination,
+};
 // The memo-clear helper and the live-probe package-dir walk exist only behind
 // the unix tests (see their gates in probe.rs and tests.rs).
 #[cfg(all(test, unix))]

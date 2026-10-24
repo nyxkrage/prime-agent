@@ -58,6 +58,7 @@ fn kernel_python() -> Option<PathBuf> {
 fn test_options(snapshot_dir: Option<&std::path::Path>) -> Option<KernelManagerOptions> {
     let python = kernel_python()?;
     Some(KernelManagerOptions {
+        remote: None,
         python: Some(python),
         cwd: Some(std::env::temp_dir()),
         env: HashMap::new(),

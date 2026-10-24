@@ -189,6 +189,17 @@ impl Worker {
             .get("childScript")
             .and_then(Value::as_str)
             .map(str::to_string);
+        // A remote child's kernel placement (the durable create replays it).
+        let remote_kernel = payload
+            .get("remoteHost")
+            .and_then(Value::as_str)
+            .map(|host| pa_core::kernel::RemoteKernelTarget {
+                host: host.to_string(),
+                cwd: payload
+                    .get("remoteCwd")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            });
 
         // Set by the fresh-path arm when the name landed in its single rewrite:
         // the shared name persist must not append a second `session_info` line.
@@ -597,6 +608,7 @@ impl Worker {
             thinking,
             child_script: child_script.clone(),
             semantic_spawn,
+            remote_kernel,
         }) {
             return response_failure(None, "create", &error.to_string(), None);
         }

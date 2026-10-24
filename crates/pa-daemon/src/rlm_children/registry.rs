@@ -563,6 +563,7 @@ fn ledger_child_records(
             .and_then(crate::rlm_ledger::read_rlm_subagent_display)
             .filter(|display| display.child_id == edge.child_id);
         records.push(ChildRecord {
+            host: None,
             rlm_child_id: edge.child_id,
             session_name: edge.name,
             active_session_id: session_id.clone().unwrap_or_default(),

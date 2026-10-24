@@ -408,6 +408,7 @@ async fn rlm_children_key_the_roster_by_parent_path_and_child_id() {
         String::new(),
     );
     children.set_identity(ParentIdentity {
+        remote_host: None,
         rlm_depth: 0,
         rlm_max_depth: 2,
         model: Some("scripted/faux-1".to_string()),
@@ -420,6 +421,8 @@ async fn rlm_children_key_the_roster_by_parent_path_and_child_id() {
 
     let handle = children
         .spawn(RlmSpawnRequest {
+            cwd: None,
+            host: None,
             prompt: "ship the roster lane".to_string(),
             name: Some("child-a".to_string()),
             model: None,

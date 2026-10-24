@@ -405,6 +405,8 @@ async fn sessions_with_fake_child_subagents(
 async fn spawn_child(sessions: &SupervisorChildSessions) -> RlmSpawnHandle {
     sessions
         .spawn(RlmSpawnRequest {
+            cwd: None,
+            host: None,
             prompt: "f20 child task".to_string(),
             name: Some("f20-worker".to_string()),
             model: None,
@@ -2586,6 +2588,7 @@ async fn collect_answers_the_cancelled_envelope_after_an_inactive_delete() {
 #[test]
 fn an_already_settled_child_never_re_scores_as_an_unreachable_error() {
     let base = || ChildRecord {
+        host: None,
         rlm_child_id: "child-id".to_string(),
         session_name: "lane".to_string(),
         active_session_id: "child-live".to_string(),
@@ -2659,6 +2662,7 @@ async fn the_unreachable_give_up_skips_the_exit_capture_when_a_capture_stands() 
     )
     .await;
     let record = Arc::new(tokio::sync::Mutex::new(ChildRecord {
+        host: None,
         rlm_child_id: "child-id".to_string(),
         session_name: "lane".to_string(),
         active_session_id: "child-live".to_string(),

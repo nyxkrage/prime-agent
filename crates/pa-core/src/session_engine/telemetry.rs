@@ -329,6 +329,8 @@ struct CounterValues {
     rlm_child_cache_read_tokens: u64,
     rlm_child_cache_write_tokens: u64,
     rlm_child_cost: f64,
+    rlm_spawn_count: u64,
+    rlm_remote_spawn_count: u64,
     /// `feature_<name>_<outcome>_count` over the fixed feature vocabulary.
     feature_outcomes: std::collections::BTreeMap<String, u64>,
 }
@@ -375,6 +377,21 @@ impl SessionCounters {
         });
     }
 
+    /// One admitted `rlm.spawn`, split by explicit placement (the host
+    /// name never uploads). An inherited placement counts as local: only
+    /// depth-0 sessions report, and they have no remote placement to inherit.
+    pub fn note_rlm_spawn(&self, host: Option<&super::rlm_host::RlmSpawnHost>) {
+        self.with(|values| {
+            values.rlm_spawn_count += 1;
+            match host {
+                Some(super::rlm_host::RlmSpawnHost::Remote(_)) => {
+                    values.rlm_remote_spawn_count += 1;
+                }
+                Some(super::rlm_host::RlmSpawnHost::Local) | None => {}
+            }
+        });
+    }
+
     fn write_into(&self, properties: &mut Properties) {
         self.with(|values| {
             for (key, value) in [
@@ -401,6 +418,8 @@ impl SessionCounters {
                     "rlm_child_cache_write_tokens",
                     values.rlm_child_cache_write_tokens,
                 ),
+                ("rlm_spawn_count", values.rlm_spawn_count),
+                ("rlm_remote_spawn_count", values.rlm_remote_spawn_count),
             ] {
                 properties.set(key, Value::from(value));
             }

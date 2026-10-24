@@ -68,6 +68,7 @@ fn manager_options(
     snapshot_dir: Option<&std::path::Path>,
 ) -> KernelManagerOptions {
     KernelManagerOptions {
+        remote: None,
         python: Some(python),
         cwd: Some(std::env::temp_dir()),
         env: std::collections::HashMap::default(),

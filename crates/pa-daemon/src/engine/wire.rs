@@ -272,6 +272,9 @@ pub struct RlmSessionIdentity {
     /// file is a top-level runtime and spawns no edge, and a replacement
     /// runtime has none.
     pub semantic_spawn: Option<SemanticSpawnOrigin>,
+    /// The remote SSH kernel placement of a `rlm.spawn(host=...)` child
+    /// (or one that inherited its parent's host). `None` runs locally.
+    pub remote_kernel: Option<pa_core::kernel::RemoteKernelTarget>,
 }
 
 /// A created session's semantic-edge provenance (TS

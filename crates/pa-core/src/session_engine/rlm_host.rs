@@ -81,6 +81,10 @@ pub struct RlmSubagentEntry {
     pub last_activity_at: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub activity_stale_ms: Option<u64>,
+    /// The SSH destination a remote child's kernel runs on; absent for a
+    /// local child.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
 }
 
 /// Live child activity projected onto the roster row.
@@ -146,7 +150,26 @@ pub struct RlmSpawnRequest {
     /// The parent's in-flight turn request the spawn anchors to (TS
     /// `spawnedByRequestId`): `None` for a spawn outside an active run.
     pub spawned_by_request_id: Option<String>,
+    /// Where the child's kernel runs. `None` inherits the parent's placement
+    /// (a child of a remote child stays on that host).
+    pub host: Option<RlmSpawnHost>,
+    /// The child's working directory: a remote path for a remote child, a
+    /// local one otherwise. `None` keeps the default (the remote login
+    /// directory, or the parent's cwd for a local child).
+    pub cwd: Option<String>,
 }
+
+/// An explicit `rlm.spawn(host=...)` placement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RlmSpawnHost {
+    /// `host="local"`: back on the local machine.
+    Local,
+    /// An SSH destination, validated.
+    Remote(String),
+}
+
+/// The `host="local"` keyword that escapes a remote parent's placement.
+pub const RLM_SPAWN_LOCAL_HOST: &str = "local";
 
 /// Validated `rlm.create_session` request handed to the host.
 #[derive(Debug, Clone)]
@@ -480,6 +503,9 @@ pub struct RlmHostBridge {
     /// The spawn anchor [`register_run`] reads the in-flight turn from
     /// (`None` until the engine built the session's agent).
     pub(crate) semantic_spawn: std::sync::OnceLock<SemanticSpawnAnchor>,
+    /// The session counters admitted spawns count into (local vs remote
+    /// placement only); unset for a telemetry-less session.
+    pub(crate) spawn_counters: std::sync::OnceLock<Arc<super::telemetry::SessionCounters>>,
 }
 
 impl RlmHostBridge {
@@ -499,6 +525,7 @@ impl RlmHostBridge {
             host,
             usage,
             semantic_spawn: std::sync::OnceLock::new(),
+            spawn_counters: std::sync::OnceLock::new(),
         }
     }
 }
@@ -627,7 +654,11 @@ fn register_run(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmHostBridge>)
                     }
                     None => None,
                 };
+                let placement = request.host.clone();
                 let handle = bridge.host.spawn(request).await?;
+                if let Some(counters) = bridge.spawn_counters.get() {
+                    counters.note_rlm_spawn(placement.as_ref());
+                }
                 // TS `_findLastAssistantMessage` at spawn: the spawning
                 // assistant row (persisted at `message_end` before tool
                 // execution) is the target every child-usage attribution
@@ -644,7 +675,11 @@ fn register_run(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmHostBridge>)
 fn spawn_request_from_payload(prompt: &str, data: &Value) -> anyhow::Result<RlmSpawnRequest> {
     const OPERATION: &str = "rlm.spawn";
     let kwargs = kwargs_from_payload(data);
-    reject_unsupported_kwargs(&kwargs, OPERATION, &["name", "model", "thinking"])?;
+    reject_unsupported_kwargs(
+        &kwargs,
+        OPERATION,
+        &["name", "model", "thinking", "host", "cwd"],
+    )?;
     let name = optional_string_kwarg(&kwargs, "name", OPERATION)?;
     let name = normalize_requested_rlm_subagent_session_name(name, OPERATION)?;
     if let Some(name) = &name {
@@ -655,12 +690,27 @@ fn spawn_request_from_payload(prompt: &str, data: &Value) -> anyhow::Result<RlmS
     let thinking = optional_string_kwarg(&kwargs, "thinking", OPERATION)?;
     let thinking =
         normalize_requested_rlm_subagent_thinking_level(thinking, OPERATION)?.map(String::from);
+    let host = match optional_string_kwarg(&kwargs, "host", OPERATION)?.map(str::trim) {
+        None => None,
+        Some(RLM_SPAWN_LOCAL_HOST) => Some(RlmSpawnHost::Local),
+        Some(host) => {
+            crate::kernel::bootstrap::SshDestination::parse(host)?;
+            Some(RlmSpawnHost::Remote(host.to_string()))
+        }
+    };
+    let cwd = match optional_string_kwarg(&kwargs, "cwd", OPERATION)?.map(str::trim) {
+        None => None,
+        Some("") => anyhow::bail!("rlm.spawn cwd must be a non-empty string"),
+        Some(cwd) => Some(cwd.to_string()),
+    };
     Ok(RlmSpawnRequest {
         prompt: prompt.to_string(),
         name,
         model,
         thinking,
         spawned_by_request_id: None,
+        host,
+        cwd,
     })
 }
 
@@ -939,6 +989,7 @@ mod tests {
         fn list_subagents(&self) -> RlmHostFuture<Vec<RlmSubagentEntry>> {
             Box::pin(async {
                 Ok(vec![RlmSubagentEntry {
+                    host: None,
                     rlm_child_id: "sub-1".into(),
                     active_session_id: Some("live-2".into()),
                     session_id: Some("s-2".into()),
@@ -966,6 +1017,7 @@ mod tests {
                 targets.lock().await.push(target);
                 Ok(RlmDeleteSubagentResult {
                     subagent: RlmSubagentEntry {
+                        host: None,
                         rlm_child_id: "sub-1".into(),
                         active_session_id: None,
                         session_id: None,

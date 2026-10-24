@@ -7,7 +7,7 @@ use super::{
     resolve_child_model, rlm_child_label, rlm_depth_limit_error, spawn_name_unavailable_error, Arc,
     ChildCloseReason, ChildObservationSource, ChildRecord, Context, DaemonCommand, Duration,
     Instant, Mutex, Path, PathBuf, Result, RlmChildResult, RlmCreateSessionHandle,
-    RlmCreateSessionRequest, RlmDeleteSubagentResult, RlmHostFuture, RlmSpawnHandle,
+    RlmCreateSessionRequest, RlmDeleteSubagentResult, RlmHostFuture, RlmSpawnHandle, RlmSpawnHost,
     RlmSpawnRequest, RlmSubagentEntry, RlmSubagentHost, SpawnNameReservationGuard,
     SupervisorChildSessions, SupervisorChildSessionsInner, Value, KILL_TIMEOUT_MS,
     RENAME_TIMEOUT_MS,
@@ -121,7 +121,28 @@ impl RlmSubagentHost for SupervisorChildSessions {
                 assert_thinking_supported(&this.agent_dir, request.thinking.as_deref(), &model)?;
                 let thinking = request.thinking.as_deref().or(identity.thinking.as_deref());
                 let child_dir = this.child_session_dir(&child_id, &identity)?;
-                let cwd = identity.cwd.clone().unwrap_or_else(|| "/".to_string());
+                // The kernel placement: an explicit host wins, `host="local"`
+                // escapes, and no host inherits the parent's (a child of a
+                // remote child stays on that host; the SSH connection always
+                // originates here, never chained).
+                let remote_host = match &request.host {
+                    Some(RlmSpawnHost::Remote(host)) => Some(host.clone()),
+                    Some(RlmSpawnHost::Local) => None,
+                    None => identity.remote_host.clone(),
+                };
+                let remote = remote_host.map(|host| pa_core::kernel::RemoteKernelTarget {
+                    host,
+                    cwd: request.cwd.clone(),
+                });
+                // A local child's `cwd` moves its session; a remote child's
+                // names the remote kernel's directory and the local session
+                // keeps the parent's cwd.
+                let cwd = match (&remote, &request.cwd) {
+                    (None, Some(cwd)) => cwd.clone(),
+                    (None, None) | (Some(_), _) => {
+                        identity.cwd.clone().unwrap_or_else(|| "/".to_string())
+                    }
+                };
                 let runtime_metadata = json!({
                     "kind": "subagent",
                     "rlmChildId": child_id,
@@ -148,6 +169,7 @@ impl RlmSubagentHost for SupervisorChildSessions {
                         // process, so the spawn forwards the parent
                         // worker's env (filtered) instead.
                         Some(pa_types::daemon::launch_env::collect_process_launch_env()),
+                        remote.as_ref(),
                     )
                     .await?;
                 let record = ChildRecord {
@@ -158,6 +180,7 @@ impl RlmSubagentHost for SupervisorChildSessions {
                     session_dir: created.session_dir.clone(),
                     model: model.clone(),
                     label: rlm_child_label(&request.prompt),
+                    host: remote.as_ref().map(|remote| remote.host.clone()),
                     started_at_ms: now_ms(),
                     settled_status: None,
                     settled: false,
@@ -456,6 +479,7 @@ impl RlmSubagentHost for SupervisorChildSessions {
                             let deleted = &matches[0];
                             return Ok(RlmDeleteSubagentResult {
                                 subagent: RlmSubagentEntry {
+                                    host: None,
                                     rlm_child_id: deleted.rlm_child_id.clone(),
                                     active_session_id: Some(deleted.active_session_id.clone()),
                                     session_id: deleted.session_id.clone(),
