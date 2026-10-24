@@ -19,6 +19,7 @@ from .factory import (
     watch_factory,
 )
 from .harness import HarnessEntry, HarnessScope, HarnessState, RefinementEvent, get_harness_state
+from .remote import RemoteKernelRefusal
 
 _NOT_CALLABLE_MESSAGE = "'rlm' is not callable; spawn a child with: handle = await rlm.spawn('sub-task', name='worker')"
 _RENAMED_RUN_MESSAGE = "rlm.run was renamed; spawn a child with: handle = await rlm.spawn('sub-task', name='worker')"
@@ -549,6 +550,10 @@ class _HarnessProxy:
     def _resolve(self) -> HarnessState:
         try:
             return get_harness_state()
+        except RemoteKernelRefusal:
+            # A remote kernel refuses the harness outright: degrading to an
+            # in-memory store would silently split state from the host's.
+            raise
         except RuntimeError as exc:
             if "Local harness state requires" in str(exc):
                 if _HarnessProxy._unpersisted is None:
@@ -574,7 +579,10 @@ class _HarnessProxy:
         return getattr(self._resolve(), name)
 
     def __repr__(self) -> str:
-        return repr(self._resolve())
+        try:
+            return repr(self._resolve())
+        except RemoteKernelRefusal as refusal:
+            return f"<rlm.harness: {refusal}>"
 
 
 _harness_state = _HarnessProxy()

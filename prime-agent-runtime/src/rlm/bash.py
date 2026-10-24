@@ -1551,6 +1551,12 @@ def _shell_identity(pid: int, start_id: str) -> bool | None:
 
 
 def _spawn_persistent(command: str, yield_after: float | None) -> PersistentBashHandle:
+    from .remote import refuse_on_remote
+
+    refuse_on_remote(
+        "bash(persistent=True)",
+        "a persistent shell outlives its kernel, and nothing on the orchestrator's machine can reattach or reap it there",
+    )
     if not _IS_POSIX:
         raise RuntimeError("bash(persistent=True) is only supported on POSIX")
     session_id = os.environ.get("RLM_SESSION_ID")
