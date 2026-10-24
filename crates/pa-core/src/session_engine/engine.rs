@@ -280,6 +280,8 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             crate::models::SubagentModelFilter::Only(_) => {
                 Some(wiring.rlm.registry.subagent_model_names(&filter))
             }
+            // Fails closed: no model is permitted until settings are fixed.
+            crate::models::SubagentModelFilter::Unreadable(_) => Some(Vec::new()),
         }
     };
     // Model patterns match canonical `provider/model-id` names, never

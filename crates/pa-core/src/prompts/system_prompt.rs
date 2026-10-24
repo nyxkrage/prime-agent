@@ -97,7 +97,8 @@ pub struct BuildSystemPromptOptions<'a> {
     /// Enabled user-configured generic MCP servers.
     pub generic_mcp_servers: Vec<String>,
     /// The models `rlm.spawn` accepts when settings `subagentModels` is set
-    /// (`alias (provider/model-id)` or the selector); `None` when unset.
+    /// (`alias (provider/model-id)` or the selector; empty when none is
+    /// permitted, including an unreadable filter); `None` when unset.
     pub subagent_models: Option<Vec<String>>,
 }
 
@@ -323,7 +324,7 @@ fn session_role_section(options: &BuildSystemPromptOptions, has_ipython: bool) -
         lines.push("Subagent spawning is disabled in this session.".to_string());
     } else if let Some(models) = &options.subagent_models {
         lines.push(if models.is_empty() {
-            "Subagent models are restricted (settings `subagentModels`) and no authenticated model matches: `rlm.spawn` will refuse every model.".to_string()
+            "Subagent models are restricted (settings `subagentModels`) and no model is currently permitted: `rlm.spawn` will refuse every model.".to_string()
         } else {
             format!(
                 "Subagent models are restricted (settings `subagentModels`): `rlm.spawn` and `rlm.create_session` accept only {}, so pass `model=` explicitly when your own model is not listed.",

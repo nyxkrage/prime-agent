@@ -2,6 +2,7 @@
 
 pub use allowlist::{
     model_allowed, AliasPattern, ModelAllowlistRefusal, SubagentModelFilter, SubagentModelRefusal,
+    SubagentModelRefusalCause,
 };
 pub use private_auth::{
     get_private_prime_inference_models, private_prime_authorization_fingerprint,

@@ -119,31 +119,40 @@ pub fn resolve_child_model_unchecked(
 /// Enforce the settings `subagentModels` filter on a resolved child model
 /// (explicit or inherited from the parent, both hosts): a model outside the
 /// filter is refused with the typed [`SubagentModelRefusal`] listing the
-/// permitted models, even when it is authenticated, never a fallback.
+/// permitted models, even when it is authenticated, never a fallback; an
+/// unreadable filter refuses every model (fails closed).
 ///
 /// [`SubagentModelRefusal`]: pa_core::models::SubagentModelRefusal
 ///
 /// # Errors
-/// Returns the typed refusal when the filter excludes the selector.
+/// Returns the typed refusal when the filter excludes the selector or could
+/// not be read.
 pub fn assert_subagent_model_permitted(
     agent_dir: &Path,
     filter: &pa_core::models::SubagentModelFilter,
     selector: &str,
 ) -> Result<()> {
-    if filter.permits(selector) {
-        return Ok(());
-    }
-    // The registry is built only on the refusal path: the permitted list
-    // and any alias-named patterns (which match nothing) for the error.
-    let registry = crate::state_getters::worker_model_registry(agent_dir);
-    let alias_patterns = match filter {
-        pa_core::models::SubagentModelFilter::Only(patterns) => registry.alias_patterns(patterns),
-        pa_core::models::SubagentModelFilter::Unrestricted => Vec::new(),
+    let cause = match filter {
+        pa_core::models::SubagentModelFilter::Unrestricted => return Ok(()),
+        pa_core::models::SubagentModelFilter::Only(patterns) => {
+            if pa_core::models::model_allowed(selector, patterns) {
+                return Ok(());
+            }
+            // The registry is built only on the refusal path: the permitted
+            // list and any alias-named patterns (which match nothing).
+            let registry = crate::state_getters::worker_model_registry(agent_dir);
+            pa_core::models::SubagentModelRefusalCause::OutsideFilter {
+                permitted: registry.subagent_model_names(filter),
+                alias_patterns: registry.alias_patterns(patterns),
+            }
+        }
+        pa_core::models::SubagentModelFilter::Unreadable(error) => {
+            pa_core::models::SubagentModelRefusalCause::UnreadableFilter(error.clone())
+        }
     };
     Err(pa_core::models::SubagentModelRefusal {
         selector: selector.to_string(),
-        permitted: registry.subagent_model_names(filter),
-        alias_patterns,
+        cause,
     }
     .into())
 }
@@ -436,8 +445,10 @@ mod tests {
         );
         let expected = pa_core::models::SubagentModelRefusal {
             selector: "test-provider/glm-5.3".to_string(),
-            permitted: vec!["turbo (test-provider/glm-5.3-turbo)".to_string()],
-            alias_patterns: Vec::new(),
+            cause: pa_core::models::SubagentModelRefusalCause::OutsideFilter {
+                permitted: vec!["turbo (test-provider/glm-5.3-turbo)".to_string()],
+                alias_patterns: Vec::new(),
+            },
         };
         for (reference, parent) in [
             (Some("test-provider/glm-5.3"), None),
@@ -470,6 +481,44 @@ mod tests {
             "test-provider/glm-5.3"
         )
         .is_ok());
+    }
+
+    /// A malformed `subagentModels` (a string, not a list) fails closed:
+    /// every spawn, explicit or inherited, is refused naming the problem.
+    #[test]
+    fn a_malformed_subagent_filter_refuses_every_spawn() {
+        let dir = tempfile::TempDir::new().unwrap();
+        write_catalog(dir.path());
+        std::fs::write(
+            dir.path().join("settings.json"),
+            r#"{ "subagentModels": "test-provider/glm-5.3" }"#,
+        )
+        .unwrap();
+        let filter = load_subagent_filter(dir.path(), dir.path());
+        for (reference, parent) in [
+            (Some("test-provider/glm-5.3"), None),
+            (None, Some("test-provider/glm-5.3")),
+        ] {
+            let selector = resolve_child_model(
+                dir.path(),
+                reference,
+                parent,
+                "subagent",
+                &DaemonAllowlist::Unrestricted,
+            )
+            .unwrap();
+            let error =
+                assert_subagent_model_permitted(dir.path(), &filter, &selector).unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<pa_core::models::SubagentModelRefusal>(),
+                Some(&pa_core::models::SubagentModelRefusal {
+                    selector: "test-provider/glm-5.3".to_string(),
+                    cause: pa_core::models::SubagentModelRefusalCause::UnreadableFilter(
+                        "subagentModels is present but is not an array of strings".to_string()
+                    ),
+                })
+            );
+        }
     }
 
     /// Patterns match canonical names only: a `subagentModels` entry that
@@ -512,11 +561,13 @@ mod tests {
             error.downcast_ref::<pa_core::models::SubagentModelRefusal>(),
             Some(&pa_core::models::SubagentModelRefusal {
                 selector: "test-provider/glm-5.3-turbo".to_string(),
-                permitted: Vec::new(),
-                alias_patterns: vec![pa_core::models::AliasPattern {
-                    pattern: "turbo".to_string(),
-                    selector: "test-provider/glm-5.3-turbo".to_string(),
-                }],
+                cause: pa_core::models::SubagentModelRefusalCause::OutsideFilter {
+                    permitted: Vec::new(),
+                    alias_patterns: vec![pa_core::models::AliasPattern {
+                        pattern: "turbo".to_string(),
+                        selector: "test-provider/glm-5.3-turbo".to_string(),
+                    }],
+                },
             })
         );
     }

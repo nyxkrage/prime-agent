@@ -596,6 +596,12 @@ fn register_find_models(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmHost
                     crate::models::SubagentModelFilter::Only(_) => bridge
                         .note_policy(super::telemetry::SubagentModelPolicyEvent::FilteredFind),
                     crate::models::SubagentModelFilter::Unrestricted => {}
+                    // Fails closed: an unknown policy lists nothing, loudly.
+                    crate::models::SubagentModelFilter::Unreadable(error) => anyhow::bail!(
+                        "rlm.find_models: the subagent model filter (settings \"subagentModels\") \
+                         could not be read ({error}); no model is permitted for subagents until \
+                         the global settings.json is fixed."
+                    ),
                 }
                 // An aliased model is listed under its alias (the name to
                 // spawn it by), the full selector alongside.
@@ -1433,6 +1439,33 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(response, json!({ "models": [] }));
+    }
+
+    /// A malformed `subagentModels` (a string, not a list) fails closed:
+    /// `rlm.find_models` errors naming the problem instead of listing every
+    /// model as the lenient settings load would.
+    #[tokio::test]
+    async fn find_models_fails_closed_on_a_malformed_subagent_filter() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let wiring = wired(dir.path(), None);
+        std::fs::write(
+            dir.path().join("settings.json"),
+            r#"{ "subagentModels": "turbo" }"#,
+        )
+        .unwrap();
+        let error = call(
+            &wiring,
+            "rlm.find_models",
+            json!({ "type": "rlm.find_models", "query": "" }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "rlm.find_models: the subagent model filter (settings \"subagentModels\") could not be \
+             read (subagentModels is present but is not an array of strings); no model is permitted \
+             for subagents until the global settings.json is fixed."
+        );
     }
 
     /// `enabledModels` never filters subagents: with it set and
