@@ -352,6 +352,23 @@ pub struct RemoteKernelTarget {
     pub cwd: Option<String>,
 }
 
+impl RemoteKernelTarget {
+    /// A target whose `host` passed the SSH destination allowlist and whose
+    /// `cwd` passed the remote path allowlist
+    /// (`crate::kernel::remote_policy`); the error names what was refused.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the host or the cwd is outside its allowlist.
+    pub fn validated(host: String, cwd: Option<String>) -> anyhow::Result<Self> {
+        crate::kernel::bootstrap::SshDestination::parse(&host)?;
+        if let Some(cwd) = &cwd {
+            crate::kernel::remote_policy::validate_remote_path(cwd, "rlm.spawn cwd")?;
+        }
+        Ok(Self { host, cwd })
+    }
+}
+
 /// Options for constructing a [`ReplKernelManager`].
 #[derive(Clone, Default)]
 pub struct KernelManagerOptions {

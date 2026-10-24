@@ -24,7 +24,9 @@ use venv::{
     missing_python_skill_import_labels, missing_rlm_extra_import_labels, normalize_python_skills,
     resolve_writable_kernel_venv_dir, sync_python_skills, BootstrapPythonSkill,
 };
-pub(crate) use venv::{ensure_remote_kernel_python, sh_quote, RemoteKernelInstall, SshDestination};
+pub(crate) use venv::{
+    ensure_remote_kernel_python, sh_quote, RemoteHost, RemoteKernelInstall, SshDestination,
+};
 pub use venv::{invalidate_runtime_probe_cache, kernel_venv_dir, kernel_venv_python};
 use venv::{kernel_base_ready, kernel_ready};
 
