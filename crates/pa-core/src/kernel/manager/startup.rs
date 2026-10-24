@@ -253,6 +253,9 @@ impl Inner {
                  Update prime-agent-runtime in the kernel Python (PRIME_AGENT_KERNEL_PYTHON) to match this prime-agent."
             ));
         }
+        if self.options.remote.is_some() {
+            self.start_remote_heartbeat(generation);
+        }
         {
             let mut g = lock(&self.guarded);
             g.state = KernelState::Running;
@@ -288,6 +291,7 @@ impl Inner {
             // outlive every manager clone (#232: a dropped session leaked its live kernel).
             let inner = Arc::downgrade(self);
             let stdin_for_error = stdin;
+            let mut awaiting_sentinel = self.options.remote.is_some();
             tokio::spawn(async move {
                 let mut reader = BufReader::new(stdout);
                 // A poisoned child's residue must not grow the buffer again before the protocol
@@ -327,6 +331,16 @@ impl Inner {
                                 buffered[scan_from..].iter().position(|&b| b == b'\n')
                             {
                                 let end = scan_from + rel;
+                                // A remote kernel's login shell may print rc
+                                // output first: everything up to the launcher's
+                                // sentinel line is discarded unparsed.
+                                if awaiting_sentinel {
+                                    awaiting_sentinel = buffered[consumed..end].trim_ascii()
+                                        != super::remote::REMOTE_KERNEL_STDIO_SENTINEL.as_bytes();
+                                    consumed = end + 1;
+                                    scan_from = consumed;
+                                    continue;
+                                }
                                 // An invalid-UTF-8 stream ends the reader, like
                                 // read_line's decode error did before.
                                 let Ok(trimmed) = std::str::from_utf8(&buffered[consumed..end])
@@ -544,7 +558,7 @@ impl Inner {
 /// read UTF-8 regardless of the active legacy code page, overriding any
 /// provisioner-provided `PYTHONUTF8`) and the owner pid the runtime journals
 /// its process groups under.
-pub(super) fn kernel_spawn_env(options_env: &HashMap<String, String>) -> HashMap<String, String> {
+fn kernel_spawn_env(options_env: &HashMap<String, String>) -> HashMap<String, String> {
     let mut env: HashMap<String, String> = std::env::vars().collect();
     for (key, value) in options_env {
         env.insert(key.clone(), value.clone());
