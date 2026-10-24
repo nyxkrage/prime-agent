@@ -99,27 +99,7 @@ fn assemble_breakdown(
         .collect::<std::collections::HashMap<String, pa_core::mcp::McpServerConfig>>();
     let (skill_overrides, generic_servers, _manager) =
         pa_core::mcp::McpManager::prompt_gating(user_servers, agent_dir);
-    // The session's edit-format decision for the selected model: its
-    // models.json `editFormat` when the registry knows it, else the ID default.
-    let edit_format = model.map_or(pa_types::ai::EditFormat::Edit, |selector| {
-        let registry = pa_core::models::ModelRegistry::create(
-            pa_core::auth::AuthStorage::create(agent_dir),
-            agent_dir.join("models.json"),
-        );
-        let known = registry.get_all().iter().find(|candidate| {
-            format!("{}/{}", candidate.provider, candidate.id) == selector
-                || candidate.id == selector
-        });
-        let model_id = known.map_or_else(
-            || selector.split_once('/').map_or(selector, |(_, id)| id),
-            |known| known.id.as_str(),
-        );
-        pa_core::models::resolve_edit_format(
-            settings.get_apply_patch(),
-            model_id,
-            known.and_then(|known| known.edit_format),
-        )
-    });
+    let edit_format = pa_core::models::edit_format_for_model_reference(&settings, agent_dir, model);
     let resources = load_resources(ResourceLoaderOptions {
         extra_builtin_skill_overrides: skill_overrides,
         system_prompt: None,
@@ -243,7 +223,7 @@ mod tests {
         assert_eq!(run_prompt_command(&["--help".to_string()]), 0);
     }
 
-    /// GPT-5.1 gets the `apply_patch` guidance and skill; `gpt-5`, a
+    /// GPT-5.1 gets the `apply_patch` guidance and skill; `gpt-5-codex`, a
     /// non-OpenAI model, and GPT-5.1 under `"applyPatch": "off"` get today's
     /// prompt byte for byte; a models.json `editFormat` flips the default.
     #[test]
@@ -269,8 +249,10 @@ mod tests {
         // The skills inventory follows the same decision as the guidance.
         assert!(gpt_5_1.assembled[gpt_5_1.cached_prefix_len..].contains("<name>apply-patch</name>"));
         assert!(!today.assembled.contains("<name>apply-patch</name>"));
+        // (`openai-codex/gpt-5` would fuzzy-resolve to the cataloged gpt-5.1,
+        // exactly as `--model` does for a session.)
         assert_eq!(
-            prompt("openai-codex/gpt-5").assembled[..today.cached_prefix_len],
+            prompt("openai-codex/gpt-5-codex").assembled[..today.cached_prefix_len],
             today.assembled[..today.cached_prefix_len]
         );
 
@@ -302,6 +284,36 @@ mod tests {
         assert_eq!(
             off.assembled[..off.cached_prefix_len],
             today.assembled[..today.cached_prefix_len]
+        );
+    }
+
+    /// Without `--model`, the guidance follows the model a new session would
+    /// start on (here the saved settings default), not a fixed `edit`.
+    #[test]
+    fn without_a_model_the_edit_guidance_follows_the_default_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent_dir = dir.path().join("agent");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(
+            agent_dir.join("models.json"),
+            r#"{ "providers": { "my-proxy": {
+                "baseUrl": "http://127.0.0.1:9",
+                "apiKey": "sk-local",
+                "api": "openai-completions",
+                "models": [ { "id": "gpt-5.1" } ]
+            } } }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            agent_dir.join("settings.json"),
+            r#"{ "defaultProvider": "my-proxy", "defaultModel": "gpt-5.1" }"#,
+        )
+        .unwrap();
+        let (breakdown, _errors) = assemble_breakdown(dir.path(), &agent_dir, /*model*/ None)
+            .expect("the prompt assembles");
+        assert_eq!(
+            breakdown.segments[0].source,
+            "prompts/layers/core.md + apply-patch-core.md"
         );
     }
 

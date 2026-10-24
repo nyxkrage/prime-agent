@@ -2,9 +2,11 @@
 //! the prompt layers and the kernel skill binding both read, so the prompt
 //! never documents `apply_patch` when the kernel does not bind it.
 
-use pa_types::ai::EditFormat;
+use std::path::Path;
 
-use crate::settings::ApplyPatchSetting;
+use pa_types::ai::{EditFormat, Model};
+
+use crate::settings::{ApplyPatchSetting, SettingsManager};
 
 /// The first GPT version trained on `apply_patch` as an official tool.
 const FIRST_APPLY_PATCH_GPT: (u64, u64) = (5, 1);
@@ -56,6 +58,55 @@ pub fn resolve_edit_format(
                 EditFormat::Edit
             }
         }),
+    }
+}
+
+/// The edit format a session on `model` would get, for surfaces that build
+/// the prompt without starting a session (`prime-agent prompt`). `model` is
+/// a CLI model reference (`provider/id` or a pattern) resolved against the
+/// catalog in `agent_dir`; without one, the startup model a new session
+/// would pick (the saved settings default, then the featured default, then
+/// the first available model). A reference the catalog does not know is
+/// judged by its ID alone.
+#[must_use]
+pub fn edit_format_for_model_reference(
+    settings: &SettingsManager,
+    agent_dir: &Path,
+    model: Option<&str>,
+) -> EditFormat {
+    let registry = super::ModelRegistry::create(
+        crate::auth::AuthStorage::create(agent_dir),
+        agent_dir.join("models.json"),
+    );
+    let all = registry.get_all();
+    let resolved: Option<Model> = match model {
+        Some(reference) => super::resolve_cli_model(None, reference, all).model,
+        None => {
+            let available: Vec<Model> = registry.get_available().into_iter().cloned().collect();
+            super::find_initial_model(&super::InitialModelOptions {
+                cli_provider: None,
+                cli_model: None,
+                scoped_models: &[],
+                is_continuing: false,
+                default_provider: settings.get_default_provider(),
+                default_model_id: settings.get_default_model(),
+                all_models: all,
+                available_models: &available,
+            })
+        }
+    };
+    match (resolved, model) {
+        (Some(resolved), _) => resolve_edit_format(
+            settings.get_apply_patch(),
+            &resolved.id,
+            resolved.edit_format,
+        ),
+        (None, Some(reference)) => resolve_edit_format(
+            settings.get_apply_patch(),
+            reference.split_once('/').map_or(reference, |(_, id)| id),
+            /*configured*/ None,
+        ),
+        (None, None) => EditFormat::Edit,
     }
 }
 
