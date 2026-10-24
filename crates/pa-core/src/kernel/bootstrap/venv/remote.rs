@@ -699,6 +699,35 @@ mod tests {
         }
     }
 
+    /// Debian/Ubuntu without python3-venv ship an ensurepip stub with no
+    /// bundled pip: the probe must report no working venv there, so the
+    /// install falls back to uv.
+    #[test]
+    fn the_probe_rejects_an_ensurepip_stub_without_pip() {
+        let stub = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(stub.path().join("ensurepip")).unwrap();
+        std::fs::write(
+            stub.path().join("ensurepip/__init__.py"),
+            "def version():\n    return None\n",
+        )
+        .unwrap();
+        let root = tempfile::TempDir::new().unwrap();
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(python_command(
+                PROBE_SCRIPT,
+                &[&root.path().to_string_lossy(), "v2-0000000000000000", "{}"],
+            ))
+            .env("PYTHONPATH", stub.path())
+            .output()
+            .expect("probe runs");
+        assert!(output.status.success(), "{output:?}");
+        let report: ProbeReport =
+            last_json_line(&String::from_utf8_lossy(&output.stdout)).expect("report");
+        assert!(!report.venv, "an ensurepip stub is not a working venv");
+        assert!(!report.installed);
+    }
+
     #[test]
     fn shell_quoting_survives_single_quotes() {
         assert_eq!(sh_quote("it's"), r"'it'\''s'");
