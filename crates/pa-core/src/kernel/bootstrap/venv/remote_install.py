@@ -153,7 +153,12 @@ try:
         else:
             bundle.extractall(target)
     uploaded_uv = os.path.join(target, "bin", "uv")
-    uv = shutil.which("uv") or (uploaded_uv if os.path.isfile(uploaded_uv) else None)
+    uv = shutil.which("uv")
+    if uv is None and os.path.isfile(uploaded_uv):
+        # The uv this tool shipped keeps its cache inside the install root,
+        # so provisioning writes nothing outside it.
+        uv = uploaded_uv
+        os.environ.setdefault("UV_CACHE_DIR", os.path.join(root, "uv-cache"))
     runtime = os.path.join(target, "runtime")
 
     def pip_install(arguments):

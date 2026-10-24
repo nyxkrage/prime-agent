@@ -373,6 +373,9 @@ fn collect_upload_bundle(
     }
     let mut hasher = sha2::Sha256::new();
     hasher.update(REMOTE_LAYOUT_VERSION.as_bytes());
+    // The install script defines how the base is built: a changed script
+    // builds fresh next to the old install.
+    hasher.update(INSTALL_SCRIPT.as_bytes());
     for extra in extras {
         hasher.update(extra.as_bytes());
         hasher.update([0]);
