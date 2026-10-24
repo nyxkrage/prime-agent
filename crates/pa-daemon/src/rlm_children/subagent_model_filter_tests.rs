@@ -91,10 +91,8 @@ async fn sessions_for(
     agent_dir: &Path,
     seen_tx: mpsc::UnboundedSender<String>,
 ) -> SupervisorChildSessions {
-    let socket = std::env::temp_dir().join(format!(
-        "pa-rlm-filter-{}.sock",
-        uuid::Uuid::new_v4().simple()
-    ));
+    // Inside the test's temp agent dir, so the socket goes with it.
+    let socket = agent_dir.join("supervisor.sock");
     spawn_recording_supervisor(socket.clone(), seen_tx).await;
     let link = Arc::new(crate::supervisor_link::SupervisorLink::new(socket));
     let sessions = SupervisorChildSessions::new(
