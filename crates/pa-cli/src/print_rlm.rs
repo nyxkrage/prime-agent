@@ -645,6 +645,12 @@ impl RlmSubagentHost for InlineHost {
                     "rlm.spawn host= requires a daemon-backed session; print mode runs subagents in-process on this machine"
                 );
             }
+            // Inline children share this process's working directory too.
+            if request.cwd.is_some() {
+                anyhow::bail!(
+                    "rlm.spawn cwd= requires a daemon-backed session; print mode runs subagents in-process in this session's working directory"
+                );
+            }
             let recipe = Arc::clone(&node.recipe);
             let config = &recipe.options.config;
             let child_id = format!("sub-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
@@ -1305,6 +1311,48 @@ mod tests {
         let error = result.expect_err("a disposed parent must not admit a queued spawn");
         assert!(error.to_string().contains("disposed"), "{error:#}");
         assert_eq!(admitted, 0);
+    }
+
+    #[tokio::test]
+    async fn inline_spawns_refuse_a_host_or_cwd_instead_of_ignoring_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let options = run_options(directory.path());
+        std::fs::create_dir_all(&options.config.agent_dir).unwrap();
+        let manager = pa_core::session::manager::SessionManager::in_memory(directory.path());
+        let mut node = root_node(&options, &manager, Some(json!({ "responses": ["parent"] })));
+        Arc::get_mut(&mut node).unwrap().max_depth = 2;
+        let request = |host, cwd| RlmSpawnRequest {
+            cwd,
+            host,
+            prompt: "work".to_string(),
+            name: Some("child".to_string()),
+            model: None,
+            thinking: None,
+            spawned_by_request_id: None,
+        };
+        let errors = [
+            InlineHost(Arc::clone(&node))
+                .spawn(request(None, Some("sub".to_string())))
+                .await,
+            InlineHost(Arc::clone(&node))
+                .spawn(request(
+                    Some(pa_core::session_engine::rlm_host::RlmSpawnHost::Remote(
+                        "box".to_string(),
+                    )),
+                    None,
+                ))
+                .await,
+        ]
+        .map(|result| format!("{:#}", result.expect_err("refused")));
+        assert_eq!(
+            errors,
+            [
+                "rlm.spawn cwd= requires a daemon-backed session; print mode runs subagents in-process in this session's working directory",
+                "rlm.spawn host= requires a daemon-backed session; print mode runs subagents in-process on this machine",
+            ]
+        );
+        assert_eq!(node.children.lock().await.len(), 0);
+        dispose_inline_subagents(&node).await;
     }
 
     /// The fake python tool of the landing test: records one late receipt

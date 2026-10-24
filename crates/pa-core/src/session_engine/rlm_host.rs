@@ -169,7 +169,7 @@ pub enum RlmSpawnHost {
 }
 
 /// The `host="local"` keyword that escapes a remote parent's placement.
-pub const RLM_SPAWN_LOCAL_HOST: &str = "local";
+pub(crate) const RLM_SPAWN_LOCAL_HOST: &str = "local";
 
 /// Validated `rlm.create_session` request handed to the host.
 #[derive(Debug, Clone)]
@@ -690,7 +690,9 @@ fn spawn_request_from_payload(prompt: &str, data: &Value) -> anyhow::Result<RlmS
     let thinking = optional_string_kwarg(&kwargs, "thinking", OPERATION)?;
     let thinking =
         normalize_requested_rlm_subagent_thinking_level(thinking, OPERATION)?.map(String::from);
-    let host = match optional_string_kwarg(&kwargs, "host", OPERATION)?.map(str::trim) {
+    // Strict: the host is validated verbatim against the SSH destination
+    // allowlist (no trimming), so the value checked is the value used.
+    let host = match optional_string_kwarg(&kwargs, "host", OPERATION)? {
         None => None,
         Some(RLM_SPAWN_LOCAL_HOST) => Some(RlmSpawnHost::Local),
         Some(host) => {
@@ -698,7 +700,10 @@ fn spawn_request_from_payload(prompt: &str, data: &Value) -> anyhow::Result<RlmS
             Some(RlmSpawnHost::Remote(host.to_string()))
         }
     };
-    let cwd = match optional_string_kwarg(&kwargs, "cwd", OPERATION)?.map(str::trim) {
+    // The cwd's meaning (remote or local path) depends on the placement the
+    // host resolves (a child inherits a remote parent's host), so the host
+    // validates it once the placement is known.
+    let cwd = match optional_string_kwarg(&kwargs, "cwd", OPERATION)? {
         None => None,
         Some("") => anyhow::bail!("rlm.spawn cwd must be a non-empty string"),
         Some(cwd) => Some(cwd.to_string()),

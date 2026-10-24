@@ -130,15 +130,27 @@ impl RlmSubagentHost for SupervisorChildSessions {
                     Some(RlmSpawnHost::Local) => None,
                     None => identity.remote_host.clone(),
                 };
-                let remote = remote_host.map(|host| pa_core::kernel::RemoteKernelTarget {
-                    host,
-                    cwd: request.cwd.clone(),
-                });
-                // A local child's `cwd` moves its session; a remote child's
-                // names the remote kernel's directory and the local session
-                // keeps the parent's cwd.
+                let remote = remote_host
+                    .map(|host| {
+                        pa_core::kernel::RemoteKernelTarget::validated(host, request.cwd.clone())
+                    })
+                    .transpose()?;
+                // A local child's `cwd` moves its session (relative to the
+                // parent's cwd, like `rlm.create_session`, and it must
+                // exist); a remote child's names the remote kernel's
+                // directory and the local session keeps the parent's cwd.
                 let cwd = match (&remote, &request.cwd) {
-                    (None, Some(cwd)) => cwd.clone(),
+                    (None, Some(requested)) => {
+                        let resolved =
+                            Path::new(identity.cwd.as_deref().unwrap_or("/")).join(requested);
+                        if !resolved.is_dir() {
+                            anyhow::bail!(
+                                "rlm.spawn cwd {} is not an existing directory",
+                                resolved.display()
+                            );
+                        }
+                        resolved.to_string_lossy().into_owned()
+                    }
                     (None, None) | (Some(_), _) => {
                         identity.cwd.clone().unwrap_or_else(|| "/".to_string())
                     }
@@ -479,7 +491,7 @@ impl RlmSubagentHost for SupervisorChildSessions {
                             let deleted = &matches[0];
                             return Ok(RlmDeleteSubagentResult {
                                 subagent: RlmSubagentEntry {
-                                    host: None,
+                                    host: deleted.host.clone(),
                                     rlm_child_id: deleted.rlm_child_id.clone(),
                                     active_session_id: Some(deleted.active_session_id.clone()),
                                     session_id: deleted.session_id.clone(),

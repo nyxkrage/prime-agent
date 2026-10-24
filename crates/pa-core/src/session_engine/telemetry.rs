@@ -380,7 +380,7 @@ impl SessionCounters {
     /// One admitted `rlm.spawn`, split by explicit placement (the host
     /// name never uploads). An inherited placement counts as local: only
     /// depth-0 sessions report, and they have no remote placement to inherit.
-    pub fn note_rlm_spawn(&self, host: Option<&super::rlm_host::RlmSpawnHost>) {
+    pub(crate) fn note_rlm_spawn(&self, host: Option<&super::rlm_host::RlmSpawnHost>) {
         self.with(|values| {
             values.rlm_spawn_count += 1;
             match host {

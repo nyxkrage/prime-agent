@@ -207,6 +207,88 @@ async fn spawned_child_prompt_stamps_its_depth() {
     assert!(!engine.system_prompt.contains("depth: 0 (root)"));
 }
 
+/// A remote child's prompt describes its kernel host, never this machine:
+/// no local project context, no local MCP servers, the remote cwd, and the
+/// conversation log labeled as local to the orchestrator.
+#[tokio::test]
+async fn remote_child_prompt_describes_the_remote_host() {
+    let model = pa_agent::types::Model {
+        id: "m".into(),
+        name: "m".into(),
+        api: "test".into(),
+        provider: "test".into(),
+        base_url: "http://localhost".into(),
+        reasoning: false,
+        cost: pa_agent::types::UsageCost::default(),
+        context_window: 1_000,
+        max_tokens: 100,
+        max_tokens_explicit: false,
+    };
+    let provider = Arc::new(ScriptedProvider::new(model.clone()));
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    std::fs::write(cwd.join("AGENTS.md"), "LOCAL-ONLY-RULE").unwrap();
+    let remote = crate::kernel::shared::RemoteKernelTarget {
+        host: "box".to_string(),
+        cwd: Some("/srv/work".to_string()),
+    };
+    let engine = create_session(SessionEngineConfig {
+        remote_kernel: Some(remote),
+        on_late_sent_agent_message: None,
+        semantic_edges: None,
+        cron_store: None,
+        queued_steering_probe: None,
+        should_stop_after_turn: None,
+        image_model_router: None,
+        steering_mode: None,
+        follow_up_mode: None,
+        cwd: cwd.clone(),
+        agent_dir: tmp.path().join("agent"),
+        mcp_manager: None,
+        model: Some(model),
+        thinking_level: None,
+        stream_fn: Some(provider.stream_fn()),
+        tools: vec![bridge_tool(echo_definition())],
+        custom_system_prompt: None,
+        prompt_guidelines: vec![],
+        generic_mcp_servers: vec!["slack".to_string()],
+        allow_recursion: None,
+        session_manager: None,
+        extra_host_handlers: None,
+        conversation_log_path: Some(PathBuf::from("/local/sessions/child.jsonl")),
+        additional_skill_paths: vec![],
+        additional_prompt_paths: vec![],
+        extra_builtin_skill_overrides: vec![],
+        rlm_subagent_host: None,
+        rlm_usage_store: None,
+        progress_note_emit: None,
+        rlm_depth: Some(2),
+        daemonless: true,
+        telemetry: None,
+        model_info: None,
+        on_background_work_settled: None,
+        bash_notice_wake: None,
+        prewarm_ipython_kernel: None,
+        queued_goal_context_purge: None,
+    })
+    .await
+    .unwrap();
+
+    let prompt = &engine.system_prompt;
+    for expected in [
+        "Kernel host: box (remote, over SSH).",
+        "Working directory: /srv/work (on box)",
+        "Conversation log: /local/sessions/child.jsonl (on the orchestrator's machine; not readable from your REPL)",
+        "Not available on this remote kernel yet: MCP servers",
+    ] {
+        assert!(prompt.contains(expected), "missing {expected:?} in:\n{prompt}");
+    }
+    for local in ["LOCAL-ONLY-RULE", "`slack`", &cwd.display().to_string()] {
+        assert!(!prompt.contains(local), "{local:?} leaked into:\n{prompt}");
+    }
+}
+
 /// The login chain's prompt-gating end to end: a settings-declared OAuth
 /// server stays gated, an endpoint-bound credential unlocks it in the NEXT
 /// session, and one bound to another endpoint does not.

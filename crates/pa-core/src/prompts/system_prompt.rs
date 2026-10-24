@@ -96,6 +96,10 @@ pub struct BuildSystemPromptOptions<'a> {
     pub can_spawn: bool,
     /// Enabled user-configured generic MCP servers.
     pub generic_mcp_servers: Vec<String>,
+    /// The SSH host (and remote cwd) of a remote child's kernel
+    /// (`rlm.spawn(..., host=...)`): the environment then describes the
+    /// remote machine, not this one. `None` for a local kernel.
+    pub remote_kernel: Option<&'a crate::kernel::shared::RemoteKernelTarget>,
 }
 
 /// Build the system prompt (assembled text only).
@@ -272,11 +276,30 @@ fn environment_section(options: &BuildSystemPromptOptions) -> String {
         .clone()
         .unwrap_or_else(|| "not persisted".to_string())
         .replace('\\', "/");
-    let mut lines = vec![
-        format!("Current date: {}", today()),
-        format!("Working directory: {cwd}"),
-        format!("Conversation log: {messages_path}"),
-    ];
+    let mut lines = vec![format!("Current date: {}", today())];
+    match options.remote_kernel {
+        Some(remote) => {
+            let host = &remote.host;
+            lines.push(format!(
+                "Kernel host: {host} (remote, over SSH). Your Python REPL, `bash`, and every file you read or write run on {host}, not on the machine that runs your agent loop and model calls."
+            ));
+            lines.push(match &remote.cwd {
+                Some(cwd) => format!("Working directory: {cwd} (on {host})"),
+                None => format!("Working directory: the remote login directory on {host}"),
+            });
+            lines.push(format!(
+                "Conversation log: {messages_path} (on the orchestrator's machine; not readable from your REPL)"
+            ));
+            lines.push(
+                "Not available on this remote kernel yet: MCP servers, `rlm.harness`, refinements, goals, heartbeats, `agent_observe`, `rlm.create_session`, and `bash(..., persistent=True)`; calling them raises an error that says so."
+                    .to_string(),
+            );
+        }
+        None => {
+            lines.push(format!("Working directory: {cwd}"));
+            lines.push(format!("Conversation log: {messages_path}"));
+        }
+    }
     match options.vision_capable {
         Some(true) => lines.push(
             "Image input: this model can see images; `attach_image` loads them into context."

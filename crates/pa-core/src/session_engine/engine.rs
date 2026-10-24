@@ -590,11 +590,17 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             vision_capable: prompt_vision_capable,
             cwd: cwd.display().to_string(),
             messages_path: conversation_log.clone(),
-            context_files: resources
-                .agents_files
-                .iter()
-                .map(|file| (file.path.display().to_string(), file.content.clone()))
-                .collect(),
+            // A remote child's project lives on its kernel host: this
+            // machine's AGENTS.md files describe a different tree.
+            context_files: if config.remote_kernel.is_some() {
+                Vec::new()
+            } else {
+                resources
+                    .agents_files
+                    .iter()
+                    .map(|file| (file.path.display().to_string(), file.content.clone()))
+                    .collect()
+            },
             skills: model_visible_skills.clone(),
             selected_tools: Some(
                 active_tool_names
@@ -608,7 +614,13 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             rlm_depth: config.rlm_depth,
             daemonless: config.daemonless,
             can_spawn: config.rlm_subagent_host.is_some(),
-            generic_mcp_servers,
+            // `mcp.*` is refused on a remote kernel: advertise no servers.
+            generic_mcp_servers: if config.remote_kernel.is_some() {
+                Vec::new()
+            } else {
+                generic_mcp_servers
+            },
+            remote_kernel: config.remote_kernel.as_ref(),
             append_system_prompt: Some(resources.append_system_prompt.join("\n\n")),
             ..Default::default()
         },
