@@ -329,6 +329,8 @@ struct DeletedChild {
     /// The envelope's error: the child's own terminal error when one was
     /// recorded, else the delete reason.
     error: String,
+    /// The SSH host a remote child's kernel ran on.
+    host: Option<String>,
 }
 
 impl DeletedChild {
@@ -1105,6 +1107,7 @@ impl SupervisorChildSessionsInner {
 mod host;
 mod lifecycle;
 mod registry;
+pub(crate) mod remote_placement;
 mod usage;
 
 #[cfg(test)]

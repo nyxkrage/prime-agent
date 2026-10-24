@@ -107,8 +107,11 @@ impl SupervisorChildSessionsInner {
             config["spawnedByRequestId"] = json!(request_id);
         }
         // A remote child's kernel placement rides the durable create, so a
-        // respawned worker reconnects to the same host.
+        // respawned worker reconnects to the same host, and its sidecar
+        // makes every later open of the session (resume, switch, fork,
+        // the ledger reseed) keep that host.
         if let Some(remote) = remote {
+            super::remote_placement::write_remote_placement(session_dir, remote)?;
             config["remoteHost"] = json!(remote.host);
             if let Some(cwd) = &remote.cwd {
                 config["remoteCwd"] = json!(cwd);

@@ -189,17 +189,32 @@ impl Worker {
             .get("childScript")
             .and_then(Value::as_str)
             .map(str::to_string);
-        // A remote child's kernel placement (the durable create replays it).
-        let remote_kernel = payload
-            .get("remoteHost")
-            .and_then(Value::as_str)
-            .map(|host| pa_core::kernel::RemoteKernelTarget {
-                host: host.to_string(),
-                cwd: payload
+        // A remote child's kernel placement: the durable create replays it,
+        // and an open of an existing session file reads the placement
+        // sidecar beside it, so a remote child never reopens with a local
+        // kernel (an unreadable sidecar refuses the create).
+        let remote_kernel = match payload.get("remoteHost").and_then(Value::as_str) {
+            Some(host) => pa_core::kernel::RemoteKernelTarget::validated(
+                host.to_string(),
+                payload
                     .get("remoteCwd")
                     .and_then(Value::as_str)
                     .map(str::to_string),
-            });
+            )
+            .map(Some),
+            None => match &session_path {
+                Some(path) if path.exists() => {
+                    crate::rlm_children::remote_placement::placement_for_session_file(path)
+                }
+                Some(_) | None => Ok(None),
+            },
+        };
+        let remote_kernel = match remote_kernel {
+            Ok(remote_kernel) => remote_kernel,
+            Err(error) => {
+                return response_failure(None, "create", &format!("{error:#}"), None);
+            }
+        };
 
         // Set by the fresh-path arm when the name landed in its single rewrite:
         // the shared name persist must not append a second `session_info` line.

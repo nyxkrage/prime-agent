@@ -259,7 +259,10 @@ impl Worker {
     /// catalog rebind runs separately (`bind_scheduled_jobs`), like the
     /// TS dispatch handlers that call `rebindCronJobsToState` after the
     /// runtime call.
-    pub(crate) async fn refresh_replaced_session_state(&self) {
+    pub(crate) async fn refresh_replaced_session_state(
+        &self,
+        remote_kernel: Option<pa_core::kernel::RemoteKernelTarget>,
+    ) {
         let (rlm_depth, summary, child_script) = {
             let (mut core, inputs) = self.summary_inputs();
             // The moved-to file's persisted depth wins (the replacement
@@ -284,9 +287,9 @@ impl Worker {
         match self
             .engine
             .configure_rlm_identity(crate::engine::RlmSessionIdentity {
-                // A replacement runtime opens a saved session as a
-                // top-level runtime, which runs its kernel locally.
-                remote_kernel: None,
+                // The moved-to session's placement sidecar (read in the
+                // prepare phase): a remote child keeps its host.
+                remote_kernel,
                 rlm_depth,
                 rlm_max_depth: None,
                 cwd: Some(summary.cwd.clone()),

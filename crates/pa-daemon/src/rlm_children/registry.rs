@@ -35,6 +35,7 @@ impl SupervisorChildSessionsInner {
             started_at_ms: record.started_at_ms,
             status: record.roster_status(),
             answer_preview: record.answer_preview.clone(),
+            host: record.host.clone(),
             error: record
                 .error
                 .clone()
@@ -562,8 +563,21 @@ fn ledger_child_records(
             .parent()
             .and_then(crate::rlm_ledger::read_rlm_subagent_display)
             .filter(|display| display.child_id == edge.child_id);
+        // A remote child's host comes back from its placement sidecar; a
+        // damaged sidecar reseeds the row without a host and says why.
+        let host = match child
+            .parent()
+            .map(super::remote_placement::read_remote_placement)
+            .transpose()
+        {
+            Ok(placement) => placement.flatten().map(|target| target.host),
+            Err(error) => {
+                eprintln!("pa-daemon: RLM ledger reseed of {}: {error:#}", edge.child);
+                None
+            }
+        };
         records.push(ChildRecord {
-            host: None,
+            host,
             rlm_child_id: edge.child_id,
             session_name: edge.name,
             active_session_id: session_id.clone().unwrap_or_default(),
