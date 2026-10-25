@@ -133,10 +133,16 @@ pub(crate) async fn build_faux_engine_with(
         rpc_bash_wake,
         on_late_sent_agent_message,
     } = super::headless_embedding_fields(embedding);
+    let placement = crate::print_rlm::kernel_placement(
+        embedding,
+        session_manager
+            .as_ref()
+            .and_then(pa_core::session::manager::SessionManager::get_session_file),
+    )?;
     let engine = pa_core::session_engine::engine::create_session(
         pa_core::session_engine::engine::SessionEngineConfig {
-            remote_kernel: None,
-            kernel_env: embedding.kernel_env(),
+            remote_kernel: placement.remote,
+            kernel_env: placement.env,
             on_late_sent_agent_message,
             cron_store: None,
             // Faux verification harness: no product telemetry.

@@ -261,7 +261,7 @@ impl Worker {
     /// runtime call.
     pub(crate) async fn refresh_replaced_session_state(
         &self,
-        remote_kernel: Option<pa_core::kernel::RemoteKernelTarget>,
+        placement: crate::rlm_children::kernel_placement::KernelPlacement,
     ) {
         let (rlm_depth, summary, child_script) = {
             let (mut core, inputs) = self.summary_inputs();
@@ -288,11 +288,11 @@ impl Worker {
             .engine
             .configure_rlm_identity(crate::engine::RlmSessionIdentity {
                 // The moved-to session's placement sidecar (read in the
-                // prepare phase): a remote child keeps its host.
-                remote_kernel,
-                // Spawn-time env overrides belong to the spawned session;
-                // the moved-to session starts without them.
-                kernel_env: pa_core::kernel::KernelEnvOverrides::default(),
+                // prepare phase): a spawned child keeps its kernel host and
+                // its `env=` (pass-throughs resolve again at kernel start;
+                // the session build re-checks the kill switch).
+                remote_kernel: placement.remote,
+                kernel_env: placement.env,
                 rlm_depth,
                 rlm_max_depth: None,
                 cwd: Some(summary.cwd.clone()),

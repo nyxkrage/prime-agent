@@ -567,10 +567,12 @@ fn ledger_child_records(
         // damaged sidecar reseeds the row without a host and says why.
         let host = match child
             .parent()
-            .map(super::remote_placement::read_remote_placement)
+            .map(super::kernel_placement::read_kernel_placement)
             .transpose()
         {
-            Ok(placement) => placement.flatten().map(|target| target.host),
+            Ok(placement) => placement
+                .and_then(|placement| placement.remote)
+                .map(|target| target.host().to_string()),
             Err(error) => {
                 eprintln!("pa-daemon: RLM ledger reseed of {}: {error:#}", edge.child);
                 None

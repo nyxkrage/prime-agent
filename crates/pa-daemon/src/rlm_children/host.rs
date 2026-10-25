@@ -124,15 +124,27 @@ impl RlmSubagentHost for SupervisorChildSessions {
                 // The kernel placement: an explicit host wins, `host="local"`
                 // escapes, and no host inherits the parent's (a child of a
                 // remote child stays on that host; the SSH connection always
-                // originates here, never chained).
+                // originates here, never chained). A child on its parent's
+                // host also inherits the parent's remote cwd unless it names
+                // its own, like a local child inherits its parent's cwd.
                 let remote_host = match &request.host {
                     Some(RlmSpawnHost::Remote(host)) => Some(host.clone()),
                     Some(RlmSpawnHost::Local) => None,
-                    None => identity.remote_host.clone(),
+                    None => identity
+                        .remote_kernel
+                        .as_ref()
+                        .map(|parent| parent.host().to_string()),
                 };
                 let remote = remote_host
                     .map(|host| {
-                        pa_core::kernel::RemoteKernelTarget::validated(host, request.cwd.clone())
+                        let cwd = request.cwd.clone().or_else(|| {
+                            identity
+                                .remote_kernel
+                                .as_ref()
+                                .filter(|parent| parent.host() == host)
+                                .and_then(|parent| parent.cwd().map(str::to_string))
+                        });
+                        pa_core::kernel::RemoteKernelTarget::validated(host, cwd)
                     })
                     .transpose()?;
                 // The `env=` checks that need the placement and this
@@ -148,7 +160,9 @@ impl RlmSubagentHost for SupervisorChildSessions {
                     .remote_env_passthrough_allowed();
                     request.env.check_remote_passthrough(passthrough_allowed)?;
                 }
-                request.env.resolve(|key| std::env::var(key).ok())?;
+                request
+                    .env
+                    .check_resolvable(|key| std::env::var(key).ok())?;
                 // A local child's `cwd` moves its session (relative to the
                 // parent's cwd, like `rlm.create_session`, and it must
                 // exist); a remote child's names the remote kernel's
@@ -207,7 +221,7 @@ impl RlmSubagentHost for SupervisorChildSessions {
                     session_dir: created.session_dir.clone(),
                     model: model.clone(),
                     label: rlm_child_label(&request.prompt),
-                    host: remote.as_ref().map(|remote| remote.host.clone()),
+                    host: remote.as_ref().map(|remote| remote.host().to_string()),
                     started_at_ms: now_ms(),
                     settled_status: None,
                     settled: false,

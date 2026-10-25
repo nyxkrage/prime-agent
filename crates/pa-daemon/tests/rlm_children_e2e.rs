@@ -200,7 +200,7 @@ fn children(socket: &Path, agent_dir: &Path, script: &Path, depth: u32) -> Super
         String::new(),
     );
     sessions.set_identity(ParentIdentity {
-        remote_host: None,
+        remote_kernel: None,
         rlm_depth: depth,
         rlm_max_depth: 2,
         // Off-catalog on purpose: scripted children do not resolve models.

@@ -407,7 +407,7 @@ async fn parent_child_agent_message_round_trip_end_to_end() {
         String::new(),
     );
     children.set_identity(ParentIdentity {
-        remote_host: None,
+        remote_kernel: None,
         rlm_depth: 0,
         rlm_max_depth: 2,
         model: Some("faux/faux-1".to_string()),
@@ -740,7 +740,7 @@ async fn family_edges_never_cross_families_end_to_end() {
             String::new(),
         );
         children.set_identity(ParentIdentity {
-            remote_host: None,
+            remote_kernel: None,
             rlm_depth: 0,
             rlm_max_depth: 2,
             model: Some("faux/faux-1".to_string()),
@@ -884,7 +884,7 @@ async fn family_edges_never_cross_families_end_to_end() {
         String::new(),
     );
     kid_children.set_identity(ParentIdentity {
-        remote_host: None,
+        remote_kernel: None,
         rlm_depth: 1,
         rlm_max_depth: 2,
         model: Some("faux/faux-1".to_string()),
@@ -1206,7 +1206,7 @@ async fn parent_renames_a_child_end_to_end() {
         String::new(),
     );
     children.set_identity(ParentIdentity {
-        remote_host: None,
+        remote_kernel: None,
         rlm_depth: 0,
         rlm_max_depth: 2,
         model: Some("faux/faux-1".to_string()),

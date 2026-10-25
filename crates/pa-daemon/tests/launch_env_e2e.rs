@@ -530,7 +530,7 @@ async fn an_rlm_spawn_child_inherits_the_parent_worker_env() {
         String::new(),
     );
     children.set_identity(ParentIdentity {
-        remote_host: None,
+        remote_kernel: None,
         rlm_depth: 0,
         rlm_max_depth: 2,
         model: Some("scripted/faux-1".to_string()),

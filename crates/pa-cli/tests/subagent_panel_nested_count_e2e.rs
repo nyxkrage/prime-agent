@@ -206,7 +206,7 @@ fn children_host(
         String::new(),
     );
     sessions.set_identity(ParentIdentity {
-        remote_host: None,
+        remote_kernel: None,
         rlm_depth: depth,
         rlm_max_depth: 3,
         // Off-catalog on purpose: scripted children do not resolve models.

@@ -511,19 +511,6 @@ pub(crate) struct ChildEngineOverrides {
     pub kernel_env: pa_core::kernel::KernelEnvOverrides,
 }
 
-impl HeadlessEmbedding {
-    /// The kernel env overrides of this engine: a spawned child's own
-    /// `env=`, none for a root (never inherited down the tree).
-    fn kernel_env(&self) -> pa_core::kernel::KernelEnvOverrides {
-        match self {
-            HeadlessEmbedding::Child(overrides) => overrides.kernel_env.clone(),
-            HeadlessEmbedding::Root { .. } | HeadlessEmbedding::Rpc => {
-                pa_core::kernel::KernelEnvOverrides::default()
-            }
-        }
-    }
-}
-
 /// A child's model source: a real-provider child carries its resolved
 /// model; a scripted child runs its own faux queue.
 pub(crate) enum ChildLane {
@@ -778,6 +765,8 @@ pub(crate) async fn build_headless_engine_with(
     // ledger-less but the request ids still go on the wire.
     let session_manager = session_manager
         .unwrap_or_else(|| pa_core::session::manager::SessionManager::in_memory(&config.cwd));
+    let placement =
+        crate::print_rlm::kernel_placement(embedding, session_manager.get_session_file())?;
     let HeadlessEmbeddingFields {
         rlm_subagent_host,
         extra_host_handlers,
@@ -819,8 +808,8 @@ pub(crate) async fn build_headless_engine_with(
     };
     let engine = pa_core::session_engine::engine::create_session(
         pa_core::session_engine::engine::SessionEngineConfig {
-            remote_kernel: None,
-            kernel_env: embedding.kernel_env(),
+            remote_kernel: placement.remote,
+            kernel_env: placement.env,
             on_late_sent_agent_message,
             cron_store: None,
             semantic_edges,

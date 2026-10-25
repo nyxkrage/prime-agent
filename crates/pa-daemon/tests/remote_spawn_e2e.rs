@@ -1,10 +1,12 @@
 //! `rlm.spawn(..., host=...)` through the real supervisor: a root session
 //! spawns a remote child, the remote child's own children inherit its host
-//! unless they spawn with `host="local"`, the roster names the host, hosts
+//! and remote cwd unless they spawn with `host="local"`, the roster names
+//! the host, hosts
 //! and cwds outside the allowlist are refused on the spawn path, the
 //! remote kernel sees only the allowlisted env and refused host requests,
-//! and a copy of the remote child's session reopens on the same host (a
-//! damaged placement refuses to open). `PRIME_AGENT_SSH` points at a fake
+//! and a copy of the remote child's session reopens on the same host, in
+//! the same cwd, with the same `env=` (a pass-through resolved again, never
+//! stored), and a damaged placement refuses to open. `PRIME_AGENT_SSH` points at a fake
 //! `ssh` that runs the remote command as a child under `env -i` with a
 //! per-destination `HOME`, so the destination behaves like a separate
 //! machine that sees nothing of this process's env; the opt-in live check
@@ -26,6 +28,9 @@ use serde_json::{json, Value};
 /// The first remote spawn provisions the fake host's venv (uv, from its
 /// warm cache): the bound covers a cold install, not a fixed wait.
 const RECEIPT_TIMEOUT: Duration = Duration::from_mins(10);
+
+/// The daemon's (orchestrator's) value of the remote child's pass-through.
+const PASSTHROUGH_VALUE: &str = "passthrough-e2e-value";
 
 const FAKE_SSH: &str = r#"#!/bin/sh
 # Fake ssh: parse the options like ssh, then run the remote command as a
@@ -81,7 +86,7 @@ if not remote and claim("root"):
     ]:
         refused.append(await error_of(lambda kwargs=kwargs: rlm.spawn("x", name="bad", **kwargs)))
     receipt("root", refused=refused)
-    print(await rlm.spawn("work remotely", name="vps", host="box", cwd=__REMOTE_CWD__))
+    print(await rlm.spawn("work remotely", name="vps", host="box", cwd=__REMOTE_CWD__, env={"PA_E2E_LITERAL": "literal-1", "PA_E2E_PASSTHROUGH": None}))
 elif remote and claim("vps"):
     receipt(
         "vps",
@@ -91,7 +96,7 @@ elif remote and claim("vps"):
     print(await rlm.spawn("stay on the host", name="inherit"))
     print(await rlm.spawn("come back", name="escape", host="local"))
 elif remote:
-    receipt("inherit")
+    receipt("inherit", literal=os.environ.get("PA_E2E_LITERAL"))
 else:
     receipt("escape")
 "#;
@@ -129,18 +134,21 @@ fn dir_of(name: &str) -> Option<PathBuf> {
     std::env::split_paths(&std::env::var_os("PATH")?).find(|dir| dir.join(name).is_file())
 }
 
-/// The session file in the dir of the remote child that ran in `cwd`.
+/// The session file in the dir of the remote child that was spawned with
+/// `env=` to run in `cwd`.
 fn remote_child_session(root: &Path, cwd: &Path) -> PathBuf {
     let mut found = Vec::new();
     for entry in walk_all(root) {
         if entry
             .file_name()
-            .is_some_and(|name| name == "remote-kernel.json")
+            .is_some_and(|name| name == "kernel-placement.json")
         {
             let placement: Value =
                 serde_json::from_str(&std::fs::read_to_string(&entry).expect("placement"))
                     .expect("placement json");
-            if placement["cwd"] == json!(cwd.to_string_lossy()) {
+            // The spawned remote child (its inheriting child shares the
+            // host and cwd, never the `env=`).
+            if placement["cwd"] == json!(cwd.to_string_lossy()) && placement.get("env").is_some() {
                 let dir = entry.parent().expect("dir").to_path_buf();
                 found.extend(
                     std::fs::read_dir(&dir)
@@ -331,6 +339,8 @@ fn a_remote_child_runs_remotely_its_children_inherit_and_local_escapes() {
             .env("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir)
             .env("PRIME_AGENT_KERNEL_PYTHON", &kernel_python)
             .env("PRIME_AGENT_SSH", &ssh)
+            // The orchestrator's value of the spawn's pass-through.
+            .env("PA_E2E_PASSTHROUGH", PASSTHROUGH_VALUE)
             // Local kernels import this checkout's `rlm` (the installed
             // kernel venv may predate `rlm.spawn(host=...)`); remote ones
             // run the uploaded checkout runtime.
@@ -427,8 +437,9 @@ fn a_remote_child_runs_remotely_its_children_inherit_and_local_escapes() {
             json!({ "home": local_home, "cwd": canonical(dir.path()) }),
             // The remote child runs on the host, in the requested cwd.
             json!({ "home": remote_home, "cwd": canonical(&remote_cwd) }),
-            // Its plain child inherits the host (the remote login dir).
-            json!({ "home": remote_home, "cwd": canonical(Path::new(&remote_home)) }),
+            // Its plain child inherits the host and the remote cwd, never
+            // its parent's `env=`.
+            json!({ "home": remote_home, "cwd": canonical(&remote_cwd), "literal": null }),
             // `host="local"` brings a grandchild back to this machine.
             json!({ "home": local_home, "cwd": canonical(dir.path()) }),
         ]
@@ -465,9 +476,8 @@ fn a_remote_child_runs_remotely_its_children_inherit_and_local_escapes() {
             "PRIME_AGENT_CODING_AGENT_DIR",
             "PRIME_AGENT_KERNEL_OWNER_PID",
             "PRIME_AGENT_INTERNAL_ORPHAN_PROCESS_JOURNAL",
-            "RLM_REMOTE_HOST",
-            "RLM_REMOTE_INSTALL_DIR",
-            "RLM_HOST_HEARTBEAT_TIMEOUT_MS",
+            "PA_E2E_LITERAL",
+            "PA_E2E_PASSTHROUGH",
         ]
         .into_iter()
         .map(str::to_string)
@@ -499,20 +509,28 @@ fn a_remote_child_runs_remotely_its_children_inherit_and_local_escapes() {
     assert_eq!(hosts, vec![(json!("vps"), json!("box"))], "{children}");
 
     // A copy of the remote child's session (its file plus the placement
-    // sidecar) reopens with its kernel on the same host, never locally.
+    // sidecar) reopens with its kernel on the same host and its `env=`,
+    // never locally. The sidecar stores the pass-through by name only.
     let vps_session = remote_child_session(dir.path(), &remote_cwd);
     let reopen_dir = dir.path().join("reopen");
     std::fs::create_dir_all(&reopen_dir).expect("reopen dir");
     let reopened = reopen_dir.join(vps_session.file_name().expect("name"));
     std::fs::copy(&vps_session, &reopened).expect("copy session");
-    std::fs::copy(
-        vps_session.with_file_name("remote-kernel.json"),
-        reopen_dir.join("remote-kernel.json"),
-    )
-    .expect("copy placement");
+    let placement = vps_session.with_file_name("kernel-placement.json");
+    assert_eq!(
+        serde_json::from_str::<Value>(&std::fs::read_to_string(&placement).expect("placement"))
+            .expect("placement json"),
+        json!({
+            "type": "kernel_placement",
+            "host": "box",
+            "cwd": remote_cwd.to_string_lossy(),
+            "env": { "PA_E2E_LITERAL": "literal-1", "PA_E2E_PASSTHROUGH": null },
+        })
+    );
+    std::fs::copy(&placement, reopen_dir.join("kernel-placement.json")).expect("copy placement");
     let reopen_script = dir.path().join("reopen.json");
     let reopen_cell = format!(
-        "import json, os\nwith open({:?}, 'w') as handle:\n    json.dump({{'home': os.environ.get('HOME'), 'cwd': os.getcwd()}}, handle)",
+        "import json, os\nwith open({:?}, 'w') as handle:\n    json.dump({{'home': os.environ.get('HOME'), 'cwd': os.getcwd(), 'literal': os.environ.get('PA_E2E_LITERAL'), 'passthrough': os.environ.get('PA_E2E_PASSTHROUGH')}}, handle)",
         shared.join("receipt-reopen.json").to_string_lossy()
     );
     std::fs::write(
@@ -565,7 +583,12 @@ fn a_remote_child_runs_remotely_its_children_inherit_and_local_escapes() {
     };
     assert_eq!(
         reopen,
-        json!({ "home": remote_home, "cwd": canonical(&remote_cwd) })
+        json!({
+            "home": remote_home,
+            "cwd": canonical(&remote_cwd),
+            "literal": "literal-1",
+            "passthrough": PASSTHROUGH_VALUE,
+        })
     );
 
     // A damaged placement refuses to open instead of running locally.
@@ -573,7 +596,7 @@ fn a_remote_child_runs_remotely_its_children_inherit_and_local_escapes() {
     std::fs::create_dir_all(&damaged_dir).expect("damaged dir");
     let damaged = damaged_dir.join(vps_session.file_name().expect("name"));
     std::fs::copy(&vps_session, &damaged).expect("copy session");
-    std::fs::write(damaged_dir.join("remote-kernel.json"), "{broken").expect("damage");
+    std::fs::write(damaged_dir.join("kernel-placement.json"), "{broken").expect("damage");
     let refused = client.request(
         "damaged",
         &json!({
@@ -587,7 +610,7 @@ fn a_remote_child_runs_remotely_its_children_inherit_and_local_escapes() {
     let error = refused["error"].as_str().unwrap_or_default();
     assert!(
         error.contains(
-            "this session's kernel ran on a remote host; it will not reopen with a local kernel"
+            "this session's kernel placement (remote host, spawn env) is unreadable; it will not reopen without it"
         ),
         "{refused}"
     );

@@ -107,21 +107,27 @@ impl SupervisorChildSessionsInner {
         if let Some(request_id) = spawned_by_request_id {
             config["spawnedByRequestId"] = json!(request_id);
         }
-        // A remote child's kernel placement rides the durable create, so a
-        // respawned worker reconnects to the same host, and its sidecar
-        // makes every later open of the session (resume, switch, fork,
-        // the ledger reseed) keep that host.
+        // A remote child's kernel placement and the spawn's `env=` (literal
+        // values and pass-through names as `null`, never a pass-through
+        // value) ride the durable create, so a respawned worker reconnects
+        // to the same host with the same env; the child worker resolves the
+        // pass-throughs from its own env, which is this worker's
+        // (`launch_env`), at every kernel start. The placement sidecar
+        // makes every later open of the session (resume, switch, fork, new
+        // session, the ledger reseed, a print-mode reopen) keep both.
+        super::kernel_placement::write_kernel_placement(
+            session_dir,
+            &super::kernel_placement::KernelPlacement {
+                remote: remote.cloned(),
+                env: kernel_env.clone(),
+            },
+        )?;
         if let Some(remote) = remote {
-            super::remote_placement::write_remote_placement(session_dir, remote)?;
-            config["remoteHost"] = json!(remote.host);
-            if let Some(cwd) = &remote.cwd {
+            config["remoteHost"] = json!(remote.host());
+            if let Some(cwd) = remote.cwd() {
                 config["remoteCwd"] = json!(cwd);
             }
         }
-        // The spawn's `env=` rides the durable create (literal values and
-        // pass-through names as `null`, never a pass-through value): the
-        // child worker resolves the pass-throughs from its own env, which
-        // is this worker's (`launch_env`), at every kernel start.
         if !kernel_env.is_empty() {
             config["kernelEnv"] = kernel_env.to_json();
         }

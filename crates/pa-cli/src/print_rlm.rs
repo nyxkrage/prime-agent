@@ -210,6 +210,33 @@ pub(crate) fn root_node(
     })
 }
 
+/// The kernel placement of a print-mode engine. A spawned inline child
+/// runs locally with its own `env=` (never inherited down the tree). A root
+/// (or RPC) session opened from a file honors that file's placement sidecar:
+/// a reopened remote child keeps its kernel host and its `env=`, never
+/// silently a local kernel; an unreadable sidecar refuses the open.
+pub(crate) fn kernel_placement(
+    embedding: &crate::print_runtime::HeadlessEmbedding,
+    session_file: Option<&std::path::Path>,
+) -> Result<pa_daemon::rlm_children::KernelPlacement, String> {
+    match embedding {
+        crate::print_runtime::HeadlessEmbedding::Child(overrides) => {
+            Ok(pa_daemon::rlm_children::KernelPlacement {
+                remote: None,
+                env: overrides.kernel_env.clone(),
+            })
+        }
+        crate::print_runtime::HeadlessEmbedding::Root { .. }
+        | crate::print_runtime::HeadlessEmbedding::Rpc => match session_file {
+            Some(file) if file.exists() => {
+                pa_daemon::rlm_children::placement_for_session_file(file)
+                    .map_err(|error| format!("{error:#}"))
+            }
+            Some(_) | None => Ok(pa_daemon::rlm_children::KernelPlacement::default()),
+        },
+    }
+}
+
 /// Publish the built engine onto its node: the host and the messaging
 /// controller reach the session through this weak edge.
 pub(crate) async fn adopt_built_engine(
@@ -651,9 +678,28 @@ impl RlmSubagentHost for InlineHost {
                     "rlm.spawn cwd= requires a daemon-backed session; print mode runs subagents in-process in this session's working directory"
                 );
             }
+            // A root reopened on a remote host (its placement sidecar): a
+            // child without `host=` would inherit that host, which an
+            // in-process child cannot honor. Refuse rather than run it
+            // locally behind the model's back.
+            if request.host.is_none() {
+                if let Some(file) = &node.session_file {
+                    let placement = pa_daemon::rlm_children::placement_for_session_file(
+                        std::path::Path::new(file),
+                    )?;
+                    if let Some(remote) = placement.remote {
+                        anyhow::bail!(
+                            "rlm.spawn would inherit this session's remote kernel host {}, and print mode runs subagents in-process on this machine; pass host=\"local\", or reopen the session through the daemon",
+                            remote.host()
+                        );
+                    }
+                }
+            }
             // A pass-through the orchestrator lacks fails the spawn, naming
             // it, instead of the child's first kernel start.
-            request.env.resolve(|key| std::env::var(key).ok())?;
+            request
+                .env
+                .check_resolvable(|key| std::env::var(key).ok())?;
             let recipe = Arc::clone(&node.recipe);
             let config = &recipe.options.config;
             let child_id = format!("sub-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);

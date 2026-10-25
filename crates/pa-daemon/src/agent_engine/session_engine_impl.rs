@@ -930,7 +930,7 @@ impl SessionEngine for AgentSessionEngine {
                 session_file: identity.session_file.clone(),
                 thinking: identity.thinking.clone(),
                 child_script: identity.child_script,
-                remote_host: identity.remote_kernel.map(|remote| remote.host),
+                remote_kernel: identity.remote_kernel,
             };
             children.set_identity(parent);
         }

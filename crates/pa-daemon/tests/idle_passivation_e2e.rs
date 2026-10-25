@@ -279,7 +279,7 @@ async fn a_settled_child_passivates_stays_listable_and_revives_by_agent_message(
         String::new(),
     );
     children.set_identity(ParentIdentity {
-        remote_host: None,
+        remote_kernel: None,
         rlm_depth: 0,
         rlm_max_depth: 2,
         model: Some("faux/faux-1".to_string()),
@@ -600,7 +600,7 @@ async fn a_parent_rename_after_a_revival_and_second_passivation_reaches_the_chil
         String::new(),
     );
     children.set_identity(ParentIdentity {
-        remote_host: None,
+        remote_kernel: None,
         rlm_depth: 0,
         rlm_max_depth: 2,
         model: Some("faux/faux-1".to_string()),

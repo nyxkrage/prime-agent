@@ -275,11 +275,14 @@ async fn reseed_lists_live_ledger_children_settled_and_bills_only_after_a_delive
     }
     // sub-a ran its kernel on a remote host: its placement sidecar brings
     // the host back with the reseeded row (and its delete tombstone).
-    crate::rlm_children::remote_placement::write_remote_placement(
+    crate::rlm_children::kernel_placement::write_kernel_placement(
         Path::new(&child_one).parent().unwrap(),
-        &pa_core::kernel::RemoteKernelTarget {
-            host: "user@box".to_string(),
-            cwd: None,
+        &crate::rlm_children::kernel_placement::KernelPlacement {
+            remote: Some(
+                pa_core::kernel::RemoteKernelTarget::validated("user@box".to_string(), None)
+                    .unwrap(),
+            ),
+            env: pa_core::kernel::KernelEnvOverrides::default(),
         },
     )
     .unwrap();

@@ -189,41 +189,52 @@ impl Worker {
             .get("childScript")
             .and_then(Value::as_str)
             .map(str::to_string);
-        // A remote child's kernel placement: the durable create replays it,
-        // and an open of an existing session file reads the placement
-        // sidecar beside it, so a remote child never reopens with a local
-        // kernel (an unreadable sidecar refuses the create).
-        let remote_kernel = match payload.get("remoteHost").and_then(Value::as_str) {
-            Some(host) => pa_core::kernel::RemoteKernelTarget::validated(
-                host.to_string(),
-                payload
-                    .get("remoteCwd")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-            )
-            .map(Some),
-            None => match &session_path {
+        // A spawned child's kernel placement (remote host) and `env=`
+        // overrides (literals and pass-through names): the durable create
+        // replays them (validated again, as they come from disk), and an
+        // open of an existing session file without them reads the placement
+        // sidecar beside it, so a spawned child never reopens with a local
+        // kernel or without its env (an unreadable sidecar refuses the
+        // create). The session build re-checks the passthrough kill switch.
+        let placement = if payload.get("remoteHost").is_some() || payload.get("kernelEnv").is_some()
+        {
+            payload
+                .get("remoteHost")
+                .map(|host| {
+                    let host =
+                        anyhow::Context::context(host.as_str(), "remoteHost must be a string")?;
+                    pa_core::kernel::RemoteKernelTarget::validated(
+                        host.to_string(),
+                        payload
+                            .get("remoteCwd")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                    )
+                })
+                .transpose()
+                .and_then(|remote| {
+                    let env = pa_core::kernel::KernelEnvOverrides::from_json(
+                        payload.get("kernelEnv").unwrap_or(&Value::Null),
+                    )?;
+                    Ok(crate::rlm_children::kernel_placement::KernelPlacement { remote, env })
+                })
+        } else {
+            match &session_path {
                 Some(path) if path.exists() => {
-                    crate::rlm_children::remote_placement::placement_for_session_file(path)
+                    crate::rlm_children::kernel_placement::placement_for_session_file(path)
                 }
-                Some(_) | None => Ok(None),
-            },
-        };
-        let remote_kernel = match remote_kernel {
-            Ok(remote_kernel) => remote_kernel,
-            Err(error) => {
-                return response_failure(None, "create", &format!("{error:#}"), None);
+                Some(_) | None => {
+                    Ok(crate::rlm_children::kernel_placement::KernelPlacement::default())
+                }
             }
         };
-        // A spawned child's `env=` overrides (literals and pass-through
-        // names), validated again here: the durable create is replayed
-        // from disk.
-        let kernel_env = match pa_core::kernel::KernelEnvOverrides::from_json(
-            payload.get("kernelEnv").unwrap_or(&Value::Null),
-        ) {
-            Ok(kernel_env) => kernel_env,
+        let crate::rlm_children::kernel_placement::KernelPlacement {
+            remote: remote_kernel,
+            env: kernel_env,
+        } = match placement {
+            Ok(placement) => placement,
             Err(error) => {
-                return response_failure(None, "create", &error.to_string(), None);
+                return response_failure(None, "create", &format!("{error:#}"), None);
             }
         };
 

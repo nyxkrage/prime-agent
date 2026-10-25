@@ -100,9 +100,10 @@ pub struct ParentIdentity {
     pub thinking: Option<String>,
     /// Verification seam: create children with a scripted engine file.
     pub child_script: Option<String>,
-    /// The SSH host this session's kernel runs on (a remote child); its
-    /// own children inherit it unless they spawn with `host="local"`.
-    pub remote_host: Option<String>,
+    /// Where this session's kernel runs (a remote child: its host and
+    /// remote cwd); its own children inherit both unless they spawn with
+    /// `host="local"`, another host, or their own `cwd=`.
+    pub remote_kernel: Option<pa_core::kernel::RemoteKernelTarget>,
 }
 
 impl ParentIdentity {
@@ -1105,9 +1106,12 @@ impl SupervisorChildSessionsInner {
 }
 
 mod host;
+pub(crate) mod kernel_placement;
 mod lifecycle;
 mod registry;
-pub(crate) mod remote_placement;
+// Print mode (pa-cli) opens session files without a worker: it must honor a
+// spawned child's placement the same way.
+pub use kernel_placement::{placement_for_session_file, KernelPlacement};
 mod usage;
 
 #[cfg(test)]

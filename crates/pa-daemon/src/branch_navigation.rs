@@ -573,11 +573,12 @@ impl Worker {
             Ok(prepared) => prepared,
             Err(response) => return response,
         };
-        // The fork lands in the live session's dir: a remote child's fork
-        // keeps its host (an unreadable placement refuses before teardown).
-        let remote_kernel =
-            match crate::rlm_children::remote_placement::placement_for_session_file(&forked.path) {
-                Ok(remote_kernel) => remote_kernel,
+        // The fork lands in the live session's dir: a spawned child's fork
+        // keeps its host and env (an unreadable placement refuses before
+        // teardown).
+        let placement =
+            match crate::rlm_children::kernel_placement::placement_for_session_file(&forked.path) {
+                Ok(placement) => placement,
                 Err(error) => return response_failure(None, "fork", &format!("{error:#}"), None),
             };
         // One replacement at a time: the fork's teardown, swap, restore, and rebuild share
@@ -595,7 +596,7 @@ impl Worker {
                 // session's scheduled jobs rebind onto the forked
                 // session file — future restores target the fork, not the
                 // source branch.
-                self.refresh_replaced_session_state(remote_kernel).await;
+                self.refresh_replaced_session_state(placement).await;
                 self.reseed_service_tier_for_replacement();
                 if let Err(error) = self.bind_scheduled_jobs().await {
                     return response_failure(None, "fork", &error.to_string(), None);
