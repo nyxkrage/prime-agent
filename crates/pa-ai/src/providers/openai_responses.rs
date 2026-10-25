@@ -15,7 +15,7 @@ use crate::providers::openai_responses_shared::{
     ConvertResponsesMessagesOptions, ConvertResponsesToolsOptions, ReasoningSummary,
     ResponsesStreamHooks, OPENAI_TOOL_CALL_PROVIDERS,
 };
-use crate::providers::opencode_session::push_opencode_session_header;
+use crate::providers::opencode_session::push_opencode_headers;
 use crate::providers::simple_options::build_base_options;
 use crate::registry::Provider;
 use crate::types::{
@@ -184,7 +184,7 @@ fn build_headers(
         }
     }
     // Not `cache_session_id`: opencode needs its routing session even with caching off.
-    push_opencode_session_header(&mut headers, model, options.base.session_id.as_deref());
+    push_opencode_headers(&mut headers, model, options.base.session_id.as_deref());
     headers.push(("Authorization".into(), format!("Bearer {api_key}")));
     headers
 }
@@ -508,8 +508,9 @@ mod tests {
             ..StreamOptions::default()
         });
         assert_eq!(
-            build_headers(model, "k", &options, None),
+            build_headers(model, "k", &options, /*cache_session_id*/ None),
             vec![
+                ("user-agent".to_string(), "prime-agent".to_string()),
                 ("x-opencode-session".to_string(), "s-1".to_string()),
                 ("Authorization".to_string(), "Bearer k".to_string()),
             ]

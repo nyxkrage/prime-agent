@@ -15,7 +15,7 @@ use crate::providers::google_shared::{
     get_google_thinking_budget, get_thinking_level, API_GOOGLE_GENERATIVE_AI,
 };
 use crate::providers::google_stream::GoogleStreamState;
-use crate::providers::opencode_session::push_opencode_session_header;
+use crate::providers::opencode_session::push_opencode_headers;
 use crate::providers::simple_options::build_base_options;
 use crate::registry::Provider;
 use crate::types::{
@@ -205,6 +205,24 @@ fn build_params(model: &Model, context: &Context, options: &GoogleOptions) -> Va
     Value::Object(body)
 }
 
+/// The request headers (TS `createClient`): the model's headers, the caller's on top
+/// (case-insensitive replace), the opencode routing headers, then the API key.
+fn build_headers(model: &Model, api_key: &str, options: &GoogleOptions) -> Vec<(String, String)> {
+    let mut headers: Vec<(String, String)> = Vec::new();
+    for (name, value) in model.headers.iter().flatten() {
+        headers.push((name.clone(), value.clone()));
+    }
+    if let Some(options_headers) = &options.base.headers {
+        for (name, value) in options_headers {
+            headers.retain(|(existing, _)| !existing.eq_ignore_ascii_case(name));
+            headers.push((name.clone(), value.clone()));
+        }
+    }
+    push_opencode_headers(&mut headers, model, options.base.session_id.as_deref());
+    headers.push(("x-goog-api-key".into(), api_key.to_string()));
+    headers
+}
+
 // Long by design: mirrors the provider's stream shape.
 #[allow(clippy::too_many_lines)]
 async fn run_stream(
@@ -263,28 +281,10 @@ async fn run_stream(
         )
     };
 
-    let mut headers: Vec<(String, String)> = Vec::new();
-    for (name, value) in model.headers.iter().flatten() {
-        headers.push((name.clone(), value.clone()));
-    }
-    if let Some(options_headers) = &options.base.headers {
-        for (name, value) in options_headers {
-            headers.retain(|(existing, _)| !existing.eq_ignore_ascii_case(name));
-            headers.push((name.clone(), value.clone()));
-        }
-    }
-    if model.provider == "opencode" || model.provider == "opencode-go" {
-        if let Some(session_id) = &options.base.session_id {
-            headers.push(("session_id".into(), session_id.clone()));
-        }
-    }
-    push_opencode_session_header(&mut headers, model, options.base.session_id.as_deref());
-    headers.push(("x-goog-api-key".into(), api_key));
-
     let mut response: HttpResponse = send(RequestOptions {
         method: reqwest::Method::POST,
         url,
-        headers,
+        headers: build_headers(model, &api_key, &options),
         body: Some(params.to_string()),
         signal: options.base.signal.clone(),
         timeout_ms: options.base.timeout_ms,
@@ -454,5 +454,31 @@ impl Provider for GoogleGenerativeAiProvider {
         options: Option<&SimpleStreamOptions>,
     ) -> AssistantMessageEventStream {
         stream_simple_google(model, context, options)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// TS `withOpenCodeHeaders`: an opencode Gemini model routes under the caller's session
+    /// through `x-opencode-session` and identifies as `prime-agent`, with no stray
+    /// `session_id` header.
+    #[test]
+    fn opencode_requests_carry_only_the_opencode_routing_headers() {
+        let model = crate::models_generated::get_model("opencode", "gemini-3-flash")
+            .expect("the catalog carries opencode gemini");
+        let options = GoogleOptions::from_base(StreamOptions {
+            session_id: Some("s-1".into()),
+            ..StreamOptions::default()
+        });
+        assert_eq!(
+            build_headers(model, "k", &options),
+            vec![
+                ("user-agent".to_string(), "prime-agent".to_string()),
+                ("x-opencode-session".to_string(), "s-1".to_string()),
+                ("x-goog-api-key".to_string(), "k".to_string()),
+            ]
+        );
     }
 }

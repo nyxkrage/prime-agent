@@ -10,7 +10,7 @@ use crate::event_stream::{
     create_assistant_message_event_stream, AssistantMessageEvent, AssistantMessageEventStream,
 };
 use crate::models::clamp_thinking_level;
-use crate::providers::opencode_session::push_opencode_session_header;
+use crate::providers::opencode_session::push_opencode_headers;
 use crate::providers::simple_options::{adjust_max_tokens_for_thinking, build_base_options};
 use crate::registry::Provider;
 use crate::types::{
@@ -412,7 +412,7 @@ pub(crate) fn build_request_headers(
     };
 
     let mut pairs = headers_to_pairs(&default_headers);
-    push_opencode_session_header(&mut pairs, model, session_id);
+    push_opencode_headers(&mut pairs, model, session_id);
     // The Anthropic SDK always sends the API version; mirror it.
     pairs.insert(0, ("anthropic-version".into(), "2023-06-01".into()));
     if model.provider == "cloudflare-ai-gateway" || model.provider == "github-copilot" || is_oauth {
@@ -605,7 +605,8 @@ mod subscription_identity_tests {
     }
 
     /// TS `withOpenCodeHeaders`: an opencode model routes under the caller's
-    /// session through `x-opencode-session` and nothing else.
+    /// session through `x-opencode-session` and identifies as `prime-agent`, with no stray
+    /// `session_id` header.
     #[test]
     fn opencode_requests_carry_the_session_routing_header() {
         let model = Model {
@@ -614,13 +615,20 @@ mod subscription_identity_tests {
             base_url: "https://opencode.ai/zen".into(),
             ..test_model()
         };
-        let (headers, is_oauth) =
-            build_request_headers(&model, "sk-test", false, false, None, Some("s-1"));
+        let (headers, is_oauth) = build_request_headers(
+            &model,
+            "sk-test",
+            /*interleaved_thinking*/ false,
+            /*use_fine_grained_tool_streaming_beta*/ false,
+            /*options_headers*/ None,
+            Some("s-1"),
+        );
         assert!(!is_oauth);
         let expected: Vec<(String, String)> = [
             ("anthropic-version", "2023-06-01"),
             ("accept", "application/json"),
             ("anthropic-dangerous-direct-browser-access", "true"),
+            ("user-agent", "prime-agent"),
             ("x-opencode-session", "s-1"),
             ("x-api-key", "sk-test"),
         ]
