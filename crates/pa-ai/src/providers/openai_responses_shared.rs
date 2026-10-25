@@ -1202,46 +1202,55 @@ mod tests {
     fn shape_change_keeps_the_item_id_after_its_reasoning_item() {
         let reasoning =
             json!({ "type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": "enc" });
-        // off -> on: a function call recorded with freeform tools off replays as a custom call.
-        let off_to_on = convert_with_tools(
-            &codex_model(),
-            reasoning_call_history("call_x|fc_y"),
-            vec![python_tool(Some("code"))],
-        );
-        assert_eq!(
-            off_to_on[1..],
-            [
-                reasoning.clone(),
-                json!({
-                    "type": "custom_tool_call",
-                    "id": "ctc_fc_y",
-                    "call_id": "call_x",
-                    "name": "python_repl",
-                    "input": "print(1)",
-                }),
-                json!({ "type": "custom_tool_call_output", "call_id": "call_x", "output": "ok" }),
-            ]
-        );
-        // on -> off: a custom call recorded with freeform tools on replays as a function call.
-        let on_to_off = convert_with_tools(
-            &codex_model(),
-            reasoning_call_history("call_x|ctc_y"),
-            vec![python_tool(None)],
-        );
-        assert_eq!(
-            on_to_off[1..],
-            [
-                reasoning,
-                json!({
-                    "type": "function_call",
-                    "id": "fc_ctc_y",
-                    "call_id": "call_x",
-                    "name": "python_repl",
-                    "arguments": "{\"code\":\"print(1)\"}",
-                }),
-                json!({ "type": "function_call_output", "call_id": "call_x", "output": "ok" }),
-            ]
-        );
+        // Both a Codex model and an `openai` model on the `openai-responses` API.
+        for model in [codex_model(), openai_model()] {
+            // off -> on: a function call recorded with freeform tools off replays as a custom
+            // call.
+            let off_to_on = convert_with_tools(
+                &model,
+                recorded_by(&model, reasoning_call_history("call_x|fc_y")),
+                vec![python_tool(Some("code"))],
+            );
+            assert_eq!(
+                off_to_on[1..],
+                [
+                    reasoning.clone(),
+                    json!({
+                        "type": "custom_tool_call",
+                        "id": "ctc_fc_y",
+                        "call_id": "call_x",
+                        "name": "python_repl",
+                        "input": "print(1)",
+                    }),
+                    json!({ "type": "custom_tool_call_output", "call_id": "call_x", "output": "ok" }),
+                ],
+                "{}",
+                model.api
+            );
+            // on -> off: a custom call recorded with freeform tools on replays as a function
+            // call.
+            let on_to_off = convert_with_tools(
+                &model,
+                recorded_by(&model, reasoning_call_history("call_x|ctc_y")),
+                vec![python_tool(None)],
+            );
+            assert_eq!(
+                on_to_off[1..],
+                [
+                    reasoning.clone(),
+                    json!({
+                        "type": "function_call",
+                        "id": "fc_ctc_y",
+                        "call_id": "call_x",
+                        "name": "python_repl",
+                        "arguments": "{\"code\":\"print(1)\"}",
+                    }),
+                    json!({ "type": "function_call_output", "call_id": "call_x", "output": "ok" }),
+                ],
+                "{}",
+                model.api
+            );
+        }
     }
 
     /// Regression: replaying a same-model call as a `custom_tool_call` rewrites only a stored
