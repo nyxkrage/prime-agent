@@ -66,6 +66,8 @@ impl FreeformToolArguments {
     /// The argument key a `custom_tool_call` input for `tool_name` maps onto (see
     /// [`Self::arguments_from_input`]).
     pub fn argument_name(&self, tool_name: &str) -> &str {
+        // Exact-name lookup only: a call under a tool alias falls back to `input`. That is
+        // accepted because the API constrains custom tool call names to the declared tools.
         self.0.get(tool_name).map_or("input", String::as_str)
     }
 
