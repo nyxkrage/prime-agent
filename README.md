@@ -206,6 +206,8 @@ If `editFormat` is unset, GPT-5.1 and newer (`gpt-5.1`, `gpt-5.2`, `gpt-5.10`,
 read through provider spellings: a provider prefix (`openai/gpt-5.1`), a variant suffix
 (`openai/gpt-5.1:nitro`), a fine-tune (`ft:gpt-5.1:org::id`), or a dotted vendor prefix
 (`openai.gpt-5.1`). Set `"applyPatch": "off"` in `settings.json` to make every model use
-`edit` (the default is `"auto"`). The format is chosen when the session starts.
+`edit` (the default is `"auto"`). The format is chosen when the session starts and
+stays for the session: a `/model` switch keeps it (`edit` is bound in every session, so
+a model switched to after an `apply_patch` start can still edit with it).
 `prime-agent prompt --model <provider/id>` shows the chosen variant in the core and
 usage layer sources.
