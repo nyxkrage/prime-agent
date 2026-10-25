@@ -419,7 +419,7 @@ impl ModelRegistry {
         let collision = self.model_aliases.iter().find_map(|(alias, selector)| {
             self.models
                 .iter()
-                .find(|model| model.id.eq_ignore_ascii_case(alias))
+                .find(|model| super::custom::alias_shadows_model_id(alias, &model.id))
                 .map(|model| (alias, selector, format!("{}/{}", model.provider, model.id)))
         });
         if let Some((alias, selector, shadowed)) = collision {
@@ -427,8 +427,9 @@ impl ModelRegistry {
                 .as_ref()
                 .map(|path| format!("\n\nFile: {}", path.display()))
                 .unwrap_or_default();
+            let shadows = super::custom::SHADOWED_MODEL_ID;
             self.load_error = Some(format!(
-                "Invalid models.json: model {selector}: alias \"{alias}\" equals the ID of model {shadowed}; an alias must not shadow a model ID.{file}"
+                "Invalid models.json: model {selector}: alias \"{alias}\" {shadows} {shadowed}; an alias must not shadow a model ID.{file}"
             ));
             self.model_aliases.clear();
         }

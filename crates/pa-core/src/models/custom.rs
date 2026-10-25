@@ -259,7 +259,7 @@ pub fn validate_config(
     // across providers (case-insensitive), and never a model ID the document
     // names. Errors name both models.
     let mut aliased: Vec<(&str, String)> = Vec::new();
-    let mut model_ids: Vec<(String, String)> = Vec::new();
+    let mut model_ids: Vec<(&str, String)> = Vec::new();
     for (provider_name, provider_config) in &config.providers {
         let definitions = provider_config
             .models
@@ -273,7 +273,7 @@ pub fn validate_config(
             .map(|(id, over)| (id.as_str(), over.alias.as_deref()));
         for (model_id, alias) in definitions.chain(overrides) {
             let selector = format!("{provider_name}/{model_id}");
-            model_ids.push((model_id.to_lowercase(), selector.clone()));
+            model_ids.push((model_id, selector.clone()));
             let Some(alias) = alias else { continue };
             let trimmed = alias.trim();
             if trimmed.is_empty()
@@ -300,14 +300,32 @@ pub fn validate_config(
     for (alias, selector) in &aliased {
         if let Some((_, other)) = model_ids
             .iter()
-            .find(|(model_id, _)| model_id == &alias.to_lowercase())
+            .find(|(model_id, _)| alias_shadows_model_id(alias, model_id))
         {
             return Err(format!(
-                "Model {selector}: alias \"{alias}\" equals the ID of model {other}; an alias must not shadow a model ID."
+                "Model {selector}: alias \"{alias}\" {SHADOWED_MODEL_ID} {other}; an alias must not shadow a model ID."
             ));
         }
     }
     Ok(())
+}
+
+/// The alias-collision error's middle: `alias "x" <this> provider/model-id`.
+pub(crate) const SHADOWED_MODEL_ID: &str =
+    "equals the ID (or a trailing \"/\" segment of the ID) of model";
+
+/// Whether `alias` would capture references to `model_id`: it equals,
+/// case-insensitively, the ID or any `/`-delimited suffix of it, which
+/// model references also accept (`DeepSeek-R1` reaches
+/// `deepseek-ai/DeepSeek-R1`).
+pub(crate) fn alias_shadows_model_id(alias: &str, model_id: &str) -> bool {
+    std::iter::once(model_id)
+        .chain(
+            model_id
+                .match_indices('/')
+                .map(|(index, _)| &model_id[index + 1..]),
+        )
+        .any(|suffix| suffix.eq_ignore_ascii_case(alias))
 }
 
 fn cost_from_config(config: &ModelCostConfig) -> ModelCost {
@@ -574,7 +592,7 @@ mod tests {
                     "gpt-6-luna": { "name": "Luna" }
                 } } } }"#
             ),
-            "Model openai/gpt-6.1-sol: alias \"gpt-6-luna\" equals the ID of model openai/gpt-6-luna; an alias must not shadow a model ID."
+            "Model openai/gpt-6.1-sol: alias \"gpt-6-luna\" equals the ID (or a trailing \"/\" segment of the ID) of model openai/gpt-6-luna; an alias must not shadow a model ID."
         );
         assert_eq!(
             alias_error(
@@ -592,6 +610,20 @@ mod tests {
                 } } } }"#
             ),
             "Model openai/gpt-6.1-sol: invalid alias \"sol:high\" (use a single word without \"/\", \":\", spaces, or glob characters)."
+        );
+        // References also accept a trailing `/` segment of an ID, so an
+        // alias equal to one would redirect them.
+        assert_eq!(
+            alias_error(
+                r#"{ "providers": { "together": {
+                    "baseUrl": "https://together.example", "apiKey": "k", "api": "openai-completions",
+                    "models": [
+                        { "id": "deepseek-ai/DeepSeek-R1" },
+                        { "id": "meta/llama-5", "alias": "deepseek-r1" }
+                    ]
+                } } }"#
+            ),
+            "Model together/meta/llama-5: alias \"deepseek-r1\" equals the ID (or a trailing \"/\" segment of the ID) of model together/deepseek-ai/DeepSeek-R1; an alias must not shadow a model ID."
         );
         let config = parse_models_config(
             r#"{ "providers": { "openai": { "modelOverrides": {
