@@ -10,6 +10,9 @@
 pub struct ModelAllowlistRefusal {
     /// The refused model, full selector form `provider/model-id`.
     pub selector: String,
+    /// `allowedModels` patterns that name a models.json alias instead of a
+    /// model (they match nothing); listed so the refusal explains itself.
+    pub alias_patterns: Vec<AliasPattern>,
 }
 
 impl std::fmt::Display for ModelAllowlistRefusal {
@@ -20,7 +23,11 @@ impl std::fmt::Display for ModelAllowlistRefusal {
              the daemon never falls back to a different model. Allow it in the settings \
              or pick an allowed model.",
             self.selector
-        )
+        )?;
+        for alias_pattern in &self.alias_patterns {
+            write!(f, " Note: \"allowedModels\" {alias_pattern}.")?;
+        }
+        Ok(())
     }
 }
 
@@ -270,6 +277,7 @@ mod tests {
     fn the_refusal_error_carries_the_selector() {
         let refusal = ModelAllowlistRefusal {
             selector: "zai/glm-5.3".to_string(),
+            alias_patterns: Vec::new(),
         };
         assert_eq!(refusal.selector, "zai/glm-5.3");
         let message = refusal.to_string();

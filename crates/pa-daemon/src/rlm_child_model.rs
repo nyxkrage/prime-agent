@@ -56,7 +56,7 @@ pub fn resolve_child_model(
     allowlist: &crate::model_allowlist::DaemonAllowlist,
 ) -> Result<String> {
     let model = resolve_child_model_unchecked(agent_dir, reference, parent_model, target)?;
-    crate::model_allowlist::assert_allowed(allowlist, &model)?;
+    crate::model_allowlist::assert_allowed(agent_dir, allowlist, &model)?;
     Ok(model)
 }
 

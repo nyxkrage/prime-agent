@@ -63,19 +63,34 @@ pub(crate) fn load(cwd: &Path, agent_dir: &Path) -> DaemonAllowlist {
 /// Enforce the allowlist on a resolved selector: `Ok(())` when allowed
 /// (and when no allowlist is configured), the typed refusal for an
 /// off-allowlist model, and a fail-closed error when the policy is
-/// unreadable.
-pub(crate) fn assert_allowed(allowlist: &DaemonAllowlist, selector: &str) -> Result<()> {
+/// unreadable. A refusal names any pattern that is a models.json alias
+/// (read from `agent_dir`): patterns match canonical names only.
+pub(crate) fn assert_allowed(
+    agent_dir: &Path,
+    allowlist: &DaemonAllowlist,
+    selector: &str,
+) -> Result<()> {
     match allowlist {
         DaemonAllowlist::Unrestricted => Ok(()),
         DaemonAllowlist::Allowed(patterns) => {
             if pa_core::models::model_allowed(selector, patterns) {
-                Ok(())
-            } else {
-                Err(ModelAllowlistRefusal {
-                    selector: selector.to_string(),
-                }
-                .into())
+                return Ok(());
             }
+            // An alias is a single token without `/` or glob characters, so
+            // the registry is built only when some pattern could be one.
+            let alias_patterns = if patterns
+                .iter()
+                .any(|pattern| !pattern.contains(['/', '*', '?', '[']))
+            {
+                crate::state_getters::worker_model_registry(agent_dir).alias_patterns(patterns)
+            } else {
+                Vec::new()
+            };
+            Err(ModelAllowlistRefusal {
+                selector: selector.to_string(),
+                alias_patterns,
+            }
+            .into())
         }
         DaemonAllowlist::Unreadable(error) => Err(anyhow::anyhow!(
             "The daemon model allowlist could not be read ({error}); \
@@ -206,14 +221,57 @@ mod tests {
 
     #[test]
     fn assert_allowed_passes_without_an_allowlist_and_types_the_refusal() {
-        assert_allowed(&DaemonAllowlist::Unrestricted, "anything/model").unwrap();
+        assert_allowed(
+            Path::new("/nonexistent"),
+            &DaemonAllowlist::Unrestricted,
+            "anything/model",
+        )
+        .unwrap();
         let allow = DaemonAllowlist::Allowed(vec!["prime-inference/*".to_string()]);
-        assert_allowed(&allow, "prime-inference/internal/glm-5.3-fast").unwrap();
-        let error = assert_allowed(&allow, "zai/glm-5.3").expect_err("refused");
+        assert_allowed(
+            Path::new("/nonexistent"),
+            &allow,
+            "prime-inference/internal/glm-5.3-fast",
+        )
+        .unwrap();
+        let error =
+            assert_allowed(Path::new("/nonexistent"), &allow, "zai/glm-5.3").expect_err("refused");
         let refusal = error
             .downcast_ref::<ModelAllowlistRefusal>()
             .expect("typed refusal");
         assert_eq!(refusal.selector, "zai/glm-5.3");
+    }
+
+    /// Patterns match canonical names only: an `allowedModels` entry that
+    /// names a models.json alias blocks even the aliased model, and the
+    /// refusal says why.
+    #[test]
+    fn the_refusal_names_an_alias_pattern() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("models.json"),
+            r#"{ "providers": { "openai": { "modelOverrides": { "gpt-5.6-luna": { "alias": "luna" } } } } }"#,
+        )
+        .unwrap();
+        let allow = DaemonAllowlist::Allowed(vec!["luna".to_string(), "zai/*".to_string()]);
+        let error = assert_allowed(dir.path(), &allow, "openai/gpt-5.6-luna").expect_err("refused");
+        let alias_pattern = pa_core::models::AliasPattern {
+            pattern: "luna".to_string(),
+            selector: "openai/gpt-5.6-luna".to_string(),
+        };
+        assert_eq!(
+            error.downcast_ref::<ModelAllowlistRefusal>(),
+            Some(&ModelAllowlistRefusal {
+                selector: "openai/gpt-5.6-luna".to_string(),
+                alias_patterns: vec![alias_pattern.clone()],
+            })
+        );
+        assert!(
+            error
+                .to_string()
+                .ends_with(&format!(" Note: \"allowedModels\" {alias_pattern}.")),
+            "{error}"
+        );
     }
 
     #[test]
@@ -224,7 +282,8 @@ mod tests {
         std::fs::write(agent_dir.join("settings.json"), "{ not json").unwrap();
         let state = load(dir.path(), &agent_dir);
         assert!(matches!(state, DaemonAllowlist::Unreadable(_)));
-        let error = assert_allowed(&state, "prime-inference/mock-1").expect_err("fail closed");
+        let error =
+            assert_allowed(&agent_dir, &state, "prime-inference/mock-1").expect_err("fail closed");
         let message = error.to_string();
         assert!(message.contains("could not be read"), "{message}");
         assert!(message.contains("fails closed"), "{message}");
@@ -290,7 +349,8 @@ mod tests {
                 matches!(state, DaemonAllowlist::Unreadable(_)),
                 "{corrupted} must fail closed, got {state:?}"
             );
-            let error = assert_allowed(&state, "prime-inference/mock-1").expect_err("closed");
+            let error =
+                assert_allowed(&agent_dir, &state, "prime-inference/mock-1").expect_err("closed");
             assert!(
                 error.downcast_ref::<ModelAllowlistRefusal>().is_none(),
                 "fail-closed is not a pattern refusal"

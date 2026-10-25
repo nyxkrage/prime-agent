@@ -109,8 +109,11 @@ impl AgentSessionEngine {
                 // by `allowedModels` must not bypass it.
                 let selector = format!("{}/{}", resolved.model.provider, resolved.model.id);
                 let allowlist = crate::model_allowlist::load(&self.cwd(), &self.config.agent_dir);
-                if let Err(refusal) = crate::model_allowlist::assert_allowed(&allowlist, &selector)
-                {
+                if let Err(refusal) = crate::model_allowlist::assert_allowed(
+                    &self.config.agent_dir,
+                    &allowlist,
+                    &selector,
+                ) {
                     self.note_model_refused("image_route", &selector);
                     return Err(format!("{refusal:#}"));
                 }
