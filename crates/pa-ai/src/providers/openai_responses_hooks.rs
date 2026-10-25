@@ -57,8 +57,16 @@ impl FreeformToolArguments {
     /// A tool the request did not declare as freeform keys the input under the wire field name
     /// `input`, so the call still reaches the tool layer (which reports the bad arguments).
     pub fn arguments_from_input(&self, tool_name: &str, input: &str) -> Map<String, Value> {
-        let argument = self.0.get(tool_name).map_or("input", String::as_str);
-        Map::from_iter([(argument.to_string(), Value::String(input.to_string()))])
+        Map::from_iter([(
+            self.argument_name(tool_name).to_string(),
+            Value::String(input.to_string()),
+        )])
+    }
+
+    /// The argument key a `custom_tool_call` input for `tool_name` maps onto (see
+    /// [`Self::arguments_from_input`]).
+    pub fn argument_name(&self, tool_name: &str) -> &str {
+        self.0.get(tool_name).map_or("input", String::as_str)
     }
 
     /// The raw input a recorded tool call replays as, when it can go out as a `custom_tool_call`:

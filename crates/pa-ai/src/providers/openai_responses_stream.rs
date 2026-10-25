@@ -32,7 +32,73 @@ struct Slot {
     partial_json: StreamingJsonAccumulator,
     /// Scratch for a custom tool call's raw text input (empty for every other item).
     custom_input: String,
+    /// How much of `custom_input` the `toolcall_delta` events have carried so far.
+    custom_deltas: CustomInputDeltas,
     content_index: usize,
+}
+
+/// Progress of a custom tool call's `toolcall_delta` stream. The deltas carry JSON argument
+/// fragments, like a `function_call`'s: joined, they parse as `{"<argument>": input}`.
+enum CustomInputDeltas {
+    /// No fragment sent yet; the first one opens the object (`{"code":"`).
+    Unopened,
+    /// The object is open and carries this much raw input (JSON-escaped on the wire).
+    Open { emitted: String },
+    /// The closing `"}` was sent; later input changes get no further fragment.
+    Closed,
+}
+
+impl Slot {
+    /// The JSON-escaped custom input not yet carried by a fragment. `None` when the input was
+    /// rewritten past what was already streamed: sent text cannot be retracted, so fragments
+    /// stop there and the finalized tool call carries the authoritative arguments.
+    fn unsent_custom_input(&self) -> Option<String> {
+        let emitted = match &self.custom_deltas {
+            CustomInputDeltas::Open { emitted } => emitted.as_str(),
+            CustomInputDeltas::Unopened | CustomInputDeltas::Closed => "",
+        };
+        let new_text = self.custom_input.strip_prefix(emitted)?;
+        let quoted = Value::String(new_text.to_string()).to_string();
+        Some(quoted[1..quoted.len() - 1].to_string())
+    }
+
+    /// The next JSON argument fragment for the custom input received since the last one: the
+    /// opener (`{"code":"`) with the first text, then the escaped new text. Empty when there
+    /// is nothing new.
+    fn stream_custom_delta(&mut self, argument: &str) -> String {
+        let opener = match &self.custom_deltas {
+            CustomInputDeltas::Closed => return String::new(),
+            CustomInputDeltas::Unopened if self.custom_input.is_empty() => return String::new(),
+            CustomInputDeltas::Unopened => json_object_opener(argument),
+            CustomInputDeltas::Open { .. } => String::new(),
+        };
+        let Some(unsent) = self.unsent_custom_input() else {
+            return opener;
+        };
+        self.custom_deltas = CustomInputDeltas::Open {
+            emitted: self.custom_input.clone(),
+        };
+        format!("{opener}{unsent}")
+    }
+
+    /// The last fragment of the custom input: any unsent text plus the closing `"}` (the whole
+    /// `{"code":"..."}` object when nothing was streamed). Empty once closed.
+    fn close_custom_delta(&mut self, argument: &str) -> String {
+        let opener = match &self.custom_deltas {
+            CustomInputDeltas::Closed => return String::new(),
+            CustomInputDeltas::Unopened => json_object_opener(argument),
+            CustomInputDeltas::Open { .. } => String::new(),
+        };
+        let unsent = self.unsent_custom_input().unwrap_or_default();
+        self.custom_deltas = CustomInputDeltas::Closed;
+        format!("{opener}{unsent}\"}}")
+    }
+}
+
+/// The start of a one-string-argument JSON object: `{"<argument>":"`.
+fn json_object_opener(argument: &str) -> String {
+    let key = Value::String(argument.to_string()).to_string();
+    format!("{{{key}:\"")
 }
 
 /// Incremental Responses stream event processor (port of `processResponsesStream`).
@@ -132,6 +198,7 @@ impl<'a> ResponsesStreamProcessor<'a> {
                                     item,
                                     partial_json: StreamingJsonAccumulator::default(),
                                     custom_input: String::new(),
+                                    custom_deltas: CustomInputDeltas::Unopened,
                                     content_index,
                                 },
                             );
@@ -156,6 +223,7 @@ impl<'a> ResponsesStreamProcessor<'a> {
                                     item,
                                     partial_json: StreamingJsonAccumulator::default(),
                                     custom_input: String::new(),
+                                    custom_deltas: CustomInputDeltas::Unopened,
                                     content_index,
                                 },
                             );
@@ -213,6 +281,7 @@ impl<'a> ResponsesStreamProcessor<'a> {
                                     item,
                                     partial_json: StreamingJsonAccumulator::new(initial_arguments),
                                     custom_input,
+                                    custom_deltas: CustomInputDeltas::Unopened,
                                     content_index,
                                 },
                             );
@@ -525,17 +594,26 @@ impl<'a> ResponsesStreamProcessor<'a> {
                             .get(text_field)
                             .and_then(|value| value.as_str())
                             .unwrap_or("");
-                        // The streamed delta, or for `.done` the tail the deltas did not carry.
-                        let mut delta = Some(text.to_string());
+                        let tool_name = match self.output.content.get(content_index) {
+                            Some(AssistantContent::ToolCall(tool_call)) => tool_call.name.clone(),
+                            _ => String::new(),
+                        };
+                        let argument = self
+                            .hooks
+                            .freeform_tools
+                            .argument_name(&tool_name)
+                            .to_string();
+                        // `toolcall_delta` carries JSON argument fragments (the session-event
+                        // contract), so the raw input goes out escaped inside `{"code":"..."}`.
+                        let mut delta = String::new();
                         let mut input = String::new();
                         if let Some(slot) = self.current_slot(output_index) {
                             if is_done {
-                                delta = text
-                                    .strip_prefix(slot.custom_input.as_str())
-                                    .map(str::to_string);
                                 slot.custom_input = text.to_string();
+                                delta = slot.close_custom_delta(&argument);
                             } else {
                                 slot.custom_input.push_str(text);
+                                delta = slot.stream_custom_delta(&argument);
                             }
                             input.clone_from(&slot.custom_input);
                         }
@@ -547,7 +625,7 @@ impl<'a> ResponsesStreamProcessor<'a> {
                                 .freeform_tools
                                 .arguments_from_input(&tool_call.name, &input);
                         }
-                        if let Some(delta) = delta.filter(|delta| !delta.is_empty()) {
+                        if !delta.is_empty() {
                             self.writer.push(AssistantMessageEvent::ToolcallDelta {
                                 content_index: content_index as u64,
                                 delta,
@@ -563,7 +641,7 @@ impl<'a> ResponsesStreamProcessor<'a> {
                 let content_index = self
                     .current_slot(output_index)
                     .map(|slot| slot.content_index);
-                let slot = output_index.and_then(|index| self.slots.remove(&index));
+                let mut slot = output_index.and_then(|index| self.slots.remove(&index));
                 let item = event.get("item").cloned().unwrap_or(Value::Null);
                 let item_type = item
                     .get("type")
@@ -731,6 +809,24 @@ impl<'a> ResponsesStreamProcessor<'a> {
                                     self.output.content.get_mut(content_index)
                                 {
                                     *block = tool_call.clone();
+                                }
+                                // Close a custom call's JSON fragments when no
+                                // `custom_tool_call_input.done` did.
+                                let closing_delta = match slot.as_mut() {
+                                    Some(slot) if is_custom => {
+                                        slot.custom_input = item_text.to_string();
+                                        slot.close_custom_delta(
+                                            self.hooks.freeform_tools.argument_name(name),
+                                        )
+                                    }
+                                    Some(_) | None => String::new(),
+                                };
+                                if !closing_delta.is_empty() {
+                                    self.writer.push(AssistantMessageEvent::ToolcallDelta {
+                                        content_index: content_index as u64,
+                                        delta: closing_delta,
+                                        partial: self.output.clone(),
+                                    });
                                 }
                                 self.writer.push(AssistantMessageEvent::ToolcallEnd {
                                     content_index: content_index as u64,
@@ -1239,8 +1335,56 @@ mod tests {
                 "toolcall_start",
                 "toolcall_delta",
                 "toolcall_delta",
+                "toolcall_delta",
                 "toolcall_end"
             ]
         );
+    }
+
+    /// Regression: a custom call's `toolcall_delta` events carry JSON argument fragments, like a
+    /// `function_call`'s (the session-event contract), not the raw input. Joined, they parse as
+    /// the same `{"code": ...}` arguments object, escapes included, whether the input's `.done`
+    /// or only the item's `.done` closes them.
+    #[tokio::test]
+    async fn custom_tool_call_deltas_join_into_the_arguments_json() {
+        let code = "x = \"a\\b\"\nprint(x, 'é')";
+        let input_done = json!({"type": "response.custom_tool_call_input.done",
+            "output_index": 0, "item_id": "ctc_1", "input": code});
+        for closes_on_input_done in [true, false] {
+            let mut events = vec![
+                json!({"type": "response.created", "response": {"id": "resp_1"}}),
+                json!({"type": "response.output_item.added", "output_index": 0,
+                    "item": custom_item("")}),
+                json!({"type": "response.custom_tool_call_input.delta", "output_index": 0,
+                    "item_id": "ctc_1", "delta": &code[..9]}),
+                json!({"type": "response.custom_tool_call_input.delta", "output_index": 0,
+                    "item_id": "ctc_1", "delta": &code[9..]}),
+            ];
+            if closes_on_input_done {
+                events.push(input_done.clone());
+            }
+            events.extend([
+                json!({"type": "response.output_item.done", "output_index": 0,
+                    "item": custom_item(code)}),
+                json!({"type": "response.completed", "response": {"id": "resp_1",
+                    "status": "completed"}}),
+            ]);
+            let (_, emitted) = run_freeform_events(&events).await;
+            let deltas: Vec<&str> = emitted
+                .iter()
+                .filter_map(|event| match event {
+                    AssistantMessageEvent::ToolcallDelta { delta, .. } => Some(delta.as_str()),
+                    _ => None,
+                })
+                .collect();
+            let joined: Value =
+                serde_json::from_str(&deltas.concat()).expect("joined deltas parse");
+
+            assert_eq!(
+                (joined, deltas.len()),
+                (json!({ "code": code }), 3),
+                "{deltas:?}"
+            );
+        }
     }
 }
