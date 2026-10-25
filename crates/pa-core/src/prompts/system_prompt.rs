@@ -69,7 +69,7 @@ pub struct BuildSystemPromptOptions<'a> {
     /// still applies.
     pub custom_prompt: Option<String>,
     pub model_prompt_extras: Option<&'a str>,
-    /// The model's resolved edit format ([`crate::models::resolve_edit_format`]);
+    /// The model's resolved edit format (`crate::models::resolve_edit_format`);
     /// selects the static layers' edit guidance, so it is a static input.
     pub edit_format: pa_types::ai::EditFormat,
     /// Whether the resolved model accepts image input, when known.

@@ -35,7 +35,8 @@ pub use custom::{
     strip_json_comments, validate_config, CustomModelsResult, ModelOverride, ModelsConfig,
     ProviderOverride,
 };
-pub use edit_format::{edit_format_for_model_reference, resolve_edit_format};
+pub use edit_format::edit_format_for_model_reference;
+pub(crate) use edit_format::resolve_edit_format;
 pub use image_model_routing::{
     resolve_image_model_override, ImageModelRoutingInputs, ResolvedImageModel,
 };

@@ -23,7 +23,7 @@ const FIRST_APPLY_PATCH_GPT: (u64, u64) = (5, 1);
 /// `openai.gpt-5.1`, `us.openai.gpt-5.1`). A fine-tune or a re-hosted model is
 /// the same trained model, so it gets the same format.
 #[must_use]
-pub fn resolve_edit_format(
+pub(crate) fn resolve_edit_format(
     setting: ApplyPatchSetting,
     model_id: &str,
     configured: Option<EditFormat>,

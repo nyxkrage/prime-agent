@@ -680,7 +680,8 @@ pub enum EditFormat {
     /// Exact old/new string replacement through the `edit` skill.
     #[default]
     Edit,
-    /// `OpenAI` V4A patches through the `apply_patch` skill (built on `edit`).
+    /// `OpenAI` V4A patches through the `apply_patch` skill (`edit` stays
+    /// available beside it).
     ApplyPatch,
 }
 mod compat;

@@ -287,6 +287,79 @@ mod tests {
         );
     }
 
+    /// Parity evidence for the sanctioned divergence: a non-GPT model, and a
+    /// GPT-5.1 model under `"applyPatch": "off"`, get main's whole assembled
+    /// prompt byte for byte. Main's prompt is the same builder over the
+    /// unmodified layer files (the `edit` variant, `EditFormat::default()`) and
+    /// the bundled skills without `apply-patch`, which main does not ship.
+    #[test]
+    fn the_edit_variant_is_mains_whole_prompt_byte_for_byte() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent_dir = dir.path().join("agent");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        let mains = |model: &str| {
+            let model_prompts =
+                pa_core::prompts::model_prompts::load_model_prompts(Some(model), &agent_dir);
+            let (skill_overrides, generic_servers, _manager) =
+                pa_core::mcp::McpManager::prompt_gating(
+                    std::collections::HashMap::new(),
+                    &agent_dir,
+                );
+            let resources = load_resources(ResourceLoaderOptions {
+                extra_builtin_skill_overrides: skill_overrides,
+                system_prompt: None,
+                ..ResourceLoaderOptions::new(dir.path().to_path_buf(), agent_dir.clone())
+            })
+            .unwrap();
+            pa_core::prompts::system_prompt::system_prompt_breakdown(
+                &pa_core::prompts::BuildSystemPromptOptions {
+                    cwd: dir.path().display().to_string(),
+                    messages_path: None,
+                    custom_prompt: resources.system_prompt.clone(),
+                    context_files: resources
+                        .agents_files
+                        .iter()
+                        .map(|file| (file.path.display().to_string(), file.content.clone()))
+                        .collect(),
+                    skills: resources
+                        .skills
+                        .into_iter()
+                        .filter(|skill| skill.name != "apply-patch")
+                        .collect(),
+                    selected_tools: Some(vec![pa_types::ai::PYTHON_TOOL_NAME]),
+                    allow_recursion: Some(true),
+                    generic_mcp_servers: generic_servers,
+                    rlm_depth: Some(0),
+                    model_prompt_extras: model_prompts.extras.as_deref(),
+                    ..Default::default()
+                },
+            )
+            .assembled
+        };
+        let assembled = |model: &str| {
+            assemble_breakdown(dir.path(), &agent_dir, Some(model))
+                .expect("the prompt assembles")
+                .0
+                .assembled
+        };
+        let non_gpt = assembled("anthropic/claude-fable-5");
+        assert!(!non_gpt.contains("apply_patch") && !non_gpt.contains("apply-patch"));
+        assert_eq!(non_gpt, mains("anthropic/claude-fable-5"));
+        assert_ne!(
+            assembled("openai-codex/gpt-5.1"),
+            mains("openai-codex/gpt-5.1")
+        );
+        std::fs::write(
+            agent_dir.join("settings.json"),
+            r#"{ "applyPatch": "off" }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            assembled("openai-codex/gpt-5.1"),
+            mains("openai-codex/gpt-5.1")
+        );
+    }
+
     /// Without `--model`, the guidance follows the model a new session would
     /// start on (here the saved settings default), not a fixed `edit`.
     #[test]
