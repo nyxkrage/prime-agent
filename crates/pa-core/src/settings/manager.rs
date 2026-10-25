@@ -866,7 +866,8 @@ impl SettingsManager {
     /// `freeformTools`, resolved per scope rather than deep-merged: the highest scope that sets
     /// it (runtime overrides, then project, then global) decides on its own, so a project
     /// `{"enabled": false}` turns every provider off even under a global per-provider `true`.
-    /// Unset everywhere resolves to the built-in defaults.
+    /// Unset everywhere resolves to the built-in defaults. Read once at session start, so a
+    /// change applies to new sessions only.
     #[must_use]
     pub fn get_freeform_tools(&self) -> super::types::FreeformToolsSettings {
         [&self.runtime_overrides, &self.project, &self.global]

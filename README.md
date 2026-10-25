@@ -194,3 +194,7 @@ default (on for `openai` and `openai-codex`, off elsewhere). Unlike most setting
 `freeformTools` at all, they decide on their own and the global value is ignored.
 A project `{"freeformTools": {"enabled": false}}` therefore turns freeform tools off
 for every provider, even when the global settings enable a provider by name.
+
+The setting is read once when a session starts: changes apply to new sessions, not
+to sessions that are already running. A session recorded with freeform tools on
+replays correctly with them off, and the reverse.
