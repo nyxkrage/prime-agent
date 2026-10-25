@@ -424,13 +424,29 @@ pub fn convert_responses_tools(
     let strict = options.strict.unwrap_or(false);
     tools
         .iter()
-        .map(|tool| match tool.freeform_argument {
-            Some(_) => json!({
-                "type": "custom",
-                "name": tool.name,
-                "description": tool.description,
-                "format": { "type": "text" },
-            }),
+        .map(|tool| match &tool.freeform_argument {
+            // A custom tool has no parameter schema, so the free-text argument's description
+            // (what the raw input is, e.g. Python source, and how to write it) joins the tool's.
+            Some(argument) => {
+                let argument_description = tool
+                    .parameters
+                    .pointer(&format!("/properties/{argument}/description"))
+                    .and_then(Value::as_str)
+                    .filter(|description| !description.is_empty());
+                let description = match argument_description {
+                    Some(argument_description) => format!(
+                        "{}\n\nInput: the raw `{argument}` text, not JSON. {argument_description}",
+                        tool.description
+                    ),
+                    None => tool.description.clone(),
+                };
+                json!({
+                    "type": "custom",
+                    "name": tool.name,
+                    "description": description,
+                    "format": { "type": "text" },
+                })
+            }
             None => json!({
                 "type": "function",
                 "name": tool.name,
@@ -859,6 +875,32 @@ mod tests {
                     "strict": false,
                 }),
             ]
+        );
+    }
+
+    /// Regression: a custom tool has no parameter schema, so the free-text argument's schema
+    /// description must reach the model through the tool description.
+    #[test]
+    fn custom_tool_description_carries_the_argument_description() {
+        let tool = Tool {
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "code": { "type": "string", "description": "Python code to execute." },
+                },
+                "required": ["code"],
+            }),
+            ..python_tool(Some("code"))
+        };
+        assert_eq!(
+            convert_responses_tools(&[tool], ConvertResponsesToolsOptions { strict: None }),
+            vec![json!({
+                "type": "custom",
+                "name": "python_repl",
+                "description": "Run Python.\n\nInput: the raw `code` text, not JSON. \
+                    Python code to execute.",
+                "format": { "type": "text" },
+            })]
         );
     }
 
