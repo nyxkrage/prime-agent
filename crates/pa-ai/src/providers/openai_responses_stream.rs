@@ -558,17 +558,17 @@ impl<'a> ResponsesStreamProcessor<'a> {
                 }
             }
             "response.output_item.done" => {
-                if let Some(index) = output_index {
-                    self.slots.remove(&index);
-                }
+                // Read the finishing block's index before dropping its slot: removing first left
+                // every branch below without a block, so no signature or `*_end` was recorded.
+                let content_index = self
+                    .current_slot(output_index)
+                    .map(|slot| slot.content_index);
+                let slot = output_index.and_then(|index| self.slots.remove(&index));
                 let item = event.get("item").cloned().unwrap_or(Value::Null);
                 let item_type = item
                     .get("type")
                     .and_then(|value| value.as_str())
                     .unwrap_or("");
-                let content_index = self
-                    .current_slot(output_index)
-                    .map(|slot| slot.content_index);
                 match item_type {
                     "reasoning" => {
                         if let Some(content_index) = content_index {
@@ -680,16 +680,10 @@ impl<'a> ResponsesStreamProcessor<'a> {
                     }
                     "function_call" | "custom_tool_call" => {
                         let is_custom = item_type == "custom_tool_call";
-                        let content_index = content_index.or_else(|| {
-                            output_index
-                                .and_then(|index| self.slots.get(&index))
-                                .map(|slot| slot.content_index)
-                        });
                         if let Some(content_index) = content_index {
                             if self.block_kind(content_index) == Some("toolCall") {
-                                let slot = self.slots.get(&output_index.unwrap_or_default());
                                 let field = if is_custom { "input" } else { "arguments" };
-                                let slot_text = match slot {
+                                let slot_text = match &slot {
                                     Some(slot) if is_custom => slot.custom_input.clone(),
                                     Some(slot) => slot.partial_json.text().to_string(),
                                     None => String::new(),
@@ -1026,5 +1020,227 @@ fn map_responses_stop_reason(status: Option<&str>) -> StopReason {
         None | Some("completed" | "in_progress" | "queued") => StopReason::Stop,
         Some("incomplete") => StopReason::Length,
         Some(_) => StopReason::Error,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event_stream::{
+        create_assistant_message_event_stream, initial_assistant_message, AssistantMessageEventExt,
+    };
+    use crate::providers::openai_responses_hooks::FreeformToolArguments;
+
+    fn responses_model() -> Model {
+        Model {
+            id: "gpt-5.6-luna".into(),
+            name: "gpt-5.6-luna".into(),
+            api: "openai-responses".into(),
+            provider: "opencode-go".into(),
+            base_url: "https://opencode.ai/zen/go/v1".into(),
+            reasoning: true,
+            thinking_level_map: None,
+            input: vec![crate::types::ModelInput::Text],
+            cost: crate::types::zero_model_cost(),
+            context_window: 400_000,
+            max_tokens: 128_000,
+            max_tokens_explicit: false,
+            featured: None,
+            headers: None,
+            compat: None,
+        }
+    }
+
+    /// The `output_item.done` events finalize their blocks: the reasoning item's JSON (with
+    /// `encrypted_content`) becomes the thinking signature, the message id/phase the text
+    /// signature, and each block gets its `*_end` event. The event shapes follow a live
+    /// opencode-go `gpt-5.6-luna` capture. Regression: the slot was removed before its content
+    /// index was read, so every finalize branch was skipped and replay lost the reasoning.
+    #[tokio::test]
+    async fn output_item_done_finalizes_signatures_for_reasoning_message_and_tool_call() {
+        let reasoning_done = json!({
+            "id": "rs_1", "type": "reasoning", "encrypted_content": "gAAAA-final",
+            "summary": [{"type": "summary_text", "text": "Multiply."}],
+        });
+        let events = [
+            json!({"type": "response.created", "response": {"id": "resp_1"}}),
+            json!({"type": "response.output_item.added", "output_index": 0, "item": {
+                "id": "rs_1", "type": "reasoning", "encrypted_content": "gAAAA-added", "summary": []}}),
+            json!({"type": "response.reasoning_summary_part.added", "output_index": 0,
+                "part": {"type": "summary_text", "text": ""}}),
+            json!({"type": "response.reasoning_summary_text.delta", "output_index": 0,
+                "delta": "Multiply."}),
+            json!({"type": "response.reasoning_summary_part.done", "output_index": 0}),
+            json!({"type": "response.output_item.done", "output_index": 0,
+                "item": reasoning_done.clone()}),
+            json!({"type": "response.output_item.added", "output_index": 1, "item": {
+                "id": "msg_1", "type": "message", "status": "in_progress", "role": "assistant",
+                "phase": "final_answer", "content": []}}),
+            json!({"type": "response.content_part.added", "output_index": 1, "content_index": 0,
+                "part": {"type": "output_text", "text": ""}}),
+            json!({"type": "response.output_text.delta", "output_index": 1, "content_index": 0,
+                "delta": "391"}),
+            json!({"type": "response.output_item.done", "output_index": 1, "item": {
+                "id": "msg_1", "type": "message", "status": "completed", "role": "assistant",
+                "phase": "final_answer", "content": [{"type": "output_text", "text": "391"}]}}),
+            json!({"type": "response.output_item.added", "output_index": 2, "item": {
+                "id": "fc_1", "type": "function_call", "call_id": "call_1", "name": "bash",
+                "arguments": ""}}),
+            json!({"type": "response.function_call_arguments.delta", "output_index": 2,
+                "delta": "{\"cmd\":\"echo hi\"}"}),
+            json!({"type": "response.output_item.done", "output_index": 2, "item": {
+                "id": "fc_1", "type": "function_call", "call_id": "call_1", "name": "bash",
+                "arguments": "{\"cmd\":\"echo hi\"}"}}),
+            json!({"type": "response.completed", "response": {"id": "resp_1",
+                "status": "completed"}}),
+        ];
+        let model = responses_model();
+        let mut output = initial_assistant_message(&model.api, &model.provider, &model.id);
+        let (writer, stream) = create_assistant_message_event_stream();
+        {
+            let mut processor = ResponsesStreamProcessor::new(
+                &model,
+                &mut output,
+                &writer,
+                ResponsesStreamHooks::default(),
+            );
+            for event in &events {
+                processor.handle_event(event).expect("scripted event");
+            }
+        }
+        writer.end(None);
+        let end_events: Vec<&str> = stream
+            .collect()
+            .await
+            .iter()
+            .map(AssistantMessageEventExt::event_type)
+            .filter(|event_type| event_type.ends_with("_end"))
+            .collect();
+
+        assert_eq!(
+            output.content,
+            vec![
+                AssistantContent::Thinking(ThinkingContent {
+                    thinking: "Multiply.".into(),
+                    thinking_signature: Some(reasoning_done.to_string()),
+                    redacted: None,
+                    rest: Map::default(),
+                }),
+                AssistantContent::Text(TextContent {
+                    text: "391".into(),
+                    text_signature: Some(encode_text_signature_v1(
+                        "msg_1",
+                        Some(TextSignaturePhase::FinalAnswer),
+                    )),
+                    rest: Map::default(),
+                }),
+                AssistantContent::ToolCall(ToolCall {
+                    id: "call_1|fc_1".into(),
+                    name: "bash".into(),
+                    arguments: [("cmd".to_string(), json!("echo hi"))]
+                        .into_iter()
+                        .collect(),
+                    thought_signature: None,
+                    rest: Map::default(),
+                }),
+            ]
+        );
+        assert_eq!(end_events, ["thinking_end", "text_end", "toolcall_end"]);
+    }
+
+    /// Run scripted Responses events through a processor whose request declared `python_repl`
+    /// freeform (`code`); returns the final message and every emitted event.
+    async fn run_freeform_events(
+        events: &[Value],
+    ) -> (AssistantMessage, Vec<AssistantMessageEvent>) {
+        let model = responses_model();
+        let tools = [crate::types::Tool {
+            name: "python_repl".into(),
+            description: "Run Python.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": { "code": { "type": "string" } },
+                "required": ["code"],
+            }),
+            freeform_argument: Some("code".into()),
+        }];
+        let mut output = initial_assistant_message(&model.api, &model.provider, &model.id);
+        let (writer, stream) = create_assistant_message_event_stream();
+        {
+            let mut processor = ResponsesStreamProcessor::new(
+                &model,
+                &mut output,
+                &writer,
+                ResponsesStreamHooks {
+                    freeform_tools: FreeformToolArguments::from_tools(Some(&tools)),
+                    ..ResponsesStreamHooks::default()
+                },
+            );
+            for event in events {
+                processor.handle_event(event).expect("scripted event");
+            }
+        }
+        writer.end(None);
+        (output, stream.collect().await)
+    }
+
+    fn custom_item(input: &str) -> Value {
+        json!({
+            "type": "custom_tool_call", "id": "ctc_1", "call_id": "call_1",
+            "name": "python_repl", "input": input,
+        })
+    }
+
+    /// Regression: `output_item.done` for a `custom_tool_call` finalizes the block. It emits
+    /// `toolcall_end`, and the item's final `input` wins over the streamed deltas. The slot was
+    /// removed before its content index was read, so the whole tool-call arm was skipped.
+    #[tokio::test]
+    async fn output_item_done_finalizes_a_custom_tool_call_with_the_items_input() {
+        let events = [
+            json!({"type": "response.created", "response": {"id": "resp_1"}}),
+            json!({"type": "response.output_item.added", "output_index": 0,
+                "item": custom_item("")}),
+            json!({"type": "response.custom_tool_call_input.delta", "output_index": 0,
+                "item_id": "ctc_1", "delta": "print("}),
+            json!({"type": "response.custom_tool_call_input.delta", "output_index": 0,
+                "item_id": "ctc_1", "delta": "1)"}),
+            json!({"type": "response.output_item.done", "output_index": 0,
+                "item": custom_item("print(2)")}),
+            json!({"type": "response.completed", "response": {"id": "resp_1",
+                "status": "completed"}}),
+        ];
+        let (output, emitted) = run_freeform_events(&events).await;
+        let expected_call = ToolCall {
+            id: "call_1|ctc_1".into(),
+            name: "python_repl".into(),
+            arguments: [("code".to_string(), json!("print(2)"))]
+                .into_iter()
+                .collect(),
+            thought_signature: None,
+            rest: Map::default(),
+        };
+        let event_types: Vec<&str> = emitted
+            .iter()
+            .map(AssistantMessageEventExt::event_type)
+            .collect();
+        let end_call = emitted.iter().find_map(|event| match event {
+            AssistantMessageEvent::ToolcallEnd { tool_call, .. } => Some(tool_call.clone()),
+            _ => None,
+        });
+
+        assert_eq!(
+            output.content,
+            vec![AssistantContent::ToolCall(expected_call.clone())]
+        );
+        assert_eq!(end_call, Some(expected_call));
+        assert_eq!(
+            event_types,
+            [
+                "toolcall_start",
+                "toolcall_delta",
+                "toolcall_delta",
+                "toolcall_end"
+            ]
+        );
     }
 }
