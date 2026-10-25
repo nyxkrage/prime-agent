@@ -3,24 +3,25 @@
 Parsing and matching follow Codex's ``codex-rs/apply-patch`` (the lenient
 streaming parser, ``seek_sequence``'s whitespace/punctuation tolerance, the
 line-based replacement with preserved line endings, and the Add/Delete/Move
-semantics). The one deliberate difference is atomicity: Codex applies file by
-file and can stop halfway, while here the whole patch is first replayed
-against an in-memory view of the filesystem (contents, existence, directory
-structure, write access), then every change is staged next to its target and
-committed only once all of it is staged. A patch that fails anywhere before
-the commit leaves every file as it was. Each changed hunk emits the same diff
-display event as the equivalent ``edit.run`` call.
+semantics). Files are written in place, as Codex and ``edit.run`` write them,
+so a rewritten file keeps its identity (hardlinks, permissions, ownership,
+extended attributes). The one deliberate difference is atomicity: Codex
+applies file by file and can stop halfway, while here the whole patch is
+first replayed against an in-memory view of the filesystem (contents,
+existence, directory structure, write access), then every file to rewrite is
+opened for writing before anything changes, and a failure or interruption
+while writing undoes every change already made. Each changed hunk emits the
+same diff display event as the equivalent ``edit.run`` call.
 """
 
 from __future__ import annotations
 
 import os
 import re
-import secrets
 import stat
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 import edit
 
@@ -62,10 +63,9 @@ class PatchError(ValueError):
     (keep in sync with ``APPLY_PATCH_FAILURE_REASONS`` in
     ``crates/pa-telemetry/src/catalog.rs``). Every reason except
     ``apply_failed`` is raised before anything is written. ``apply_failed``
-    means a filesystem write failed: while staging (every staged change is
-    rolled back, so no file changed) or, if the filesystem changed under the
-    patch between staging and commit, during the commit (the message names
-    what was already written).
+    means a filesystem operation failed while the patch was being written;
+    every change already made was undone, unless the message lists files
+    whose undo failed too.
     """
 
     def __init__(self, message: str, *, reason: str) -> None:
@@ -303,8 +303,10 @@ def _replacements(
                 )
             line_index = found + 1
         if not chunk.old:
-            # A pure addition goes at the end of the file (Codex).
-            spans.append((len(texts), 0, [(len(texts), 0, list(chunk.new))]))
+            # A pure addition goes at the end of the file, before its last
+            # line when that line is empty (Codex).
+            at = len(texts) - 1 if texts and texts[-1] == "" else len(texts)
+            spans.append((at, 0, [(at, 0, list(chunk.new))]))
             continue
         pattern, new = chunk.old, chunk.new
         start = _seek(texts, pattern, line_index, chunk.at_eof)
@@ -344,18 +346,24 @@ def _rebuild(
     offset: int,
     replacements: list[_Replacement],
     ending: str,
-) -> tuple[str, int]:
+) -> list[tuple[str, str]]:
     """``lines`` (starting at file line ``offset``) with ``replacements``
     applied: kept lines keep their endings, new lines get ``ending``, and
-    every line ends with a newline (Codex). Returns ``(text, line count)``."""
-    rebuilt: list[tuple[str, str | None]] = []
+    every line ends with a newline (Codex)."""
+    rebuilt: list[tuple[str, str]] = []
     cursor = 0
     for start, old_len, new_lines in replacements:
-        rebuilt.extend(lines[cursor : start - offset])
+        rebuilt.extend(
+            (text, line_end or ending) for text, line_end in lines[cursor : start - offset]
+        )
         rebuilt.extend((text, ending) for text in new_lines)
         cursor = start - offset + old_len
-    rebuilt.extend(lines[cursor:])
-    return "".join(f"{text}{line_end or ending}" for text, line_end in rebuilt), len(rebuilt)
+    rebuilt.extend((text, line_end or ending) for text, line_end in lines[cursor:])
+    return rebuilt
+
+
+def _joined(lines: list[tuple[str, str]]) -> str:
+    return "".join(f"{text}{line_end}" for text, line_end in lines)
 
 
 def _update(
@@ -378,30 +386,39 @@ def _update(
     for start, length, replacements in spans:
         span = lines[start : start + length]
         old_str = "".join(f"{text}{line_end or ''}" for text, line_end in span)
-        new_str, new_length = _rebuild(span, start, replacements, ending)
+        rebuilt = _rebuild(span, start, replacements, ending)
+        new_str = _joined(rebuilt)
         if old_str != new_str:
             events.append((old_str, new_str, start + 1 + shift))
-        shift += new_length - length
-    new_content, _ = _rebuild(
+        shift += len(rebuilt) - length
+    new_lines = _rebuild(
         lines, 0, [replacement for _, _, group in spans for replacement in group], ending
     )
-    return new_content, events
+    # A final empty line reads as the file's last newline and is dropped
+    # (Codex joins its lines with newlines and ends the file with one).
+    if new_lines and new_lines[-1][0] == "":
+        new_lines.pop()
+    return _joined(new_lines), events
 
 
 class _Workspace:
     """The patch's in-memory view of the filesystem.
 
     ``files`` maps a path to its planned content (``None``: removed);
-    ``dirs`` holds the directories the patch creates. Paths are keyed by
-    their absolute spelling with the parent directory resolved, so a leaf
-    symlink stays its own entry: Delete and Move remove the link itself,
-    while reads and writes follow it to the file it names (Codex's default
+    ``dirs`` holds the directories the patch creates; ``deleted`` holds the
+    paths on disk the patch removes (a later write there creates a new
+    file rather than rewriting the old one). Paths are keyed by their
+    absolute spelling with the parent directory resolved, so a leaf symlink
+    stays its own entry: Delete and Move remove the link itself, while reads
+    and writes follow it to the file it names (Codex's default
     ``follow_symlinks``).
     """
 
     def __init__(self) -> None:
         self.files: dict[Path, str | None] = {}
+        self.data: dict[Path, bytes] = {}
         self.dirs: set[Path] = set()
+        self.deleted: set[Path] = set()
         self._texts: dict[Path, str] = {}
 
     @staticmethod
@@ -457,11 +474,22 @@ class _Workspace:
 
     def write(self, path: str, content: str) -> tuple[Path, str]:
         """Plan ``content`` at ``path`` (creating missing parent directories,
-        replacing an existing file); returns the written file and the text
-        it replaces (``""`` for a new or non-text file)."""
+        rewriting an existing file in place); returns the written file and
+        the text it replaces (``""`` for a new or non-text file)."""
         target = self.target(self.lexical(path))
         if self._is_dir(target):
             raise PatchError(f"Failed to write file {path}: Is a directory", reason="path_conflict")
+        try:
+            data = content.encode("utf-8")
+        except UnicodeEncodeError as error:
+            # A lone surrogate, e.g. from an escape in a non-raw literal.
+            raise PatchError(
+                f"Invalid patch: the new contents of {path} are not valid UTF-8 text: {error}",
+                reason="parse",
+            ) from None
+        # An existing file is rewritten in place, which needs write access to
+        # the file only; a new one needs its directory writable.
+        rewrite = os.path.lexists(target) and target not in self.deleted
         missing: list[Path] = []
         for parent in target.parents:
             if parent in self.files:
@@ -472,7 +500,8 @@ class _Workspace:
                     )
                 missing.append(parent)
             elif self._is_dir(parent):
-                self._check_dir_writable(parent, path)
+                if not rewrite:
+                    self._check_dir_writable(parent, path)
                 break
             elif os.path.lexists(parent):
                 raise PatchError(
@@ -481,17 +510,17 @@ class _Workspace:
                 )
             else:
                 missing.append(parent)
-        on_disk = target not in self.files and os.path.lexists(target)
-        if on_disk and not os.access(target, os.W_OK):
+        if rewrite and not os.access(target, os.W_OK):
             raise PatchError(
                 f"Failed to write file {path}: Permission denied", reason="not_writable"
             )
         try:
-            previous = self.read(path) if target in self.files or on_disk else ""
+            previous = self.read(path) if target in self.files or rewrite else ""
         except PatchError:
             previous = ""
         self.dirs.update(missing)
         self.files[target] = content
+        self.data[target] = data
         return target, previous
 
     def delete(self, path: str) -> None:
@@ -517,7 +546,9 @@ class _Workspace:
                     f"Failed to delete file {path}: No such file or directory",
                     reason="file_missing",
                 )
+        if os.path.lexists(lexical):
             self._check_dir_writable(lexical.parent, path)
+            self.deleted.add(lexical)
         self.files[lexical] = None
 
 
@@ -551,98 +582,162 @@ def _validate(
     return workspace, events
 
 
-def _sibling(path: Path) -> Path:
-    return path.parent / f".{path.name}.apply-patch-{secrets.token_hex(4)}"
+class _Journal:
+    """Every filesystem change the commit makes, in order, with what undoes
+    it: rewritten files keep their open handle and original bytes, removed
+    files their bytes (or link target) and permission bits. Nothing is
+    written outside the patch's own paths, so no run leaves helper files
+    behind."""
+
+    def __init__(self) -> None:
+        self.handles: dict[Path, tuple[BinaryIO, bytes]] = {}
+        self.backups: dict[Path, tuple[bytes | str, os.stat_result]] = {}
+        # ("rewrite" | "create" | "mkdir" | "unlink", path), in the order done.
+        self.done: list[tuple[str, Path]] = []
+
+    def open_for_rewrite(self, path: Path) -> None:
+        # Opening for writing proves the rewrite can happen: no permission,
+        # a read-only mount, or (on Windows) a lock fails here, before any
+        # content changes.
+        handle = open(path, "r+b")
+        self.handles[path] = (handle, handle.read())
+
+    def back_up(self, path: Path) -> None:
+        status = os.lstat(path)
+        if stat.S_ISLNK(status.st_mode):
+            self.backups[path] = (os.readlink(path), status)
+        else:
+            with open(path, "rb") as handle:
+                self.backups[path] = (handle.read(), status)
+
+    def unlink(self, path: Path) -> None:
+        os.unlink(path)
+        self.done.append(("unlink", path))
+
+    def mkdir(self, path: Path) -> None:
+        os.mkdir(path)
+        self.done.append(("mkdir", path))
+
+    def create(self, path: Path, data: bytes) -> None:
+        # "x": a file that appeared since validation is never clobbered (the
+        # patch fails and rolls back instead).
+        with open(path, "xb") as handle:
+            self.done.append(("create", path))
+            handle.write(data)
+
+    def rewrite(self, path: Path, data: bytes) -> None:
+        handle, _ = self.handles[path]
+        self.done.append(("rewrite", path))
+        _write_over(handle, data)
+
+    def roll_back(self) -> list[str]:
+        """Undo every change, newest first; returns what could not be undone."""
+        failures: list[str] = []
+        for action, path in reversed(self.done):
+            try:
+                if action == "rewrite":
+                    handle, original = self.handles[path]
+                    _write_over(handle, original)
+                elif action == "create":
+                    os.unlink(path)
+                elif action == "mkdir":
+                    os.rmdir(path)
+                else:
+                    self._recreate(path)
+            except OSError as error:
+                failures.append(f"{path} ({error})")
+        self.done.clear()
+        return failures
+
+    def _recreate(self, path: Path) -> None:
+        backup, status = self.backups[path]
+        if isinstance(backup, str):
+            os.symlink(backup, path)
+            return
+        with open(path, "xb") as handle:
+            handle.write(backup)
+        os.chmod(path, stat.S_IMODE(status.st_mode))
+        # Ownership is best-effort and absent on Windows.
+        chown = getattr(os, "chown", None)
+        if chown is not None:
+            try:
+                chown(path, status.st_uid, status.st_gid)
+            except OSError:
+                pass
+
+    def close(self) -> None:
+        for handle, _ in self.handles.values():
+            try:
+                handle.close()
+            except OSError:
+                pass
+
+
+def _write_over(handle: BinaryIO, data: bytes) -> None:
+    handle.seek(0)
+    handle.write(data)
+    handle.truncate()
+    handle.flush()
 
 
 def _commit(workspace: _Workspace) -> None:
-    """Phase 2: stage every change (removed files renamed aside, missing
-    directories created, new files created with ``open(path, "x")``,
-    replacements written to sibling temp files), rolling everything back if
-    any step fails; then swap the temp files in and drop the set-aside
-    files."""
-    asides: list[tuple[Path, Path]] = []
-    made_dirs: list[Path] = []
-    created: list[Path] = []
-    temps: list[tuple[Path, Path]] = []
+    """Phase 2: open every file to rewrite (proving it writable) and back up
+    every file to remove, changing nothing; then remove, create directories,
+    create new files, and rewrite existing files in place. If any step fails
+    or the run is interrupted, every change made so far is undone."""
+    unlinks: list[Path] = []
+    creates: list[Path] = []
+    rewrites: list[Path] = []
+    for path, content in workspace.files.items():
+        on_disk = os.path.lexists(path)
+        if content is None:
+            if on_disk:
+                unlinks.append(path)
+        elif on_disk and path in workspace.deleted:
+            unlinks.append(path)
+            creates.append(path)
+        elif on_disk:
+            rewrites.append(path)
+        else:
+            creates.append(path)
+    journal = _Journal()
     current = ""
     try:
-        for path, content in workspace.files.items():
-            if content is None and os.path.lexists(path):
-                current = str(path)
-                aside = _sibling(path)
-                os.rename(path, aside)
-                asides.append((path, aside))
+        for path in rewrites:
+            current = str(path)
+            journal.open_for_rewrite(path)
+        for path in unlinks:
+            current = str(path)
+            journal.back_up(path)
+        for path in unlinks:
+            current = str(path)
+            journal.unlink(path)
         for directory in sorted(workspace.dirs, key=lambda directory: len(directory.parts)):
             if not directory.is_dir():
                 current = str(directory)
-                os.mkdir(directory)
-                made_dirs.append(directory)
-        for path, content in workspace.files.items():
-            if content is None:
-                continue
+                journal.mkdir(directory)
+        for path in creates:
             current = str(path)
-            data = content.encode("utf-8")
-            if os.path.lexists(path):
-                temp = _sibling(path)
-                handle = open(temp, "xb")
-                temps.append((temp, path))
-                with handle:
-                    handle.write(data)
-                existing = os.stat(path)
-                os.chmod(temp, stat.S_IMODE(existing.st_mode))
-                try:
-                    os.chown(temp, existing.st_uid, existing.st_gid)
-                except OSError:
-                    pass
-            else:
-                # Created with "x": a file that appeared since validation is
-                # never clobbered (the patch fails and rolls back instead).
-                handle = open(path, "xb")
-                created.append(path)
-                with handle:
-                    handle.write(data)
-    except OSError as error:
-        for path in [temp for temp, _ in temps] + created:
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
-        for directory in reversed(made_dirs):
-            try:
-                os.rmdir(directory)
-            except OSError:
-                pass
-        for path, aside in reversed(asides):
-            try:
-                os.rename(aside, path)
-            except OSError:
-                pass
-        raise PatchError(
-            f"Failed to write {current}: {error}; no file was changed", reason="apply_failed"
-        ) from error
-    done: list[str] = [str(path) for path in created]
-    for index, (temp, path) in enumerate(temps):
-        try:
-            os.replace(temp, path)
-        except OSError as error:
-            for leftover, _ in temps[index:]:
-                try:
-                    os.unlink(leftover)
-                except OSError:
-                    pass
+            journal.create(path, workspace.data[path])
+        for path in rewrites:
+            current = str(path)
+            journal.rewrite(path, workspace.data[path])
+    except BaseException as error:
+        failures = journal.roll_back()
+        journal.close()
+        outcome = (
+            f"could not undo the changes to: {', '.join(failures)}"
+            if failures
+            else "every change was undone"
+        )
+        if isinstance(error, OSError):
             raise PatchError(
-                f"Failed to write {path}: {error} (the filesystem changed while the patch was "
-                f"being applied); already written: {done}; set aside, not yet removed: "
-                f"{[str(aside) for _, aside in asides]}",
-                reason="apply_failed",
+                f"Failed to write {current}: {error}; {outcome}", reason="apply_failed"
             ) from error
-        done.append(str(path))
-    for _, aside in asides:
-        try:
-            os.unlink(aside)
-        except OSError:
-            pass
+        if failures and hasattr(error, "add_note"):
+            error.add_note(f"apply_patch: {outcome}")
+        raise
+    journal.close()
 
 
 async def _report(files: int, hunks: int, *, failure: str | None) -> None:
@@ -660,8 +755,9 @@ async def run(patch: str) -> list[dict[str, Any]]:
 
     The whole patch is parsed and replayed in memory first; any failure
     raises :class:`PatchError` and no file is touched. Then every change is
-    staged and committed together, and each changed hunk emits the same diff
-    display event as the equivalent ``edit.run`` call.
+    written (existing files in place); a failure or interruption while
+    writing undoes every change already made. Each changed hunk emits the
+    same diff display event as the equivalent ``edit.run`` call.
 
     Args:
         patch: The patch text. Sections: ``*** Add File: <path>`` (``+``

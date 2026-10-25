@@ -5,7 +5,7 @@
 [project]
 name = "apply-patch"
 version = "0.1.0"
-description = "Prime Agent apply-patch skill: V4A patches (Codex apply_patch format), validated whole, applied all or nothing"
+description = "Prime Agent apply-patch skill: V4A patches (Codex apply_patch format), validated whole, undone on a failed write"
 requires-python = ">=3.10"
 dependencies = []
 

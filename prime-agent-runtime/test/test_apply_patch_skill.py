@@ -1,5 +1,5 @@
 """The bundled apply-patch skill: Codex-compatible V4A parsing and matching,
-validate-first, staged all-or-nothing writes, edit-style diff events."""
+validate-first, in-place writes undone on failure, edit-style diff events."""
 
 from __future__ import annotations
 
@@ -452,12 +452,26 @@ class ApplyPatchSkillTest(unittest.TestCase):
         self.apply(_patch("*** Update File: ins.txt", "@@ a", "+appended"))
         self.assertEqual(self.read("ins.txt"), "a\nb\nappended\n")
 
+    def test_a_final_empty_line_reads_as_the_last_newline(self) -> None:
+        # Codex: a pure addition goes before a final empty line, and a final
+        # empty line left after the hunks is the file's last newline.
+        for original, body, expected in [
+            ("a\n\n", ["@@", "+new"], "a\nnew\n"),
+            ("a\n\n\n", ["@@", "+new"], "a\n\nnew\n"),
+            ("a\n\n", ["@@", "-a", "+b"], "b\n"),
+            ("a\nb\n", ["@@", " a", "-b", "+b", "+"], "a\nb\n"),
+        ]:
+            with self.subTest(original=original, body=body):
+                self.write("blank.txt", original)
+                self.apply(_patch("*** Update File: blank.txt", *body))
+                self.assertEqual(self.read("blank.txt"), expected)
+
     def test_a_patch_and_its_hand_written_edit_calls_are_equivalent(self) -> None:
         original = "def f():\n    return 1\n\n\ndef g():\n    return 2\n"
-        self.write("eq_patch.py", original)
+        self.write("f.py", original)
         self.apply(
             _patch(
-                "*** Update File: eq_patch.py",
+                "*** Update File: f.py",
                 "@@ def f():",
                 "-    return 1",
                 "+    return 10",
@@ -467,16 +481,16 @@ class ApplyPatchSkillTest(unittest.TestCase):
                 "+    return 20",
             )
         )
-        patch_events = self.diff_events()
+        patched, patch_events = self.read("f.py"), list(self.rlm.events)
         self.rlm.events.clear()
-        self.write("eq_hand.py", original)
-        asyncio.run(edit.run("eq_hand.py", "    return 1\n", "    return 10\n    # ten\n"))
-        asyncio.run(edit.run("eq_hand.py", "    return 2\n", "    return 20\n"))
-        hand_events = self.diff_events()
-        self.assertEqual(self.read("eq_patch.py"), self.read("eq_hand.py"))
+        self.write("f.py", original)
+        asyncio.run(edit.run("f.py", "    return 1\n", "    return 10\n    # ten\n"))
+        asyncio.run(edit.run("f.py", "    return 2\n", "    return 20\n"))
+        # Whole events, paths included: both name the file the same way.
+        self.assertEqual((patched, patch_events), (self.read("f.py"), self.rlm.events))
         self.assertEqual(
-            [dict(event, path="f.py") for event in patch_events],
-            [dict(event, path="f.py") for event in hand_events],
+            [event[edit._DIFF_DISPLAY_MIME]["path"] for event in patch_events],
+            [str(self.root / "f.py")] * 2,
         )
 
     # -- Add / Delete / Move (Codex lib.rs apply_hunks_to_files) --------------
@@ -683,46 +697,159 @@ class ApplyPatchSkillTest(unittest.TestCase):
                     f"Failed to write file {path}: directory {self.root / 'frozen'} is not writable",
                 )
 
-    def test_a_write_failure_while_staging_rolls_everything_back(self) -> None:
+    def _undo_patch(self) -> str:
+        """Fixture files and a patch touching every kind of change: two
+        rewrites, a delete, a move, and a new file in new directories."""
         self.write("first.txt", "one\n")
         self.write("doomed.txt", "bye\n")
+        self.write("src.txt", "move me\n")
         self.write("second.txt", "two\n")
-        before = self.tree()
+        return _patch(
+            "*** Update File: first.txt",
+            "@@",
+            "-one",
+            "+ONE",
+            "*** Delete File: doomed.txt",
+            "*** Update File: src.txt",
+            "*** Move to: moved/src.txt",
+            "@@",
+            "-move me",
+            "+moved",
+            "*** Add File: fresh/dir/new.txt",
+            "+new",
+            "*** Update File: second.txt",
+            "@@",
+            "-two",
+            "+TWO",
+        )
+
+    def assert_undone(self, before: dict[str, str], first_inode: int) -> None:
+        """Every file as it was, the rewritten one still the same file, no
+        new directories or helper files, nothing displayed."""
+        self.assertEqual(self.tree(), before)
+        self.assertEqual(
+            sorted(os.listdir(self.root)), ["doomed.txt", "first.txt", "second.txt", "src.txt"]
+        )
+        self.assertEqual((self.root / "first.txt").stat().st_ino, first_inode)
+        self.assertEqual(self.rlm.events, [])
+
+    def test_a_write_failure_mid_commit_undoes_every_change(self) -> None:
+        patch = self._undo_patch()
+        before, first_inode = self.tree(), (self.root / "first.txt").stat().st_ino
         real_open = builtins.open
-        opened: list[str] = []
+
+        class FailingWrites:
+            """The second rewrite's handle: its first write lands one byte,
+            then fails, after every other change has been made."""
+
+            def __init__(self, handle: Any) -> None:
+                self._handle = handle
+                self.failed = False
+
+            def write(self, data: bytes) -> int:
+                if not self.failed:
+                    self.failed = True
+                    self._handle.write(data[:1])
+                    raise OSError(28, "No space left on device")
+                return self._handle.write(data)
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(self._handle, name)
 
         def failing_open(path: Any, mode: str = "r", *args: Any, **kwargs: Any) -> Any:
-            if "x" in mode:
-                opened.append(str(path))
-                if len(opened) == 3:
-                    raise OSError(28, "No space left on device")
-            return real_open(path, mode, *args, **kwargs)
+            handle = real_open(path, mode, *args, **kwargs)
+            if mode == "r+b" and Path(path).name == "second.txt":
+                return FailingWrites(handle)
+            return handle
 
         with mock.patch("builtins.open", failing_open):
             with self.assertRaises(apply_patch.PatchError) as raised:
-                self.apply(
-                    _patch(
-                        "*** Update File: first.txt",
-                        "@@",
-                        "-one",
-                        "+ONE",
-                        "*** Delete File: doomed.txt",
-                        "*** Add File: fresh/dir/new.txt",
-                        "+new",
-                        "*** Update File: second.txt",
-                        "@@",
-                        "-two",
-                        "+TWO",
-                    )
-                )
-        self.assertEqual(raised.exception.reason, "apply_failed")
-        self.assertTrue(str(raised.exception).endswith("no file was changed"), raised.exception)
-        self.assertEqual(len(opened), 3)
-        # Every staged change rolled back: no temp files, no new directories,
-        # the deleted file restored, nothing displayed.
-        self.assertEqual(self.tree(), before)
-        self.assertEqual(sorted(os.listdir(self.root)), ["doomed.txt", "first.txt", "second.txt"])
-        self.assertEqual(self.rlm.events, [])
+                self.apply(patch)
+        self.assertEqual(
+            (raised.exception.reason, str(raised.exception)),
+            (
+                "apply_failed",
+                f"Failed to write {self.root / 'second.txt'}: [Errno 28] No space left on device; "
+                "every change was undone",
+            ),
+        )
+        self.assert_undone(before, first_inode)
+
+    def test_an_interruption_mid_commit_undoes_every_change(self) -> None:
+        for interruption in (KeyboardInterrupt(), RuntimeError("not an OSError")):
+            with self.subTest(interruption=type(interruption).__name__):
+                patch = self._undo_patch()
+                before, first_inode = self.tree(), (self.root / "first.txt").stat().st_ino
+                # Raised once the delete and the move's removal are done.
+                with mock.patch("os.mkdir", side_effect=interruption):
+                    with self.assertRaises(type(interruption)) as raised:
+                        self.apply(patch)
+                self.assertIs(raised.exception, interruption)
+                self.assert_undone(before, first_inode)
+
+    def test_without_ownership_apis_updates_and_undo_work(self) -> None:
+        # Windows has no os.chown.
+        with mock.patch.dict(os.__dict__):
+            del os.__dict__["chown"]
+            patch = self._undo_patch()
+            before, first_inode = self.tree(), (self.root / "first.txt").stat().st_ino
+            with mock.patch("os.mkdir", side_effect=OSError(13, "Permission denied")):
+                with self.assertRaises(apply_patch.PatchError):
+                    self.apply(patch)
+            self.assert_undone(before, first_inode)
+            self.apply(patch)
+        self.assertEqual(
+            self.tree(),
+            {
+                "first.txt": "ONE\n",
+                "fresh/dir/new.txt": "new\n",
+                "moved/src.txt": "moved\n",
+                "second.txt": "TWO\n",
+            },
+        )
+
+    def test_surrogates_are_rejected_before_anything_is_written(self) -> None:
+        # A non-raw literal turns `\ud83d` into a lone surrogate.
+        self.write("a.txt", "a\n")
+        self.assert_untouched(
+            _patch("*** Update File: a.txt", "@@", "-a", "+b", "*** Add File: s.txt", "+\ud83d"),
+            "parse",
+            "Invalid patch: the new contents of s.txt are not valid UTF-8 text: 'utf-8' codec "
+            "can't encode character '\\ud83d' in position 0: surrogates not allowed",
+        )
+
+    @unittest.skipIf(_AS_ROOT, "root bypasses permission bits")
+    def test_rewrites_keep_the_file_and_its_hardlinks(self) -> None:
+        original = self.write("a.txt", "a\n")
+        original.chmod(0o640)
+        os.link(original, self.root / "b.txt")
+        inode = original.stat().st_ino
+        self.apply(_patch("*** Update File: a.txt", "@@", "-a", "+A"))
+        self.apply(_patch("*** Add File: b.txt", "+B"))
+        status = original.stat()
+        self.assertEqual(
+            (status.st_ino, status.st_nlink, status.st_mode & 0o777, self.tree()),
+            (inode, 2, 0o640, {"a.txt": "B\n", "b.txt": "B\n"}),
+        )
+
+    @unittest.skipIf(_AS_ROOT, "root bypasses permission bits")
+    def test_a_writable_file_in_a_read_only_directory_can_be_rewritten(self) -> None:
+        self.write("frozen/inside.txt", "x\n")
+        self.write("frozen/other.txt", "o\n")
+        (self.root / "frozen").chmod(0o555)
+        self.apply(
+            _patch(
+                "*** Update File: frozen/inside.txt",
+                "@@",
+                "-x",
+                "+y",
+                "*** Add File: frozen/other.txt",
+                "+replaced",
+            )
+        )
+        self.assertEqual(
+            self.tree(), {"frozen/inside.txt": "y\n", "frozen/other.txt": "replaced\n"}
+        )
 
     @unittest.skipIf(_AS_ROOT, "root bypasses permission bits")
     def test_replaced_files_keep_their_mode(self) -> None:
