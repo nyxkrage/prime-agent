@@ -286,19 +286,28 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     };
     // Model patterns match canonical `provider/model-id` names, never
     // models.json aliases: a pattern that only names an alias selects
-    // nothing, so say so instead of silently filtering everything out.
-    for (setting, patterns) in [
-        ("allowedModels", factory_allowed_models.as_deref()),
-        ("subagentModels", settings.get_subagent_models().as_deref()),
-    ] {
-        for alias_pattern in wiring
-            .rlm
-            .registry
-            .alias_patterns(patterns.unwrap_or_default())
-        {
-            tracing::warn!("settings \"{setting}\": {alias_pattern}");
-        }
-    }
+    // nothing, so a top-level session says so on a display row (children
+    // share the same settings and would only repeat it).
+    let model_pattern_notice = if config.rlm_depth.unwrap_or(0) == 0 {
+        let subagent_models = settings.get_subagent_models();
+        let alias_patterns: Vec<(&str, crate::models::AliasPattern)> = [
+            ("allowedModels", factory_allowed_models.as_deref()),
+            ("subagentModels", subagent_models.as_deref()),
+        ]
+        .into_iter()
+        .flat_map(|(setting, patterns)| {
+            wiring
+                .rlm
+                .registry
+                .alias_patterns(patterns.unwrap_or_default())
+                .into_iter()
+                .map(move |alias_pattern| (setting, alias_pattern))
+        })
+        .collect();
+        super::model_pattern_notice::notice_message(&alias_patterns)
+    } else {
+        None
+    };
     // Captured before `settings` moves into the resource loader: the
     // per-cell watchdog budget (default 60s, `0` disables).
     let python_cell_timeout_ms = settings.get_python_cell_timeout_ms();
@@ -593,6 +602,12 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         Some(&prompt_model_selector),
         &config.agent_dir,
     );
+    if let Some(row) = model_pattern_notice {
+        boot_notice_rows
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(row);
+    }
     if !model_prompts.errors.is_empty() {
         boot_notice_rows
             .lock()

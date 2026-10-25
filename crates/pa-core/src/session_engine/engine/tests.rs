@@ -900,3 +900,99 @@ async fn late_receipts_recorded_before_the_row_lands_apply_on_landing() {
         "the receipt persists as a custom entry"
     );
 }
+
+/// A settings model pattern that only names a models.json alias matches
+/// nothing; a top-level session says so on a display row riding its first
+/// turn (never in the model's context), and a child engine (same settings)
+/// does not repeat it.
+#[tokio::test]
+async fn an_alias_model_pattern_warns_the_top_level_session_once() {
+    let model = pa_agent::types::Model {
+        id: "m".into(),
+        name: "m".into(),
+        api: "test".into(),
+        provider: "test".into(),
+        base_url: "http://localhost".into(),
+        reasoning: false,
+        cost: pa_agent::types::UsageCost::default(),
+        context_window: 100_000,
+        max_tokens: 100,
+        max_tokens_explicit: false,
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().join("project");
+    let agent_dir = tmp.path().join("agent");
+    std::fs::create_dir_all(&cwd).unwrap();
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    std::fs::write(
+        agent_dir.join("models.json"),
+        r#"{ "providers": { "openai": { "modelOverrides": { "gpt-5.6-luna": { "alias": "luna" } } } } }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        agent_dir.join("settings.json"),
+        r#"{ "subagentModels": ["luna", "openai/*"] }"#,
+    )
+    .unwrap();
+    let mut warnings = Vec::new();
+    for rlm_depth in [None, Some(1)] {
+        let provider = Arc::new(ScriptedProvider::new(model.clone()));
+        provider.push_text_turn("done");
+        let engine = create_session(SessionEngineConfig {
+            cwd: cwd.clone(),
+            agent_dir: agent_dir.clone(),
+            model: Some(model.clone()),
+            stream_fn: Some(provider.stream_fn()),
+            rlm_depth,
+            daemonless: true,
+            prewarm_ipython_kernel: Some(false),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        engine
+            .prompt("hello", PromptOptions::default())
+            .await
+            .unwrap();
+        engine.session.agent().wait_for_idle().await;
+        let calls = provider.calls();
+        assert!(
+            !format!("{:?}", calls[0].messages).contains("model-pattern-warning"),
+            "the warning never reaches the model"
+        );
+        let rows: Vec<pa_types::session::CustomMessageEntry> = engine
+            .session
+            .entries()
+            .await
+            .into_iter()
+            .filter_map(|entry| match entry {
+                pa_types::session::FileEntry::CustomMessage { payload, .. }
+                    if payload.custom_type == "model_pattern_warning" =>
+                {
+                    Some(payload)
+                }
+                _ => None,
+            })
+            .collect();
+        warnings.push(
+            rows.into_iter()
+                .map(|row| (row.display, row.content))
+                .collect::<Vec<_>>(),
+        );
+    }
+    assert_eq!(
+        warnings,
+        vec![
+            vec![(
+                true,
+                pa_types::ai::UserContent::Text(
+                    "[model-pattern-warning]\n\n- settings \"subagentModels\": pattern \"luna\" is \
+                     the models.json alias of openai/gpt-5.6-luna, but model patterns match real \
+                     model names, not aliases, so it matches nothing; use \"openai/gpt-5.6-luna\""
+                        .to_string()
+                )
+            )],
+            Vec::new(),
+        ]
+    );
+}
