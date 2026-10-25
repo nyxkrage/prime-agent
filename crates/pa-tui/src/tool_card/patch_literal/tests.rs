@@ -3,9 +3,10 @@ use crate::theme::{ColorMode, Theme};
 use crate::tool_card::highlight::{highlight_python, SyntaxPalette};
 
 fn bodies(code: &str) -> Vec<&str> {
-    patch_literal_bodies(code)
-        .into_iter()
-        .map(|body| &code[body])
+    parse_cell(code, None)
+        .bodies
+        .iter()
+        .map(|body| &code[body.clone()])
         .collect()
 }
 
@@ -148,7 +149,11 @@ fn crlf_cells_keep_the_carriage_returns_in_the_body() {
 #[test]
 fn an_unclosed_triple_quoted_tail_runs_to_the_end_of_the_cell() {
     let code = "await apply_patch('''*** Begin Patch\n*** Update File: a.py\n@@\n-x";
-    let tree = parse(code).expect("parses");
+    let mut parser = Parser::new();
+    parser
+        .set_language(&tree_sitter_python::LANGUAGE.into())
+        .expect("the Python grammar loads");
+    let tree = parser.parse(code, None).expect("parses");
     let sexp = tree.root_node().to_sexp();
     assert!(
         sexp.contains("ERROR") && !sexp.contains("(call") && !sexp.contains("(string "),
@@ -337,6 +342,40 @@ fn streaming_prefixes_never_recolour_finished_lines() {
     }
 }
 
+/// Parsing a streaming cell incrementally, chunk after chunk, finds
+/// exactly the literals a fresh parse of each prefix finds, through quotes
+/// and escapes inside the patch, its close, and code after it.
+#[test]
+fn incremental_parses_match_fresh_parses() {
+    let code = concat!(
+        "P = 'x'\n",
+        "await apply_patch(r'''*** Begin Patch\n",
+        "*** Update File: a.py\n",
+        "@@ def f():\n",
+        "-    s = 'it' '' \"q\"\n",
+        "+    s = \"\\\\d\\'\"\n",
+        "*** End Patch''')\n",
+        "print('''tail''')\n",
+        "await apply_patch(\"\"\"*** Begin Patch\n+a\\\n\"\"\")\n",
+        "await apply_patch(P)",
+    );
+    for step in [1, 2, 5, 11] {
+        let mut previous = None;
+        let mut end = 0;
+        while end < code.len() {
+            end = (end + step).min(code.len());
+            let cell = parse_cell(&code[..end], previous.take());
+            assert_eq!(
+                cell.bodies,
+                parse_cell(&code[..end], None).bodies,
+                "step {step}, cut at {end}: {:?}",
+                &code[..end]
+            );
+            previous = Some(cell);
+        }
+    }
+}
+
 #[test]
 fn cells_without_a_patch_call_are_untouched() {
     let theme = theme(ColorMode::TrueColor);
@@ -375,4 +414,78 @@ fn restyle_splits_spans_at_segment_edges() {
             Span::styled("h", a),
         ]
     );
+}
+
+/// Streaming cost of a ~2k-line patch cell arriving in 64-byte chunks,
+/// rendered after every chunk as the card repaints: the highlighter (the
+/// cell's base colouring, unchanged by this module), the patch overlay, and
+/// the overlay's literal detection timed apart. Run in release:
+/// `cargo test --release -p pa-tui --lib streaming_a_long_patch -- --ignored --nocapture`
+#[test]
+#[ignore = "benchmark: run in release with --ignored --nocapture"]
+fn streaming_a_long_patch_bench() {
+    use std::fmt::Write as _;
+    use std::time::{Duration, Instant};
+    let mut cell = String::from("await apply_patch(r'''*** Begin Patch\n");
+    for file in 0..20 {
+        let _ = writeln!(cell, "*** Update File: src/module_{file}.py");
+        for hunk in 0..20 {
+            let _ = write!(
+                cell,
+                "@@ def function_{hunk}(value):\n     total = value * {hunk}\n-    return total\n+    return total + {file}\n     # done\n"
+            );
+        }
+    }
+    cell.push_str("*** End Patch''')\n");
+    let theme = theme(ColorMode::TrueColor);
+    let syntax = SyntaxPalette::from_theme(&theme);
+    let mut ends: Vec<usize> = (64..cell.len()).step_by(64).collect();
+    ends.push(cell.len());
+    let mut highlight = Vec::with_capacity(ends.len());
+    let mut overlay = Vec::with_capacity(ends.len());
+    for &end in &ends {
+        let code = &cell[..end];
+        let started = Instant::now();
+        let mut lines = highlight_python(code, &syntax);
+        highlight.push(started.elapsed());
+        let started = Instant::now();
+        overlay_patch_literals(code, &mut lines, &theme);
+        overlay.push(started.elapsed());
+    }
+    let report = |name: &str, times: &[Duration]| {
+        let total: Duration = times.iter().sum();
+        let tail = &times[times.len() - 100..];
+        eprintln!(
+            "{name}: total {total:?}, mean {:?}/chunk, last 100 chunks mean {:?}, max {:?}",
+            total / u32::try_from(times.len()).unwrap_or(u32::MAX),
+            tail.iter().sum::<Duration>() / 100,
+            times.iter().max().copied().unwrap_or_default(),
+        );
+    };
+    eprintln!(
+        "{} lines, {} bytes, {} chunks",
+        cell.lines().count(),
+        cell.len(),
+        ends.len()
+    );
+    report("highlight_python", &highlight);
+    report("overlay_patch_literals", &overlay);
+    // The literal detection alone: incrementally, as the overlay does, and
+    // from scratch for every chunk (the cost before incremental parsing).
+    let mut incremental = Vec::with_capacity(ends.len());
+    let mut previous = None;
+    for &end in &ends {
+        let started = Instant::now();
+        let parsed = parse_cell(&cell[..end], previous.take());
+        incremental.push(started.elapsed());
+        previous = Some(parsed);
+    }
+    report("detection, incremental", &incremental);
+    let mut scratch = Vec::with_capacity(ends.len());
+    for &end in &ends {
+        let started = Instant::now();
+        std::hint::black_box(parse_cell(&cell[..end], None));
+        scratch.push(started.elapsed());
+    }
+    report("detection, from scratch", &scratch);
 }

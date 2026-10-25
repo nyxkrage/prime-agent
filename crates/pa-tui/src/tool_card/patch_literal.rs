@@ -21,7 +21,7 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use ratatui::style::{Modifier, Style};
-use tree_sitter::{Node, Parser, Tree};
+use tree_sitter::{InputEdit, Node, Parser, Point, Tree};
 
 use super::highlight;
 use crate::theme::{ColorMode, Theme, ThemeBg, ThemeColor};
@@ -35,12 +35,28 @@ const APPLY_PATCH: &str = "apply_patch";
 /// frame.
 const CACHED_CELLS: usize = 4;
 
-/// One cached cell: its source and the detected literal bodies.
-type CachedBodies = (String, Rc<[Range<usize>]>);
+/// One parsed cell, kept so the same cell repaints without parsing and a
+/// streaming cell (the previous source plus appended text) updates from it
+/// at a cost proportional to the appended text.
+struct ParsedCell {
+    code: String,
+    /// The text closing the cell while it ends inside an unclosed
+    /// triple-quoted string: the delimiter, then the open brackets.
+    closing: Option<String>,
+    /// The text `tree` was parsed from: the cell as it was at the last parse
+    /// (`parsed[..parsed_code_len]`, a prefix of `code`), then its closing
+    /// text.
+    parsed: String,
+    parsed_code_len: usize,
+    /// Where `parsed`'s cell part ends.
+    parsed_code_end: Point,
+    tree: Option<Tree>,
+    bodies: Rc<[Range<usize>]>,
+}
 
 thread_local! {
     static PARSER: RefCell<Option<Parser>> = const { RefCell::new(None) };
-    static CACHE: RefCell<Vec<CachedBodies>> = const { RefCell::new(Vec::new()) };
+    static CACHE: RefCell<Vec<ParsedCell>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Restyle the `apply_patch` literal bodies inside `lines`, the
@@ -51,14 +67,24 @@ pub(crate) fn overlay_patch_literals(code: &str, lines: &mut [Line], theme: &The
         return;
     }
     let bodies = CACHE.with_borrow_mut(|cache| {
-        if let Some(index) = cache.iter().position(|(source, _)| source == code) {
-            let entry = cache.remove(index);
-            let bodies = Rc::clone(&entry.1);
-            cache.insert(0, entry);
+        if let Some(index) = cache.iter().position(|cell| cell.code == code) {
+            let cell = cache.remove(index);
+            let bodies = Rc::clone(&cell.bodies);
+            cache.insert(0, cell);
             return bodies;
         }
-        let bodies: Rc<[Range<usize>]> = patch_literal_bodies(code).into();
-        cache.insert(0, (code.to_string(), Rc::clone(&bodies)));
+        // A streaming cell grows by appends: continue from the longest
+        // cached cell it extends.
+        let previous = cache
+            .iter()
+            .enumerate()
+            .filter(|(_, cell)| code.starts_with(cell.code.as_str()))
+            .max_by_key(|(_, cell)| cell.code.len())
+            .map(|(index, _)| index)
+            .map(|index| cache.remove(index));
+        let cell = parse_cell(code, previous);
+        let bodies = Rc::clone(&cell.bodies);
+        cache.insert(0, cell);
         cache.truncate(CACHED_CELLS);
         bodies
     });
@@ -98,9 +124,10 @@ pub(crate) fn overlay_patch_literals(code: &str, lines: &mut [Line], theme: &The
     }
 }
 
-/// The byte ranges between the quotes of every literal passed to
-/// `apply_patch` in `code`: sorted, disjoint, clipped to `code`.
-pub(crate) fn patch_literal_bodies(code: &str) -> Vec<Range<usize>> {
+/// Find the byte ranges between the quotes of every literal passed to
+/// `apply_patch` in `code` (sorted, disjoint, clipped to `code`), updating
+/// from `previous`, a cell `code` extends, when there is one.
+fn parse_cell(code: &str, previous: Option<ParsedCell>) -> ParsedCell {
     // A cell still streaming in usually ends inside the patch literal.
     // tree-sitter's recovery leaves an unclosed triple-quoted string as a
     // bare `string_start` in an ERROR node with no call around it, and
@@ -109,48 +136,77 @@ pub(crate) fn patch_literal_bodies(code: &str) -> Vec<Range<usize>> {
     // highlighter scans it) parses with that tail closed instead: the
     // string's delimiter and the brackets open around it appended. Body
     // ranges past the real end are clipped below.
-    let closed;
-    let source = match highlight::unclosed_triple_quoted_tail(code) {
-        Some(closing) => {
-            let mut text = String::with_capacity(code.len() + 1 + closing.len());
-            text.push_str(code);
-            // A trailing backslash would escape the first closing quote.
-            let backslashes = code.bytes().rev().take_while(|b| *b == b'\\').count();
-            if backslashes % 2 == 1 {
-                text.push(' ');
+    //
+    // While it streams, the cell is not rescanned for that tail: when the
+    // previous cell ended inside an unclosed triple-quoted string and the
+    // appended text (with the two bytes before it) holds no closing
+    // delimiter, the cell still ends inside that string, so the tail is the
+    // same.
+    let still_open = previous.as_ref().and_then(|previous| {
+        let closing = previous.closing.as_ref()?;
+        let delimiter = closing.as_bytes().get(..3)?;
+        let window = &code.as_bytes()[previous.code.len().saturating_sub(2)..];
+        (!window.windows(3).any(|bytes| bytes == delimiter)).then(|| closing.clone())
+    });
+    // Text appended inside the open literal changes nothing but its
+    // length: when it is a patch literal (its body runs to the end of the
+    // previous cell), that body now runs to the new end, and no parse is
+    // needed (tree-sitter would relex the whole literal, one token).
+    let extends_open_body = still_open.is_some()
+        && previous.as_ref().is_some_and(|previous| {
+            previous
+                .bodies
+                .last()
+                .is_some_and(|body| body.end == previous.code.len())
+        });
+    let previous = match previous {
+        Some(previous) if extends_open_body => {
+            let mut bodies = previous.bodies.to_vec();
+            if let Some(body) = bodies.last_mut() {
+                body.end = code.len();
             }
-            text.push_str(&closing);
-            closed = text;
-            closed.as_str()
+            return ParsedCell {
+                code: code.to_string(),
+                bodies: bodies.into(),
+                ..previous
+            };
         }
-        None => code,
+        previous => previous,
     };
-    let Some(tree) = parse(source) else {
-        return Vec::new();
+    let closing = still_open.or_else(|| highlight::unclosed_triple_quoted_tail(code));
+    let mut source =
+        String::with_capacity(code.len() + 1 + closing.as_ref().map_or(0, String::len));
+    source.push_str(code);
+    if let Some(closing) = &closing {
+        // A trailing backslash would escape the first closing quote.
+        let backslashes = code.bytes().rev().take_while(|b| *b == b'\\').count();
+        if backslashes % 2 == 1 {
+            source.push(' ');
+        }
+        source.push_str(closing);
+    }
+    // Reparse incrementally: the text after the last parse's cell part
+    // replaces that parse's closing tail.
+    let (code_end, old_tree) = match previous {
+        Some(previous) => {
+            let start = previous.parsed_code_len;
+            let code_end = advance(previous.parsed_code_end, &code[start..]);
+            let old_tree = previous.tree.map(|mut tree| {
+                tree.edit(&InputEdit {
+                    start_byte: start,
+                    old_end_byte: previous.parsed.len(),
+                    new_end_byte: source.len(),
+                    start_position: previous.parsed_code_end,
+                    old_end_position: advance(previous.parsed_code_end, &previous.parsed[start..]),
+                    new_end_position: advance(previous.parsed_code_end, &source[start..]),
+                });
+                tree
+            });
+            (code_end, old_tree)
+        }
+        None => (advance(Point::default(), code), None),
     };
-    let mut bodies: Vec<Range<usize>> = Detector::new(source, &tree)
-        .literal_strings()
-        .into_iter()
-        .filter_map(|string| {
-            // The bytes between the quotes; an unclosed string's body runs
-            // to the node's end. Clipped to the real cell.
-            let open = string.child(0)?;
-            let last = string.child_count().checked_sub(1)?;
-            let close = string
-                .child(last)
-                .filter(|close| close.kind() == "string_end" && !close.is_missing())
-                .map_or(string.end_byte(), |close| close.start_byte());
-            let end = close.min(code.len());
-            (open.end_byte() < end).then_some(open.end_byte()..end)
-        })
-        .collect();
-    bodies.sort_by_key(|body| body.start);
-    bodies.dedup();
-    bodies
-}
-
-fn parse(source: &str) -> Option<Tree> {
-    PARSER.with_borrow_mut(|parser| {
+    let tree = PARSER.with_borrow_mut(|parser| {
         if parser.is_none() {
             let mut fresh = Parser::new();
             fresh
@@ -158,8 +214,61 @@ fn parse(source: &str) -> Option<Tree> {
                 .ok()?;
             *parser = Some(fresh);
         }
-        parser.as_mut()?.parse(source, None)
-    })
+        parser.as_mut()?.parse(&source, old_tree.as_ref())
+    });
+    let mut bodies: Vec<Range<usize>> = tree
+        .as_ref()
+        .map(|tree| {
+            Detector::new(&source, tree)
+                .literal_strings()
+                .into_iter()
+                .filter_map(|string| {
+                    // The bytes between the quotes. A string whose closing
+                    // delimiter is missing, or reaches into the appended tail
+                    // (the cell may end in one or two of its quotes, which
+                    // are body text so far), runs to the end of the cell.
+                    let open = string.child(0)?;
+                    let last = string.child_count().checked_sub(1)?;
+                    let end = string
+                        .child(last)
+                        .filter(|close| {
+                            close.kind() == "string_end"
+                                && !close.is_missing()
+                                && close.end_byte() <= code.len()
+                        })
+                        .map_or(string.end_byte().min(code.len()), |close| {
+                            close.start_byte()
+                        });
+                    (open.end_byte() < end).then_some(open.end_byte()..end)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    bodies.sort_by_key(|body| body.start);
+    bodies.dedup();
+    ParsedCell {
+        code: code.to_string(),
+        closing,
+        parsed: source,
+        parsed_code_len: code.len(),
+        parsed_code_end: code_end,
+        tree,
+        bodies: bodies.into(),
+    }
+}
+
+/// `point` moved past `text`.
+fn advance(point: Point, text: &str) -> Point {
+    match text.rfind('\n') {
+        Some(last) => Point {
+            row: point.row + text.bytes().filter(|byte| *byte == b'\n').count(),
+            column: text.len() - last - 1,
+        },
+        None => Point {
+            row: point.row,
+            column: point.column + text.len(),
+        },
+    }
 }
 
 /// One pass over the tree collecting the matching calls and the cell's
