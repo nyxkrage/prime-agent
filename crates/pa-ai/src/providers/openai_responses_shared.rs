@@ -13,7 +13,8 @@ use crate::types::{
 use crate::utils_inner::hash::short_hash;
 use crate::utils_inner::sanitize_unicode::sanitize_surrogates;
 
-pub use crate::providers::openai_responses_hooks::{FreeformToolArguments, ReasoningSummary};
+pub(crate) use crate::providers::openai_responses_hooks::FreeformToolArguments;
+pub use crate::providers::openai_responses_hooks::ReasoningSummary;
 pub use crate::providers::openai_responses_stream::{
     apply_service_tier_pricing, ResponsesStreamHooks, ResponsesStreamProcessor,
 };

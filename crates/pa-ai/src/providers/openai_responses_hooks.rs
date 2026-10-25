@@ -35,7 +35,7 @@ pub type ApplyServiceTierPricingFn = Box<dyn Fn(&mut Usage, Option<String>) + Se
 /// input maps onto (`python_repl` -> `code`). Built from the request's tool list, so the wire
 /// shape follows whichever tools the caller marked for this request.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct FreeformToolArguments(HashMap<String, String>);
+pub(crate) struct FreeformToolArguments(HashMap<String, String>);
 
 impl FreeformToolArguments {
     /// Collect the tools that carry a free-text argument.
