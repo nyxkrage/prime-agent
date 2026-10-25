@@ -383,6 +383,15 @@ impl SessionCounters {
         self.with(|values| values.freeform_tools_request_count += 1);
     }
 
+    /// The freeform-tools request count so far (the gate's tests read it directly).
+    #[cfg(test)]
+    pub(crate) fn freeform_tools_request_count(&self) -> u64 {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .freeform_tools_request_count
+    }
+
     fn write_into(&self, properties: &mut Properties) {
         self.with(|values| {
             for (key, value) in [

@@ -11,8 +11,17 @@ use pa_agent::stream::StreamFn;
 use super::telemetry::SessionCounters;
 use crate::settings::FreeformToolsSettings;
 
+/// The provider APIs that send a marked tool as a raw-text custom tool (every other API ignores
+/// the marker and sends the JSON-schema form).
+const CUSTOM_TOOL_APIS: [&str; 3] = [
+    "openai-responses",
+    "openai-codex-responses",
+    "azure-openai-responses",
+];
+
 /// Wrap `stream_fn`: a request to a provider the setting resolves off for drops every tool's
-/// free-text marker; a request that keeps one counts into the session's adoption counter.
+/// free-text marker; a request that keeps one on an API with custom tools counts into the
+/// session's adoption counter.
 pub(crate) fn gate_stream_fn(
     settings: FreeformToolsSettings,
     counters: Arc<SessionCounters>,
@@ -20,10 +29,11 @@ pub(crate) fn gate_stream_fn(
 ) -> StreamFn {
     Arc::new(move |model, mut context, options| {
         if settings.is_enabled_for(&model.provider) {
-            if context
-                .tools
-                .iter()
-                .any(|tool| tool.freeform_argument.is_some())
+            if CUSTOM_TOOL_APIS.contains(&model.api.as_str())
+                && context
+                    .tools
+                    .iter()
+                    .any(|tool| tool.freeform_argument.is_some())
             {
                 counters.note_freeform_tools_request();
             }
@@ -54,8 +64,12 @@ mod tests {
     }
 
     fn model(provider: &str) -> pa_agent::types::Model {
+        model_on_api(provider, "openai-responses")
+    }
+
+    fn model_on_api(provider: &str, api: &str) -> pa_agent::types::Model {
         serde_json::from_value(serde_json::json!({
-            "id": "m", "api": "openai-responses", "provider": provider,
+            "id": "m", "api": api, "provider": provider,
         }))
         .expect("model")
     }
@@ -64,6 +78,14 @@ mod tests {
     async fn markers_seen(
         settings: FreeformToolsSettings,
         provider: &str,
+        counters: Arc<SessionCounters>,
+    ) -> Vec<Option<String>> {
+        markers_seen_on(settings, model(provider), counters).await
+    }
+
+    async fn markers_seen_on(
+        settings: FreeformToolsSettings,
+        model: pa_agent::types::Model,
         counters: Arc<SessionCounters>,
     ) -> Vec<Option<String>> {
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -94,7 +116,7 @@ mod tests {
             on_response: None,
             headers: None,
         };
-        assert!(gated(model(provider), context, options).await.is_err());
+        assert!(gated(model, context, options).await.is_err());
         let markers = seen.lock().expect("seen").clone();
         markers
     }
@@ -145,5 +167,34 @@ mod tests {
             .map(|provider| global_on.is_enabled_for(provider))
             .collect();
         assert_eq!(resolved, vec![false, true, true]);
+    }
+
+    /// Regression: the adoption counter counts only requests whose API sends custom tools.
+    /// An enabled provider on Chat Completions or Anthropic Messages keeps the marker (the
+    /// provider ignores it) but must not count as freeform adoption.
+    #[tokio::test]
+    async fn adoption_counts_only_responses_api_requests() {
+        let enabled = FreeformToolsSettings {
+            enabled: Some(true),
+            providers: None,
+        };
+        let mut counts = Vec::new();
+        for api in [
+            "openai-completions",
+            "anthropic-messages",
+            "openai-responses",
+            "openai-codex-responses",
+            "azure-openai-responses",
+        ] {
+            let counters = Arc::new(SessionCounters::default());
+            markers_seen_on(
+                enabled.clone(),
+                model_on_api("p", api),
+                Arc::clone(&counters),
+            )
+            .await;
+            counts.push(counters.freeform_tools_request_count());
+        }
+        assert_eq!(counts, vec![0, 0, 1, 1, 1]);
     }
 }
