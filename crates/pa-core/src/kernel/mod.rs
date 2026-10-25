@@ -6,7 +6,7 @@
 
 pub mod bootstrap;
 pub mod cancellation;
-pub mod env_overrides;
+pub(crate) mod env_overrides;
 pub mod live_kernels;
 pub mod manager;
 pub mod orphan_journal;

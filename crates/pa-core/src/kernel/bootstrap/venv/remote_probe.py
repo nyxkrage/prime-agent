@@ -3,7 +3,10 @@
 # remote's system python3 of any version, so it stays compatible with old
 # interpreters (no f-strings, no walrus) to report an unsupported version
 # instead of failing on syntax.
-# argv: install root (may start with ~), base key, JSON {skill dir: content hash}.
+# It also touches the .last-used of every install and skill dir it reports
+# present, so garbage collection cannot remove one between this probe and
+# the kernel that holds it.
+# argv: install root (may start with ~), base key, JSON {skill id: is Python}.
 import json
 import os
 import platform
@@ -25,6 +28,16 @@ def read(path):
         return None
 
 
+def touch(directory):
+    try:
+        last_used = os.path.join(directory, ".last-used")
+        with open(last_used, "a"):
+            pass
+        os.utime(last_used)
+    except OSError:
+        pass
+
+
 def venv_works():
     # `python3 -m venv` needs a working ensurepip: Debian/Ubuntu ship an
     # ensurepip stub without the bundled pip wheel unless python3-venv is
@@ -39,11 +52,22 @@ def venv_works():
 
 
 installed = os.path.isfile(python) and read(os.path.join(target, ".installed")) == key
-stale = sorted(
-    name
-    for name, digest in skills.items()
-    if not installed or read(os.path.join(target, "skills", name + ".installed")) != digest
-)
+if installed:
+    touch(target)
+missing_stores = []
+missing_sites = []
+for skill_id in sorted(skills):
+    store = os.path.join(root, "skills", skill_id)
+    if read(os.path.join(store, ".complete")) == skill_id:
+        touch(store)
+    else:
+        missing_stores.append(skill_id)
+    if skills[skill_id]:
+        site = os.path.join(target, "skill-sites", skill_id)
+        if installed and read(os.path.join(site, ".installed")) == skill_id:
+            touch(site)
+        else:
+            missing_sites.append(skill_id)
 print(
     json.dumps(
         {
@@ -56,7 +80,8 @@ print(
             "root": root,
             "dir": target,
             "installed": installed,
-            "stale_skills": stale,
+            "missing_stores": missing_stores,
+            "missing_sites": missing_sites,
         }
     )
 )

@@ -354,6 +354,9 @@ pub(crate) struct Inner {
     /// The pass-through values of this start's `rlm.spawn(env=...)`, masked
     /// in the output streamed back to the model (best effort).
     redactions: Mutex<Arc<Vec<String>>>,
+    /// Per stream (cell id, stdout/stderr): a masked chunk's held tail that
+    /// may begin a pass-through value split across chunks (`events.rs`).
+    redaction_carries: Mutex<Vec<(Option<String>, StreamName, String)>>,
     /// The `kernel_env` frame a remote kernel reads from stdin right after
     /// the launcher's stdio sentinel, taken by the stdout reader when the
     /// sentinel arrives (`remote.rs`).
@@ -435,6 +438,7 @@ impl ReplKernelManager {
             resolved_python: Mutex::new(None),
             resolved_remote: Mutex::new(None),
             redactions: Mutex::new(Arc::new(Vec::new())),
+            redaction_carries: Mutex::new(Vec::new()),
             remote_env_frame: Mutex::new(None),
             guarded: Mutex::new(Guarded {
                 state: KernelState::Idle,

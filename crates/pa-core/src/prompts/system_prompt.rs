@@ -278,11 +278,11 @@ fn environment_section(options: &BuildSystemPromptOptions) -> String {
         .replace('\\', "/");
     let mut lines = vec![format!("Current date: {}", today())];
     if let Some(remote) = options.remote_kernel {
-        let host = &remote.host;
+        let host = remote.host();
         lines.push(format!(
                 "Kernel host: {host} (remote, over SSH). Your Python REPL, `bash`, and every file you read or write run on {host}, not on the machine that runs your agent loop and model calls."
             ));
-        lines.push(match &remote.cwd {
+        lines.push(match remote.cwd() {
             Some(cwd) => format!("Working directory: {cwd} (on {host})"),
             None => format!("Working directory: the remote login directory on {host}"),
         });
@@ -293,6 +293,9 @@ fn environment_section(options: &BuildSystemPromptOptions) -> String {
                 "Not available on this remote kernel yet: MCP servers, `rlm.harness`, refinements, goals, heartbeats, `agent_observe`, `rlm.create_session`, and `bash(..., persistent=True)`; calling them raises an error that says so."
                     .to_string(),
             );
+        lines.push(format!(
+            "Paths starting with `~/` (such as the skill locations below) are under your home directory on {host}; expand them with `os.path.expanduser` in Python."
+        ));
     } else {
         lines.push(format!("Working directory: {cwd}"));
         lines.push(format!("Conversation log: {messages_path}"));

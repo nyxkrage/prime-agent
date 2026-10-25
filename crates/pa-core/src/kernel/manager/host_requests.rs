@@ -67,7 +67,7 @@ impl Inner {
         if let Some(remote) = &self.options.remote {
             if let Some(refusal) = crate::kernel::remote_policy::remote_host_request_refusal(
                 request_type,
-                &remote.host,
+                remote.host(),
             ) {
                 return Err(anyhow!(refusal));
             }

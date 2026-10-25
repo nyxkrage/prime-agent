@@ -1,8 +1,12 @@
 """Remote (SSH) kernel concerns on the runtime side.
 
 A kernel started by ``rlm.spawn(..., host=...)`` runs on another machine
-while its agent loop stays on the orchestrator's. The host marks it with
-``RLM_REMOTE_HOST``; this module then:
+while its agent loop stays on the orchestrator's. The launcher marks it with
+``RLM_REMOTE_HOST`` (plus its install dir, skill ids, and heartbeat
+timeout); this module takes those markers out of ``os.environ`` before any
+user code runs, so no child process (a ``bash`` command, a ``prime-agent``
+started from it) inherits them and mistakes its own kernels for remote
+ones. It then:
 
 - refuses features whose state lives on the orchestrator's machine
   (``rlm.harness``, ``bash(persistent=True)``) with a clear error, never a
@@ -13,8 +17,13 @@ while its agent loop stays on the orchestrator's. The host marks it with
 - journals its ``bash()`` process groups under the install root and reaps
   the groups of kernels that died without cleaning up (SIGKILL, OOM) on
   the next remote kernel start;
-- holds a shared lock on its install dir so the installer's garbage
-  collection never removes an install a kernel is running from;
+- holds a shared lock on its install dir and on each of its skill dirs,
+  so the installer's garbage collection never removes what a running
+  kernel uses;
+- pins its Python skills: each skill version is installed under its own
+  content-hashed dir, which goes on ``sys.path`` ahead of the shared venv,
+  so a concurrent session installing another version of the same skill
+  never changes this kernel's code;
 - reads its ``rlm.spawn(env=...)`` values from one ``kernel_env`` frame,
   the first line the host writes to its stdin, and applies them to
   ``os.environ`` before any user code runs. The values never ride the ssh
@@ -27,6 +36,7 @@ from __future__ import annotations
 import atexit
 import json
 import os
+import select
 import sys
 import threading
 import time
@@ -35,14 +45,24 @@ from collections.abc import Callable
 REMOTE_HOST_ENV = "RLM_REMOTE_HOST"
 INSTALL_DIR_ENV = "RLM_REMOTE_INSTALL_DIR"
 HEARTBEAT_TIMEOUT_ENV = "RLM_HOST_HEARTBEAT_TIMEOUT_MS"
+SKILLS_ENV = "RLM_REMOTE_SKILLS"
+# The launcher's wiring for this runtime only: taken out of os.environ by
+# begin(), never inherited by a child process.
+_MARKER_ENV = (REMOTE_HOST_ENV, INSTALL_DIR_ENV, HEARTBEAT_TIMEOUT_ENV, SKILLS_ENV)
+# How long the watchdog lets the reader thread catch up on pending stdin
+# before it treats a stale heartbeat as a lost host.
+_READER_GRACE_S = 2.0
 
 KERNEL_ENV_FRAME = "kernel_env"
 # Far above the host's 64 KiB payload cap, JSON escaping included.
 _MAX_KERNEL_ENV_FRAME_BYTES = 1 << 20
 
 _last_host_frame = time.monotonic()
-# The shared flock on the install's .inuse file, held for the kernel's life.
-_in_use_fd: int | None = None
+# The shared flocks on the install's and the skill dirs' .inuse files, held
+# for the kernel's life.
+_in_use_fds: list[int] = []
+# The launcher markers begin() took out of os.environ.
+_markers: dict[str, str] = {}
 
 
 class RemoteKernelRefusal(RuntimeError):
@@ -51,7 +71,7 @@ class RemoteKernelRefusal(RuntimeError):
 
 def remote_host() -> str | None:
     """The SSH host this kernel runs on, or None for a local kernel."""
-    host = (os.environ.get(REMOTE_HOST_ENV) or "").strip()
+    host = (_markers.get(REMOTE_HOST_ENV) or "").strip()
     return host or None
 
 
@@ -70,10 +90,20 @@ def note_host_frame() -> None:
     _last_host_frame = time.monotonic()
 
 
-def _heartbeat_watchdog(timeout_s: float, on_silence: Callable[[], None]) -> None:
+def _heartbeat_watchdog(timeout_s: float, stdin_fd: int, on_silence: Callable[[], None]) -> None:
     while True:
         silent = time.monotonic() - _last_host_frame
         if silent >= timeout_s:
+            # A C call that holds the GIL past the timeout starves the reader
+            # thread while heartbeats wait unread in the pipe: pending input
+            # means the host is alive, so the reader gets a moment to catch
+            # up before the silence counts. (EOF also reads as pending; the
+            # grace then just delays an exit the reader starts anyway.)
+            if select.select([stdin_fd], [], [], 0)[0]:
+                time.sleep(_READER_GRACE_S)
+                if time.monotonic() - _last_host_frame < timeout_s:
+                    continue
+            silent = time.monotonic() - _last_host_frame
             print(
                 f"prime-agent: no frame from the host for {silent:.0f}s; the connection is gone, exiting",
                 file=sys.__stderr__,
@@ -149,14 +179,16 @@ def reap_stale_kernels(run_dir: str, own_pid: int) -> list[int]:
     return reaped
 
 
-def _hold_install(install_dir: str) -> None:
+def _hold(directory: str) -> None:
+    """Hold a shared flock on ``directory``'s .inuse file for the kernel's
+    life and touch its .last-used: the installer's garbage collection skips
+    a dir whose .inuse it cannot lock exclusively."""
     import fcntl  # POSIX only: remote kernels never run on Windows
 
-    global _in_use_fd
-    fd = os.open(os.path.join(install_dir, ".inuse"), os.O_RDWR | os.O_CREAT, 0o600)
+    fd = os.open(os.path.join(directory, ".inuse"), os.O_RDWR | os.O_CREAT, 0o600)
     fcntl.flock(fd, fcntl.LOCK_SH)
-    _in_use_fd = fd
-    last_used = os.path.join(install_dir, ".last-used")
+    _in_use_fds.append(fd)
+    last_used = os.path.join(directory, ".last-used")
     with open(last_used, "a"):
         pass
     os.utime(last_used)
@@ -188,17 +220,22 @@ def read_kernel_env(stdin_fd: int) -> dict[str, str]:
     return env
 
 
-def apply_kernel_env(stdin_fd: int) -> None:
-    """Apply a remote kernel's ``rlm.spawn(env=...)`` values; a no-op locally
-    (a local kernel gets them in its process env)."""
+def begin(stdin_fd: int) -> None:
+    """Take the launcher's markers out of ``os.environ`` (this module keeps
+    them), then apply a remote kernel's ``rlm.spawn(env=...)`` values from
+    its first stdin frame. A local kernel reads no frame (it gets its spawn
+    env in its process env)."""
+    _markers.clear()
+    _markers.update({key: os.environ.pop(key) for key in _MARKER_ENV if key in os.environ})
     if remote_host() is None:
         return
     os.environ.update(read_kernel_env(stdin_fd))
 
 
-def configure(on_silence: Callable[[], None]) -> None:
+def configure(stdin_fd: int, on_silence: Callable[[], None]) -> None:
     """Set up a remote kernel before the protocol starts; a no-op locally.
 
+    ``stdin_fd`` is the protocol input the heartbeats arrive on.
     ``on_silence`` runs on the watchdog thread when the host goes silent;
     it must end the process."""
     if remote_host() is None:
@@ -206,9 +243,29 @@ def configure(on_silence: Callable[[], None]) -> None:
     # The owner is the remote sshd session this kernel was exec'd from: the
     # owner watchdog exits when it goes away, and journal records name it.
     os.environ["PRIME_AGENT_KERNEL_OWNER_PID"] = str(os.getppid())
-    install_dir = (os.environ.get(INSTALL_DIR_ENV) or "").strip()
+    install_dir = (_markers.get(INSTALL_DIR_ENV) or "").strip()
     if install_dir:
-        _hold_install(install_dir)
+        _hold(install_dir)
+        # The skill pins: ``<root>/skills/<id>/`` holds a skill's files (the
+        # prompt's SKILL.md location) and ``<install>/skill-sites/<id>/`` the
+        # Python skill built from them. An id is the skill dir's name plus
+        # its content hash, so another session's version of a skill is
+        # another dir; the sites go on sys.path ahead of the shared venv.
+        root = os.path.dirname(install_dir.rstrip("/"))
+        sites = []
+        for skill_id in (_markers.get(SKILLS_ENV) or "").split():
+            store = os.path.join(root, "skills", skill_id)
+            if os.path.isdir(store):
+                _hold(store)
+            site = os.path.join(install_dir, "skill-sites", skill_id)
+            if os.path.isdir(site):
+                _hold(site)
+                sites.append(site)
+        position = next(
+            (index for index, entry in enumerate(sys.path) if entry.rstrip("/").endswith("site-packages")),
+            len(sys.path),
+        )
+        sys.path[position:position] = sites
         run_dir = _run_dir(install_dir)
         os.makedirs(run_dir, exist_ok=True)
         pid = os.getpid()
@@ -227,7 +284,7 @@ def configure(on_silence: Callable[[], None]) -> None:
                     pass
 
         atexit.register(forget)
-    raw = os.environ.get(HEARTBEAT_TIMEOUT_ENV, "")
+    raw = _markers.get(HEARTBEAT_TIMEOUT_ENV, "")
     try:
         timeout_ms = int(raw)
     except ValueError:
@@ -235,7 +292,7 @@ def configure(on_silence: Callable[[], None]) -> None:
     if timeout_ms > 0:
         threading.Thread(
             target=_heartbeat_watchdog,
-            args=(timeout_ms / 1000.0, on_silence),
+            args=(timeout_ms / 1000.0, stdin_fd, on_silence),
             daemon=True,
             name="prime-agent-host-heartbeat",
         ).start()
@@ -243,7 +300,7 @@ def configure(on_silence: Callable[[], None]) -> None:
 
 __all__ = [
     "RemoteKernelRefusal",
-    "apply_kernel_env",
+    "begin",
     "configure",
     "note_host_frame",
     "read_kernel_env",

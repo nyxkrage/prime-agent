@@ -202,8 +202,8 @@ async def spawn(
     child; defaults to the remote login directory or the parent's cwd).
     ``env`` sets variables in the child's kernel environment (local or remote):
     a ``str`` value is set as given; ``None`` copies the orchestrator's value
-    of that name, resolved by the host, so the value never appears in your
-    code, the transcript, or logs (a variable the orchestrator lacks fails the
+    of that name, resolved by the host, so the value is never part of your
+    code or the spawn request (a variable the orchestrator lacks fails the
     spawn). Names match ``[A-Z_][A-Z0-9_]*``; ``RLM_*``, ``PRIME_AGENT_*``,
     ``PYTHON*``, ``PATH``, ``HOME``, and ``VIRTUAL_ENV`` are reserved. A child
     never inherits its parent's ``env``: each spawn names its variables
@@ -214,7 +214,17 @@ async def spawn(
     """
     if not isinstance(prompt, str):
         raise TypeError(f"prompt must be str, got {type(prompt).__name__}")
-    env_kwarg = _spawn_env_kwarg(env)
+    # The shape is checked early here; the host validates names, reserved
+    # names, and sizes authoritatively. A ``None`` value stays ``None`` (JSON
+    # null), so a pass-through never carries a value.
+    if env is not None:
+        if not isinstance(env, dict):
+            raise TypeError(f"env must be a dict of str to str | None, got {type(env).__name__}")
+        for key, value in env.items():
+            if not isinstance(key, str):
+                raise TypeError(f"env names must be str, got {type(key).__name__}")
+            if value is not None and not isinstance(value, str):
+                raise TypeError(f"env value for {key} must be a str or None, got {type(value).__name__}")
     kwargs: dict[str, Any] = {"name": name}
     if model is not None:
         kwargs["model"] = model
@@ -224,29 +234,11 @@ async def spawn(
         kwargs["host"] = host
     if cwd is not None:
         kwargs["cwd"] = cwd
-    if env_kwarg is not None:
-        kwargs["env"] = env_kwarg
+    if env is not None:
+        kwargs["env"] = dict(env)
     # Wire type stays "rlm.run" so kernels and hosts of different versions stay compatible.
     payload = await host_request("rlm.run", {"prompt": prompt, "kwargs": kwargs})
     return _spawn_handle_from_payload(payload)
-
-
-def _spawn_env_kwarg(env: Any) -> dict[str, str | None] | None:
-    """Check ``rlm.spawn(env=...)``'s shape early (the host validates names,
-    reserved names, and sizes authoritatively); ``None`` values stay ``None``
-    (JSON null), so a pass-through never carries a value."""
-    if env is None:
-        return None
-    if not isinstance(env, dict):
-        raise TypeError(f"env must be a dict of str to str | None, got {type(env).__name__}")
-    checked: dict[str, str | None] = {}
-    for key, value in env.items():
-        if not isinstance(key, str):
-            raise TypeError(f"env names must be str, got {type(key).__name__}")
-        if value is not None and not isinstance(value, str):
-            raise TypeError(f"env value for {key} must be a str or None, got {type(value).__name__}")
-        checked[key] = value
-    return checked
 
 
 def _model_from_payload(payload: Any) -> RLMModel:

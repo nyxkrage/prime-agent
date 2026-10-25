@@ -15,9 +15,11 @@
 //! Threat model: a value passed to a host is trusted to that host (root
 //! there can read the kernel's environment), and the model can reach the
 //! orchestrator's environment anyway (a local kernel inherits it).
-//! Pass-through exists to keep values out of transcripts and logs, and
-//! [`redact`] masks pass-through values the kernel prints back as best
-//! effort hygiene, not as a security boundary.
+//! Pass-through exists to keep values out of the model's code and the spawn
+//! request, and [`redact`] masks pass-through values the kernel sends back
+//! (streams, results, errors, display payloads such as diffs, and
+//! `agent_message.send` text) as best effort hygiene, not as a security
+//! boundary: a value the kernel transforms (reversed, encoded) passes.
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -29,18 +31,18 @@ use crate::kernel::remote_policy::{
 };
 
 /// The global setting that turns pass-through to remote hosts off.
-pub const REMOTE_ENV_PASSTHROUGH_SETTING: &str = "remoteEnvPassthrough";
+pub(crate) const REMOTE_ENV_PASSTHROUGH_SETTING: &str = "remoteEnvPassthrough";
 
 /// Pass-through values shorter than this are not redacted from kernel
 /// output: masking every `"1"` or `"true"` would mangle unrelated text.
-pub const REDACTION_MIN_CHARS: usize = 8;
+pub(crate) const REDACTION_MIN_CHARS: usize = 8;
 
 /// The mask that replaces a pass-through value in kernel output.
-pub const REDACTION_MASK: &str = "***";
+pub(crate) const REDACTION_MASK: &str = "***";
 
 /// One `env=` entry.
 #[derive(Clone, PartialEq, Eq)]
-pub enum KernelEnvValue {
+pub(crate) enum KernelEnvValue {
     /// Set to this value.
     Literal(String),
     /// Copy the orchestrator's value of the same name.
@@ -52,7 +54,7 @@ pub enum KernelEnvValue {
 /// to a remote host the `remoteEnvPassthrough` setting turns off. Typed so
 /// the spawn seam counts refusals.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KernelEnvRefusal(pub String);
+pub struct KernelEnvRefusal(pub(crate) String);
 
 impl std::fmt::Display for KernelEnvRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -205,6 +207,20 @@ impl KernelEnvOverrides {
         }
     }
 
+    /// Check that every pass-through resolves against `orchestrator_env`
+    /// (and the resolved payload fits the cap), so a spawn fails naming the
+    /// missing variable instead of the child's first kernel start.
+    ///
+    /// # Errors
+    ///
+    /// Returns the refusal [`Self::resolve`] would.
+    pub fn check_resolvable(
+        &self,
+        orchestrator_env: impl Fn(&str) -> Option<String>,
+    ) -> Result<(), KernelEnvRefusal> {
+        self.resolve(orchestrator_env).map(drop)
+    }
+
     /// Fill in the pass-through values from `orchestrator_env` (the
     /// environment a local kernel gets).
     ///
@@ -212,7 +228,7 @@ impl KernelEnvOverrides {
     ///
     /// Returns a refusal naming a pass-through variable the orchestrator
     /// does not have, or the resolved payload's size over the cap.
-    pub fn resolve(
+    pub(crate) fn resolve(
         &self,
         orchestrator_env: impl Fn(&str) -> Option<String>,
     ) -> Result<ResolvedKernelEnv, KernelEnvRefusal> {
@@ -252,7 +268,7 @@ impl KernelEnvOverrides {
 /// The overrides with their values filled in: what a kernel launcher
 /// applies. Its `Debug` never prints a value.
 #[derive(Clone, Default)]
-pub struct ResolvedKernelEnv {
+pub(crate) struct ResolvedKernelEnv {
     values: Vec<(String, String)>,
     redactions: Vec<String>,
 }
@@ -268,22 +284,22 @@ impl std::fmt::Debug for ResolvedKernelEnv {
 impl ResolvedKernelEnv {
     /// The variables to set, by name.
     #[must_use]
-    pub fn values(&self) -> &[(String, String)] {
+    pub(crate) fn values(&self) -> &[(String, String)] {
         &self.values
     }
 
     /// The pass-through values long enough to mask in kernel output
     /// ([`REDACTION_MIN_CHARS`]), longest first.
     #[must_use]
-    pub fn redactions(&self) -> &[String] {
+    pub(crate) fn redactions(&self) -> &[String] {
         &self.redactions
     }
 }
 
-/// Mask every occurrence of `values` (longest first) in `text`. Best
-/// effort: a value split across two output chunks passes unmasked.
+/// Mask every occurrence of `values` (longest first) in `text`. One chunk
+/// at a time; a stream's chunks go through [`redact_stream_chunk`].
 #[must_use]
-pub fn redact<'a>(text: &'a str, values: &[String]) -> Cow<'a, str> {
+pub(crate) fn redact<'a>(text: &'a str, values: &[String]) -> Cow<'a, str> {
     let mut text = Cow::Borrowed(text);
     for value in values {
         if text.contains(value.as_str()) {
@@ -291,6 +307,51 @@ pub fn redact<'a>(text: &'a str, values: &[String]) -> Cow<'a, str> {
         }
     }
     text
+}
+
+/// Mask one chunk of a stream whose chunks may split a value: `carry` (the
+/// previous chunk's held tail) is prepended, and the masked text's longest
+/// tail that could begin a value is held back in `carry` for the next
+/// chunk. Returns the text to emit now; the caller emits a leftover
+/// `carry` as-is when the stream ends (or another stream interleaves).
+pub(crate) fn redact_stream_chunk(carry: &mut String, chunk: &str, values: &[String]) -> String {
+    let text = std::mem::take(carry) + chunk;
+    let masked = redact(&text, values).into_owned();
+    let held = masked
+        .char_indices()
+        .map(|(start, _)| start)
+        .find(|start| {
+            let tail = &masked[*start..];
+            values
+                .iter()
+                .any(|value| value.len() > tail.len() && value.starts_with(tail))
+        })
+        .unwrap_or(masked.len());
+    *carry = masked[held..].to_string();
+    masked[..held].to_string()
+}
+
+/// Mask `values` in every string of a JSON payload (a display bundle, a host
+/// request), in place.
+pub(crate) fn redact_json(payload: &mut Value, values: &[String]) {
+    match payload {
+        Value::String(text) => {
+            if let Cow::Owned(masked) = redact(text, values) {
+                *text = masked;
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                redact_json(item, values);
+            }
+        }
+        Value::Object(object) => {
+            for item in object.values_mut() {
+                redact_json(item, values);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
 }
 
 fn json_type_name(value: &Value) -> &'static str {
@@ -442,6 +503,46 @@ mod tests {
         assert_eq!(
             passthrough.check_remote_passthrough(false).unwrap_err().0,
             "rlm.spawn env HF_TOKEN=None would pass the orchestrator's value to a remote host, and the global remoteEnvPassthrough setting is off (or unreadable); pass a literal value, or set remoteEnvPassthrough to true in the global settings"
+        );
+    }
+
+    /// A value split across stream chunks is held back until it can be
+    /// masked whole; text that only looks like a value's start is emitted
+    /// once the next chunk shows it is not one.
+    #[test]
+    fn stream_chunks_that_split_a_value_are_masked_whole() {
+        let values = vec!["hf_secret_value".to_string()];
+        let mut carry = String::new();
+        let emitted: Vec<String> = ["token: hf_sec", "ret_value done hf_", "x end"]
+            .iter()
+            .map(|chunk| redact_stream_chunk(&mut carry, chunk, &values))
+            .collect();
+        assert_eq!(emitted, ["token: ", "*** done ", "hf_x end"]);
+        assert_eq!(carry, "");
+        // A held tail stays in the carry until the stream ends.
+        assert_eq!(
+            redact_stream_chunk(&mut carry, "ends in hf_s", &values),
+            "ends in "
+        );
+        assert_eq!(carry, "hf_s");
+    }
+
+    #[test]
+    fn json_payloads_are_masked_in_every_string() {
+        let values = vec!["hf_secret_value".to_string()];
+        let mut payload = json!({
+            "path": "/srv/.env",
+            "diff": ["-TOKEN=old", "+TOKEN=hf_secret_value"],
+            "nested": { "message": "use hf_secret_value", "count": 3 },
+        });
+        redact_json(&mut payload, &values);
+        assert_eq!(
+            payload,
+            json!({
+                "path": "/srv/.env",
+                "diff": ["-TOKEN=old", "+TOKEN=***"],
+                "nested": { "message": "use ***", "count": 3 },
+            })
         );
     }
 

@@ -178,10 +178,7 @@ fn remote_manager_options(host: &str, cwd: Option<String>) -> KernelManagerOptio
     KernelManagerOptions {
         python_skills: vec![edit_skill()],
         env,
-        remote: Some(RemoteKernelTarget {
-            host: host.to_string(),
-            cwd,
-        }),
+        remote: Some(RemoteKernelTarget::validated(host.to_string(), cwd).expect("valid target")),
         ..KernelManagerOptions::default()
     }
 }
@@ -270,10 +267,8 @@ async fn a_remote_kernel_gets_hardened_ssh_and_only_allowlisted_env() {
             "PRIME_AGENT_CODING_AGENT_DIR",
             "PRIME_AGENT_KERNEL_OWNER_PID",
             "PRIME_AGENT_INTERNAL_ORPHAN_PROCESS_JOURNAL",
-            "RLM_REMOTE_HOST",
-            "RLM_REMOTE_INSTALL_DIR",
-            "RLM_HOST_HEARTBEAT_TIMEOUT_MS",
-        ])
+        ]),
+        "the launcher's RLM_REMOTE_* markers stay out of the kernel's os.environ"
     );
     assert_eq!(
         lines[3],
@@ -307,6 +302,7 @@ async fn a_remote_kernel_gets_hardened_ssh_and_only_allowlisted_env() {
                 "USER",
                 "SSH_AUTH_SOCK",
                 "LANG",
+                "KRB5CCNAME",
                 "PWD",
                 "SHLVL",
                 "_",
@@ -527,8 +523,10 @@ async fn login_shell_output_before_the_kernel_is_ignored() {
         .expect("shutdown");
 }
 
-#[tokio::test]
-async fn hosts_and_cwds_outside_the_allowlist_never_reach_ssh() {
+/// A target is only built through `RemoteKernelTarget::validated`, so a
+/// host or cwd outside the allowlist never reaches a manager, let alone ssh.
+#[test]
+fn hosts_and_cwds_outside_the_allowlist_are_refused() {
     for (host, cwd, expected) in [
         (
             "box$(touch${IFS}/tmp/pwned)",
@@ -556,17 +554,10 @@ async fn hosts_and_cwds_outside_the_allowlist_never_reach_ssh() {
             "rlm.spawn cwd must be an absolute or ~-relative remote path, got \"work\"",
         ),
     ] {
-        let manager = remote_manager(host, cwd.map(str::to_string));
-        let error = manager
-            .start(KernelStartOptions::default())
-            .await
+        let error = RemoteKernelTarget::validated(host.to_string(), cwd.map(str::to_string))
             .expect_err("refused");
         assert_eq!(format!("{error:#}"), expected);
     }
-    assert!(
-        !fake_ssh_base().join("argv-cwd@box").exists(),
-        "ssh never ran"
-    );
 }
 
 #[tokio::test]
@@ -612,7 +603,7 @@ async fn concurrent_installs_build_once_recover_and_collect_garbage() {
     assert_eq!(run(&second, "print(2)").await.trim(), "2");
     let install_dir = run(
         &first,
-        "import os\nprint(os.environ['RLM_REMOTE_INSTALL_DIR'])",
+        "import os, sys\nprint(os.path.dirname(os.path.dirname(os.path.dirname(sys.executable))))",
     )
     .await;
     let install_dir = PathBuf::from(install_dir.trim());
@@ -721,4 +712,132 @@ async fn a_dropped_connection_fails_the_cell_and_the_remote_kernel_exits() {
         Vec::<i32>::new(),
         "the remote kernel and its bash group exit with the connection"
     );
+}
+
+/// A minimal Python skill package `pa_pinned` whose `VERSION` is `version`,
+/// in a dir named `pinned` (both versions share the skill dir name).
+fn pinned_skill(parent: &Path, version: &str) -> KernelPythonSkill {
+    let package_path = parent.join("pinned");
+    std::fs::create_dir_all(package_path.join("src/pa_pinned")).expect("skill dir");
+    std::fs::write(
+        package_path.join("pyproject.toml"),
+        "[project]\nname = \"pa-pinned\"\nversion = \"0.1.0\"\ndependencies = []\n\n[build-system]\nrequires = [\"hatchling\"]\nbuild-backend = \"hatchling.build\"\n\n[tool.hatch.build.targets.wheel]\npackages = [\"src/pa_pinned\"]\n",
+    )
+    .expect("pyproject");
+    std::fs::write(
+        package_path.join("src/pa_pinned/__init__.py"),
+        format!("VERSION = {version:?}\n"),
+    )
+    .expect("module");
+    std::fs::write(package_path.join("SKILL.md"), "---\nname: pinned\n---\n").expect("skill");
+    KernelPythonSkill {
+        name: "pinned".to_string(),
+        import_name: "pa_pinned".to_string(),
+        pyproject_path: package_path.join("pyproject.toml"),
+        package_path,
+    }
+}
+
+/// Two sessions on one host run two versions of the same skill: the second
+/// install never touches the first kernel's code (each version has its own
+/// pinned dir on its kernel's `sys.path`), and both versions' dirs stay
+/// for garbage collection instead of being removed inline.
+#[tokio::test]
+async fn concurrent_sessions_keep_their_own_skill_versions() {
+    let sources = tempfile::TempDir::new().expect("skill sources");
+    let (one, two) = (sources.path().join("one"), sources.path().join("two"));
+    let mut first = remote_manager_options("a@pins", None);
+    first.python_skills = vec![edit_skill(), pinned_skill(&one, "one")];
+    let first = ReplKernelManager::new(first);
+    start(&first).await;
+    assert_eq!(
+        run(&first, "import pa_pinned\nprint(pa_pinned.VERSION)")
+            .await
+            .trim(),
+        "one"
+    );
+    let mut second = remote_manager_options("b@pins", None);
+    second.python_skills = vec![edit_skill(), pinned_skill(&two, "two")];
+    let second = ReplKernelManager::new(second);
+    start(&second).await;
+    assert_eq!(
+        run(&second, "import pa_pinned\nprint(pa_pinned.VERSION)")
+            .await
+            .trim(),
+        "two"
+    );
+    // The first kernel re-reads its skill from disk: still its own version.
+    assert_eq!(
+        run(
+            &first,
+            "import importlib\nimportlib.reload(pa_pinned)\nprint(pa_pinned.VERSION)"
+        )
+        .await
+        .trim(),
+        "one"
+    );
+    let stores: BTreeSet<String> = std::fs::read_dir(remote_root("pins").join("skills"))
+        .expect("skill store")
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().to_string())
+        .filter(|name| name.starts_with("pinned-") && !name.contains('.'))
+        .collect();
+    assert_eq!(stores.len(), 2, "both versions stay: {stores:?}");
+    // The uploaded skill dirs carry the skill's files but never its
+    // dotfiles (the edit skill ships a .gitignore).
+    let edit_store = std::fs::read_dir(remote_root("pins").join("skills"))
+        .expect("skill store")
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("edit-")
+        })
+        .expect("the edit skill is uploaded");
+    assert!(edit_store.join("SKILL.md").is_file());
+    assert!(
+        !edit_store.join(".gitignore").exists(),
+        "a dotfile was uploaded"
+    );
+    for manager in [&first, &second] {
+        manager
+            .shutdown(KernelShutdownOptions::default())
+            .await
+            .expect("shutdown");
+    }
+}
+
+/// A start that fails before `ready` drops the manager's cached install, so
+/// the next start probes the host again (and rebuilds a broken install)
+/// instead of relaunching the cached one forever. (An exit before `ready`
+/// retires the manager anyway; a start that times out keeps it.)
+#[tokio::test]
+async fn a_failed_start_reprovisions_a_broken_install() {
+    let manager = remote_manager("again@rebuild", None);
+    start(&manager).await;
+    let install_dir = run(
+        &manager,
+        "import os, sys\nprint(os.path.dirname(os.path.dirname(os.path.dirname(sys.executable))))",
+    )
+    .await;
+    let install_dir = PathBuf::from(install_dir.trim());
+    // The install breaks on the host: its interpreter hangs and its stamp is
+    // gone. (The venv python is a symlink: unlink it, never write through.)
+    let python = install_dir.join("venv/bin/python");
+    std::fs::remove_file(&python).expect("unlink the venv python");
+    std::fs::write(&python, "#!/bin/sh\nexec sleep 45\n").expect("hanging python");
+    std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    std::fs::remove_file(install_dir.join(".installed")).expect("drop the stamp");
+    // The cached install never reaches `ready`: this start times out...
+    assert!(manager.restart().await.is_err());
+    // ...and the next one probes again, rebuilds, and runs.
+    start(&manager).await;
+    assert_eq!(run(&manager, "print('rebuilt')").await.trim(), "rebuilt");
+    assert_eq!(base_builds("rebuild"), 2);
+    manager
+        .shutdown(KernelShutdownOptions::default())
+        .await
+        .expect("shutdown");
 }

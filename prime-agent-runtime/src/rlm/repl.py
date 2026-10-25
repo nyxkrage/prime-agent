@@ -1740,13 +1740,13 @@ def main() -> None:
     # A remote kernel's spawn env is the first frame on stdin; it lands in
     # os.environ before anything else runs (the reader thread starts later).
     try:
-        remote_module.apply_kernel_env(stdin_fd)
+        remote_module.begin(stdin_fd)
     except Exception as err:  # noqa: BLE001
         os.write(_host_stderr_fd, f"prime-agent: {type(err).__name__}: {err}\n".encode())
         os._exit(1)
     # A remote kernel re-points its owner at the remote sshd session and arms
     # the host heartbeat watchdog, so it must run before the owner watchdog.
-    remote_module.configure(_exit_ownerless)
+    remote_module.configure(stdin_fd, _exit_ownerless)
     _start_owner_watchdog()
 
     # Alias the executing module so an in-cell `from rlm.repl import emit`

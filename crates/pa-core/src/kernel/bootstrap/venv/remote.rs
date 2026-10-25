@@ -1,13 +1,17 @@
 //! The remote kernel environment concern: the remote counterpart of
 //! `probe.rs`/`layout.rs`. It probes an SSH host for a supported Python,
-//! uploads the bundled runtime (plus the session's Python skills), and
-//! builds a venv under `~/.prime/agent/remote/<key>/` on the remote.
+//! uploads the bundled runtime plus the session's skills, and builds a venv
+//! under `~/.prime/agent/remote/<key>/` on the remote.
 //!
-//! The base install (runtime + extras) is keyed on its content, and each
-//! skill is stamped by its own content hash, so a skill change reinstalls
-//! only that skill. Installs run under an flock on the remote
-//! (`remote_install.py`), and unused old installs this tool created are
-//! garbage-collected there.
+//! The base install (runtime + extras) is keyed on its content. Every
+//! model-visible skill dir (markdown and Python) is uploaded once per
+//! content to `<root>/skills/<id>/`, where an id is the dir's name plus its
+//! content hash: the remote child's prompt points its skill inventory
+//! there. A Python skill is also built into `<key>/skill-sites/<id>/`,
+//! which its kernel puts on `sys.path`, so two sessions running different
+//! versions of one skill each import their own. Installs run under flocks
+//! on the remote (`remote_install.py`); a skill dir or install no running
+//! kernel holds is garbage-collected there once idle, never inline.
 //!
 //! The system `ssh` binary and config are used (keys, agents, `ProxyJump`,
 //! an existing control master), hardened by the policy in
@@ -46,7 +50,7 @@ const MIN_REMOTE_PYTHON: (u64, u64) = (3, 11);
 const DEFAULT_REMOTE_INSTALL_ROOT: &str = "~/.prime/agent/remote";
 /// Bumped when the remote layout or install script changes incompatibly:
 /// part of the base key, so a bump installs fresh next to the old layout.
-const REMOTE_LAYOUT_VERSION: &str = "v2";
+const REMOTE_LAYOUT_VERSION: &str = "v3";
 
 const PROBE_SCRIPT: &str = include_str!("remote_probe.py");
 const INSTALL_SCRIPT: &str = include_str!("remote_install.py");
@@ -169,32 +173,42 @@ pub(crate) struct RemoteHost {
     install_root: String,
 }
 
+/// A remote setting from `env` (the kernel env), then the process env.
+fn remote_setting(env: &HashMap<String, String>, key: &str) -> Option<String> {
+    env.get(key)
+        .cloned()
+        .or_else(|| std::env::var(key).ok())
+        .filter(|value| !value.is_empty())
+}
+
+/// The remote install root: `PRIME_AGENT_REMOTE_INSTALL_ROOT` (absolute),
+/// else `~/.prime/agent/remote` (the remote expands the `~`).
+fn remote_install_root(env: &HashMap<String, String>) -> anyhow::Result<String> {
+    match remote_setting(env, "PRIME_AGENT_REMOTE_INSTALL_ROOT") {
+        Some(root) => {
+            if !root.starts_with('/') {
+                bail!(
+                    "PRIME_AGENT_REMOTE_INSTALL_ROOT must be an absolute remote path, got {root:?}"
+                );
+            }
+            validate_remote_path(&root, "PRIME_AGENT_REMOTE_INSTALL_ROOT")?;
+            Ok(root)
+        }
+        None => Ok(DEFAULT_REMOTE_INSTALL_ROOT.to_string()),
+    }
+}
+
 impl RemoteHost {
     /// Validate `host` and resolve the ssh binary and install root from
     /// `env` (the kernel env), then the process env.
     pub(crate) fn new(host: &str, env: &HashMap<String, String>) -> anyhow::Result<Self> {
         let destination = SshDestination::parse(host)?;
-        let setting = |key: &str| {
-            env.get(key)
-                .cloned()
-                .or_else(|| std::env::var(key).ok())
-                .filter(|value| !value.is_empty())
-        };
-        let ssh_program = setting("PRIME_AGENT_SSH").unwrap_or_else(|| "ssh".to_string());
-        let install_root = match setting("PRIME_AGENT_REMOTE_INSTALL_ROOT") {
-            Some(root) => {
-                if !root.starts_with('/') {
-                    bail!("PRIME_AGENT_REMOTE_INSTALL_ROOT must be an absolute remote path, got {root:?}");
-                }
-                validate_remote_path(&root, "PRIME_AGENT_REMOTE_INSTALL_ROOT")?;
-                root
-            }
-            None => DEFAULT_REMOTE_INSTALL_ROOT.to_string(),
-        };
+        let ssh_program =
+            remote_setting(env, "PRIME_AGENT_SSH").unwrap_or_else(|| "ssh".to_string());
         Ok(Self {
             destination,
             ssh_program: ssh_program.into(),
-            install_root,
+            install_root: remote_install_root(env)?,
         })
     }
 
@@ -258,6 +272,9 @@ pub(crate) struct RemoteKernelInstall {
     pub(crate) root: String,
     /// This install's dir (`<root>/<key>`).
     pub(crate) dir: String,
+    /// The ids of this session's skill dirs (`<root>/skills/<id>/`): the
+    /// kernel holds them and pins its Python skills' sites by them.
+    pub(crate) skill_ids: Vec<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -271,7 +288,12 @@ struct ProbeReport {
     root: String,
     dir: String,
     installed: bool,
-    stale_skills: Vec<String>,
+    /// Skill ids whose files are not (completely) on the remote yet.
+    #[serde(default)]
+    missing_stores: Vec<String>,
+    /// Python skill ids whose pinned site is not built in this install yet.
+    #[serde(default)]
+    missing_sites: Vec<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -291,15 +313,6 @@ struct UploadFile {
     path: String,
     bytes: Vec<u8>,
     mode: u32,
-}
-
-/// The upload payload: the base (runtime sources) keyed by its content plus
-/// the extras, and each skill keyed by its own content.
-struct UploadBundle {
-    base: Vec<UploadFile>,
-    base_key: String,
-    /// Skill dir name -> (content hash, files under `skills/<name>-<hash>/`).
-    skills: BTreeMap<String, (String, Vec<UploadFile>)>,
 }
 
 /// Read `sources` (archive path, local file) into upload files and hash
@@ -326,7 +339,10 @@ fn read_upload_files(
     Ok(files)
 }
 
-/// Every file of a package tree except caches, build output, and hidden dirs.
+/// Every file of a package tree except caches, build output, hidden dirs and
+/// files (`.env`, `.npmrc`, ...), and secret-named files (keys, certs: the
+/// workspace snapshot's denylist). Everything collected goes to every
+/// remote host a child runs on.
 fn collect_package_files(dir: &Path, files: &mut Vec<PathBuf>) -> anyhow::Result<()> {
     for entry in std::fs::read_dir(dir).with_context(|| format!("read {}", dir.display()))? {
         let entry = entry?;
@@ -344,6 +360,8 @@ fn collect_package_files(dir: &Path, files: &mut Vec<PathBuf>) -> anyhow::Result
                 collect_package_files(&path, files)?;
             }
         } else if file_type.is_file()
+            && !name.starts_with('.')
+            && !crate::workspace_snapshot::is_secret_path(&name)
             && !path
                 .extension()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("pyc"))
@@ -354,62 +372,71 @@ fn collect_package_files(dir: &Path, files: &mut Vec<PathBuf>) -> anyhow::Result
     Ok(())
 }
 
-/// Collect the runtime sources and each skill package (with its sibling
-/// skill dependencies, like the local venv) and key them.
-fn collect_upload_bundle(
-    python_skills: &[KernelPythonSkill],
-    extras: &[&str],
-) -> anyhow::Result<UploadBundle> {
-    let runtime = require_runtime_source_dir()?;
-    let mut sources: Vec<(String, PathBuf)> = vec![(
-        "runtime/pyproject.toml".to_string(),
-        runtime.join("pyproject.toml"),
-    )];
-    let mut runtime_files = Vec::new();
-    collect_package_files(&runtime.join("src"), &mut runtime_files)?;
-    for file in runtime_files {
-        let relative = file.strip_prefix(&runtime)?.to_string_lossy().to_string();
-        sources.push((format!("runtime/{relative}"), file));
+/// A skill dir's upload: its id (`<dir name>-<content hash>`) and its files
+/// (archive paths under `skills/<id>/`). The id is the dir's remote name, so
+/// a changed skill is a new dir and the old one stays for running kernels.
+fn skill_upload(dir: &Path) -> anyhow::Result<(String, Vec<UploadFile>)> {
+    let mut paths = Vec::new();
+    collect_package_files(dir, &mut paths)?;
+    let mut sources = Vec::with_capacity(paths.len());
+    for path in paths {
+        let relative = path.strip_prefix(dir)?.to_string_lossy().replace('\\', "/");
+        sources.push((relative, path));
     }
     let mut hasher = sha2::Sha256::new();
-    hasher.update(REMOTE_LAYOUT_VERSION.as_bytes());
-    // The install script defines how the base is built: a changed script
-    // builds fresh next to the old install.
-    hasher.update(INSTALL_SCRIPT.as_bytes());
-    for extra in extras {
-        hasher.update(extra.as_bytes());
-        hasher.update([0]);
+    let mut files = read_upload_files(sources, &mut hasher)?;
+    let label: String = dir
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_default()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let label = if label.is_empty() {
+        "skill".to_string()
+    } else {
+        label
+    };
+    let id = format!("{label}-{}", &format!("{:x}", hasher.finalize())[..16]);
+    for file in &mut files {
+        file.path = format!("skills/{id}/{}", file.path);
     }
-    let base = read_upload_files(sources, &mut hasher)?;
-    let base_key = format!("v2-{}", &format!("{:x}", hasher.finalize())[..16]);
+    Ok((id, files))
+}
 
-    let mut skills = BTreeMap::new();
-    for skill in normalize_python_skills(python_skills) {
-        let name = skill.import_name.clone();
-        if skills.contains_key(&name) {
-            continue;
-        }
-        let package = PathBuf::from(&skill.package_path);
-        let mut files = Vec::new();
-        collect_package_files(&package, &mut files)?;
-        let mut sources = Vec::with_capacity(files.len());
-        for file in files {
-            let relative = file.strip_prefix(&package)?.to_string_lossy().to_string();
-            sources.push((relative, file));
-        }
-        let mut hasher = sha2::Sha256::new();
-        let mut files = read_upload_files(sources, &mut hasher)?;
-        let hash = format!("{:x}", hasher.finalize())[..16].to_string();
-        for file in &mut files {
-            file.path = format!("skills/{name}-{hash}/{}", file.path);
-        }
-        skills.insert(name, (hash, files));
-    }
-    Ok(UploadBundle {
-        base,
-        base_key,
-        skills,
-    })
+/// Where a skill file lands on a remote host: `<root>/skills/<id>/<path in
+/// the skill dir>`, with the root as the remote child's prompt can name it
+/// (`~/.prime/agent/remote` unless `PRIME_AGENT_REMOTE_INSTALL_ROOT` set an
+/// absolute one). The same id the upload uses, so the path exists once the
+/// child's kernel started.
+///
+/// # Errors
+///
+/// Returns an error when the skill dir cannot be read or `skill_file` is not
+/// inside it.
+pub(crate) fn remote_skill_location(skill_dir: &Path, skill_file: &Path) -> anyhow::Result<String> {
+    let relative = skill_file
+        .strip_prefix(skill_dir)
+        .with_context(|| {
+            format!(
+                "skill file {} is outside its dir {}",
+                skill_file.display(),
+                skill_dir.display()
+            )
+        })?
+        .to_string_lossy()
+        .replace('\\', "/");
+    let (id, _) = skill_upload(skill_dir)?;
+    Ok(format!(
+        "{}/skills/{id}/{relative}",
+        remote_install_root(&HashMap::new())?
+    ))
 }
 
 /// Run one remote command to completion, feeding `stdin`; the error names
@@ -464,11 +491,14 @@ fn last_json_line<T: serde::de::DeserializeOwned>(stdout: &str) -> Option<T> {
 }
 
 /// Probe the remote, then upload and install whatever of the base and the
-/// skills is missing or stale there.
+/// skills is missing there. `skill_dirs` are the session's model-visible
+/// skill dirs; the Python skills' packages (and their sibling skill
+/// dependencies) are added and built into pinned sites.
 #[tracing::instrument(skip_all, fields(host = %remote.label()))]
 pub(crate) async fn ensure_remote_kernel_python(
     remote: &RemoteHost,
     python_skills: &[KernelPythonSkill],
+    skill_dirs: &[PathBuf],
     on_progress: Option<&KernelBootstrapProgressHandler>,
 ) -> anyhow::Result<RemoteKernelInstall> {
     let report = |message: &str| {
@@ -480,28 +510,74 @@ pub(crate) async fn ensure_remote_kernel_python(
     // exactly like the local kernel venv.
     let mut extras = vec![STATE_SNAPSHOT_REQUIREMENT];
     extras.extend(default_rlm_extra_uv_args());
-    let skills = python_skills.to_vec();
+    let python_skills = python_skills.to_vec();
+    let skill_dirs = skill_dirs.to_vec();
     let bundle_extras = extras.clone();
-    let bundle =
-        tokio::task::spawn_blocking(move || collect_upload_bundle(&skills, &bundle_extras))
-            .await
-            .map_err(|join| anyhow!("remote upload collection failed: {join}"))??;
+    // The upload: the base (runtime sources, keyed by their content, the
+    // install script, and the extras) under `<base key>/`, and each skill
+    // dir under `skills/<id>/` (id -> files, Python package or not).
+    type SkillUploads = BTreeMap<String, (bool, Vec<UploadFile>)>;
+    let (base, base_key, skills) = tokio::task::spawn_blocking(
+        move || -> anyhow::Result<(Vec<UploadFile>, String, SkillUploads)> {
+            let runtime = require_runtime_source_dir()?;
+            let mut runtime_files = Vec::new();
+            collect_package_files(&runtime.join("src"), &mut runtime_files)?;
+            let mut sources = vec![(
+                "runtime/pyproject.toml".to_string(),
+                runtime.join("pyproject.toml"),
+            )];
+            for file in runtime_files {
+                let relative = file.strip_prefix(&runtime)?.to_string_lossy().to_string();
+                sources.push((format!("runtime/{relative}"), file));
+            }
+            let mut hasher = sha2::Sha256::new();
+            hasher.update(REMOTE_LAYOUT_VERSION.as_bytes());
+            // The install script defines how the base is built: a changed
+            // script builds fresh next to the old install.
+            hasher.update(INSTALL_SCRIPT.as_bytes());
+            for extra in &bundle_extras {
+                hasher.update(extra.as_bytes());
+                hasher.update([0]);
+            }
+            let mut base = read_upload_files(sources, &mut hasher)?;
+            let base_key = format!(
+                "{REMOTE_LAYOUT_VERSION}-{}",
+                &format!("{:x}", hasher.finalize())[..16]
+            );
+            for file in &mut base {
+                file.path = format!("{base_key}/{}", file.path);
+            }
+            let mut skills = SkillUploads::new();
+            let python_dirs: Vec<PathBuf> = normalize_python_skills(&python_skills)
+                .into_iter()
+                .map(|skill| PathBuf::from(skill.package_path))
+                .collect();
+            for (dir, python) in python_dirs
+                .iter()
+                .map(|dir| (dir, true))
+                .chain(skill_dirs.iter().map(|dir| (dir, false)))
+            {
+                let (id, files) = skill_upload(dir)?;
+                let entry = skills.entry(id).or_insert((false, files));
+                entry.0 |= python;
+            }
+            Ok((base, base_key, skills))
+        },
+    )
+    .await
+    .map_err(|join| anyhow!("remote upload collection failed: {join}"))??;
     let label = remote.label();
-    let skill_hashes: BTreeMap<&str, &str> = bundle
-        .skills
+    let skill_kinds: BTreeMap<&str, bool> = skills
         .iter()
-        .map(|(name, (hash, _))| (name.as_str(), hash.as_str()))
+        .map(|(id, (python, _))| (id.as_str(), *python))
         .collect();
+    let skill_kinds = serde_json::to_string(&skill_kinds)?;
     report(&format!("Probing Python on {label}..."));
     let stdout = run_remote(
         remote,
         &python_command(
             PROBE_SCRIPT,
-            &[
-                &remote.install_root,
-                &bundle.base_key,
-                &serde_json::to_string(&skill_hashes)?,
-            ],
+            &[&remote.install_root, &base_key, &skill_kinds],
         ),
         Vec::new(),
         "Python probe",
@@ -534,27 +610,32 @@ pub(crate) async fn ensure_remote_kernel_python(
         python: format!("{}/venv/bin/python", probe.dir),
         root: probe.root.clone(),
         dir: probe.dir.clone(),
+        skill_ids: skills.keys().cloned().collect(),
     };
-    if probe.installed && probe.stale_skills.is_empty() {
+    if probe.installed && probe.missing_stores.is_empty() && probe.missing_sites.is_empty() {
         return Ok(install);
     }
     let mut files = Vec::new();
-    let mut to_install: BTreeMap<String, String> = BTreeMap::new();
-    let UploadBundle {
-        base,
-        base_key,
-        skills,
-    } = bundle;
-    for (name, (hash, skill_files)) in skills {
-        if !probe.installed || probe.stale_skills.contains(&name) {
+    for (id, (_, skill_files)) in skills {
+        if probe.missing_stores.contains(&id) {
             files.extend(skill_files);
-            to_install.insert(name, hash);
         }
     }
     if probe.installed {
+        let mut missing: Vec<&String> = probe
+            .missing_stores
+            .iter()
+            .chain(&probe.missing_sites)
+            .collect();
+        missing.sort();
+        missing.dedup();
         report(&format!(
-            "Installing Python skills on {label}: {}...",
-            to_install.keys().cloned().collect::<Vec<_>>().join(", ")
+            "Installing skills on {label}: {}...",
+            missing
+                .iter()
+                .map(|id| id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
     } else {
         files.extend(base);
@@ -584,7 +665,7 @@ pub(crate) async fn ensure_remote_kernel_python(
                 );
             }
             files.push(UploadFile {
-                path: "bin/uv".to_string(),
+                path: format!("{base_key}/bin/uv"),
                 bytes: std::fs::read(&local_uv).with_context(|| format!("read {local_uv}"))?,
                 mode: 0o755,
             });
@@ -617,7 +698,7 @@ pub(crate) async fn ensure_remote_kernel_python(
             &[
                 &remote.install_root,
                 &base_key,
-                &serde_json::to_string(&to_install)?,
+                &skill_kinds,
                 &serde_json::to_string(&extras)?,
                 if probe.installed { "0" } else { "1" },
             ],
@@ -729,6 +810,89 @@ mod tests {
             last_json_line(&String::from_utf8_lossy(&output.stdout)).expect("report");
         assert!(!report.venv, "an ensurepip stub is not a working venv");
         assert!(!report.installed);
+    }
+
+    /// A skill dir's upload leaves out dotfiles and dot dirs, secret-named
+    /// files, and caches; its id is content-addressed, and the prompt's
+    /// location is the uploaded SKILL.md under that id.
+    #[test]
+    fn skill_uploads_skip_dotfiles_and_secrets_and_name_their_remote_location() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let skill = dir.path().join("field-notes");
+        for (path, text) in [
+            ("SKILL.md", "---\nname: field-notes\n---\n"),
+            ("scripts/run.sh", "echo hi\n"),
+            (".env", "TOKEN=secret\n"),
+            (".npmrc", "//registry/:_authToken=secret\n"),
+            ("keys/deploy.pem", "-----BEGIN-----\n"),
+            ("id_ed25519", "private\n"),
+            (".git/config", "[core]\n"),
+            ("__pycache__/x.pyc", "bytecode"),
+        ] {
+            let file = skill.join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, text).unwrap();
+        }
+        let (id, files) = skill_upload(&skill).unwrap();
+        assert!(id.starts_with("field-notes-") && id.len() == "field-notes-".len() + 16);
+        let paths: Vec<String> = files.iter().map(|file| file.path.clone()).collect();
+        assert_eq!(
+            paths,
+            [
+                format!("skills/{id}/SKILL.md"),
+                format!("skills/{id}/scripts/run.sh")
+            ]
+        );
+        assert_eq!(
+            remote_skill_location(&skill, &skill.join("SKILL.md")).unwrap(),
+            format!("~/.prime/agent/remote/skills/{id}/SKILL.md")
+        );
+        // A changed skill is a new dir; the old one stays for its kernels.
+        std::fs::write(skill.join("SKILL.md"), "changed").unwrap();
+        assert_ne!(skill_upload(&skill).unwrap().0, id);
+    }
+
+    /// The probe touches every install and skill dir it reports present:
+    /// garbage collection removes only dirs idle for a week, so nothing the
+    /// probe just vouched for can vanish before its kernel holds it.
+    #[test]
+    fn the_probe_touches_what_it_reports_present() {
+        let root = tempfile::TempDir::new().unwrap();
+        let key = "v3-0000000000000000";
+        let id = "notes-0123456789abcdef";
+        let install = root.path().join(key);
+        let store = root.path().join("skills").join(id);
+        std::fs::create_dir_all(install.join("venv/bin")).unwrap();
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::write(install.join("venv/bin/python"), "").unwrap();
+        std::fs::write(install.join(".installed"), key).unwrap();
+        std::fs::write(store.join(".complete"), id).unwrap();
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(python_command(
+                PROBE_SCRIPT,
+                &[
+                    &root.path().to_string_lossy(),
+                    key,
+                    &format!("{{\"{id}\": false}}"),
+                ],
+            ))
+            .output()
+            .expect("probe runs");
+        assert!(output.status.success(), "{output:?}");
+        let report: ProbeReport =
+            last_json_line(&String::from_utf8_lossy(&output.stdout)).expect("report");
+        assert!(report.installed);
+        assert_eq!(
+            (report.missing_stores, report.missing_sites),
+            (Vec::<String>::new(), Vec::<String>::new())
+        );
+        for dir in [&install, &store] {
+            let touched = std::fs::metadata(dir.join(".last-used"))
+                .and_then(|metadata| metadata.modified())
+                .expect("the probe touched .last-used");
+            assert!(touched.elapsed().unwrap() < std::time::Duration::from_secs(60));
+        }
     }
 
     #[test]

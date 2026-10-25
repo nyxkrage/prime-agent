@@ -229,6 +229,19 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         settings.settings().shell_path.as_deref(),
     )?
     .map(std::path::PathBuf::from);
+    // The global `remoteEnvPassthrough` kill switch holds at every session
+    // build, not only at the spawn: a respawned or passivated worker replays
+    // its durable create's `env=`, a reopened session reads it back from its
+    // placement, and each remote kernel start resolves the pass-throughs
+    // again. A switched-off (or unreadable) setting fails the build closed.
+    if config.remote_kernel.is_some() {
+        config
+            .kernel_env
+            .check_remote_passthrough(settings.remote_env_passthrough_allowed())
+            .map_err(|refusal| {
+                anyhow::anyhow!("this session's remote kernel cannot start: {refusal}")
+            })?;
+    }
     // TS injects the prefix only when truthy (an empty string stays unset).
     let kernel_command_prefix = settings
         .settings()
@@ -483,6 +496,34 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     let model_visible_skills =
         super::runtime_wiring::model_visible_skills(resources.skills.clone(), &handlers);
     let python_skills = super::runtime_wiring::kernel_python_skills(&model_visible_skills);
+    // A remote child's skills live on its kernel host: every readable skill
+    // dir is uploaded with the remote install, and the prompt's inventory
+    // names the remote paths, never this machine's (a skill dir that cannot
+    // be read drops out of the remote inventory and the upload).
+    let (prompt_skills, remote_kernel) = match config.remote_kernel.clone() {
+        None => (model_visible_skills.clone(), None),
+        Some(target) => {
+            let mut prompt_skills = Vec::with_capacity(model_visible_skills.len());
+            let mut skill_dirs = Vec::with_capacity(model_visible_skills.len());
+            for skill in &model_visible_skills {
+                match crate::kernel::bootstrap::remote_skill_location(
+                    &skill.base_dir,
+                    &skill.file_path,
+                ) {
+                    Ok(location) => {
+                        let mut remote_skill = skill.clone();
+                        remote_skill.file_path = std::path::PathBuf::from(location);
+                        prompt_skills.push(remote_skill);
+                        skill_dirs.push(skill.base_dir.clone());
+                    }
+                    Err(error) => {
+                        tracing::warn!(skill = %skill.name, error = %format!("{error:#}"), "skill left out of a remote kernel");
+                    }
+                }
+            }
+            (prompt_skills, Some(target.with_skill_dirs(skill_dirs)))
+        }
+    };
     // TS resolves the serper credential on the host: `!command` key refs
     // cannot run in-kernel (the websearch skill's auth.json fallback reads
     // literals and env-var names, not commands). The credential is read
@@ -523,7 +564,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         config.on_background_work_settled.clone(),
         on_unavailable_skills,
         on_bootstrap_result,
-        config.remote_kernel.clone(),
+        remote_kernel,
         config.kernel_env.clone(),
     );
     let mut tools = config.tools.clone();
@@ -606,7 +647,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                     .map(|file| (file.path.display().to_string(), file.content.clone()))
                     .collect()
             },
-            skills: model_visible_skills.clone(),
+            skills: prompt_skills,
             selected_tools: Some(
                 active_tool_names
                     .iter()

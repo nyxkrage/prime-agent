@@ -9,55 +9,111 @@ use super::{
     MAX_ATTACHMENT_DATA_CHARS, MAX_BACKGROUND_OUTPUT_CHARS,
 };
 
-use crate::kernel::env_overrides::redact;
+use crate::kernel::env_overrides::{redact, redact_json, redact_stream_chunk};
 
 impl Inner {
-    /// Mask this start's pass-through values (`rlm.spawn(env={K: None})`)
-    /// in the output the model reads back: streams, results, and errors.
-    /// Best effort (a value split across two chunks passes): hygiene that
-    /// keeps a printed secret out of the transcript, not a boundary.
-    fn redact_event(&self, event: Event) -> Event {
-        let redactions = Arc::clone(&lock(&self.redactions));
-        if redactions.is_empty() {
-            return event;
-        }
-        let redact = |text: String| match redact(&text, &redactions) {
-            std::borrow::Cow::Borrowed(_) => text,
-            std::borrow::Cow::Owned(masked) => masked,
-        };
-        match event {
-            Event::Stdout { id, text } => Event::Stdout {
-                id,
-                text: redact(text),
-            },
-            Event::Stderr { id, text } => Event::Stderr {
-                id,
-                text: redact(text),
-            },
-            Event::Result { id, text } => Event::Result {
-                id,
-                text: redact(text),
-            },
-            Event::Error {
-                id,
-                ename,
-                evalue,
-                traceback,
-            } => Event::Error {
-                id,
-                ename,
-                evalue: redact(evalue),
-                traceback: traceback.into_iter().map(redact).collect(),
-            },
-            event @ (Event::Ready { .. }
-            | Event::Display { .. }
-            | Event::HostRequest { .. }
-            | Event::Done { .. }) => event,
-        }
-    }
-
     pub(crate) fn handle_event(self: &Arc<Self>, event: Event) {
-        let event = self.redact_event(event);
+        // Mask this start's pass-through values (`rlm.spawn(env={K: None})`)
+        // in everything the model and the transcript read back: streams,
+        // results, errors, display payloads (diffs are persisted as tool
+        // details), and `agent_message.send` text. A stream holds back a
+        // tail that could begin a value until the next chunk shows whether
+        // it does; any other event first releases the held tails. Best
+        // effort hygiene that keeps a printed secret out of the transcript,
+        // not a boundary.
+        let redactions = Arc::clone(&lock(&self.redactions));
+        let event = if redactions.is_empty() {
+            event
+        } else {
+            let stream = match &event {
+                Event::Stdout { id, .. } => Some((id.clone(), StreamName::Stdout)),
+                Event::Stderr { id, .. } => Some((id.clone(), StreamName::Stderr)),
+                Event::Ready { .. }
+                | Event::Display { .. }
+                | Event::HostRequest { .. }
+                | Event::Result { .. }
+                | Event::Error { .. }
+                | Event::Done { .. } => None,
+            };
+            let released: Vec<(Option<String>, StreamName, String)> = {
+                let mut carries = lock(&self.redaction_carries);
+                let (kept, released) = std::mem::take(&mut *carries)
+                    .into_iter()
+                    .partition(|(id, name, _)| stream.as_ref() == Some(&(id.clone(), *name)));
+                *carries = kept;
+                released
+            };
+            for (id, name, held) in released {
+                self.route_stream(id.as_deref(), name, &held);
+            }
+            let mask = |text: String| match redact(&text, &redactions) {
+                std::borrow::Cow::Borrowed(_) => text,
+                std::borrow::Cow::Owned(masked) => masked,
+            };
+            let mask_stream = |id: &Option<String>, name: StreamName, text: &str| {
+                let mut carries = lock(&self.redaction_carries);
+                let mut carry = carries
+                    .iter()
+                    .position(|(held_id, held_name, _)| held_id == id && *held_name == name)
+                    .map(|index| carries.swap_remove(index).2)
+                    .unwrap_or_default();
+                let emit = redact_stream_chunk(&mut carry, text, &redactions);
+                if !carry.is_empty() {
+                    carries.push((id.clone(), name, carry));
+                }
+                emit
+            };
+            match event {
+                Event::Stdout { id, text } => {
+                    let text = mask_stream(&id, StreamName::Stdout, &text);
+                    if text.is_empty() {
+                        return;
+                    }
+                    Event::Stdout { id, text }
+                }
+                Event::Stderr { id, text } => {
+                    let text = mask_stream(&id, StreamName::Stderr, &text);
+                    if text.is_empty() {
+                        return;
+                    }
+                    Event::Stderr { id, text }
+                }
+                Event::Result { id, text } => Event::Result {
+                    id,
+                    text: mask(text),
+                },
+                Event::Error {
+                    id,
+                    ename,
+                    evalue,
+                    traceback,
+                } => Event::Error {
+                    id,
+                    ename,
+                    evalue: mask(evalue),
+                    traceback: traceback.into_iter().map(mask).collect(),
+                },
+                Event::Display { id, mut data } => {
+                    // An attachment's base64 is left alone: masking cannot
+                    // match inside an encoding, and it is large.
+                    if let Some(bundle) = data.as_object_mut() {
+                        for (mime, payload) in bundle.iter_mut() {
+                            if mime != ATTACHMENT_DISPLAY_MIME {
+                                redact_json(payload, &redactions);
+                            }
+                        }
+                    }
+                    Event::Display { id, data }
+                }
+                Event::HostRequest { id, mut data } => {
+                    if data.get("type").and_then(Value::as_str) == Some("agent_message.send") {
+                        redact_json(&mut data, &redactions);
+                    }
+                    Event::HostRequest { id, data }
+                }
+                event @ (Event::Ready { .. } | Event::Done { .. }) => event,
+            }
+        };
         match event {
             Event::Display { id, ref data } => {
                 if let Some(activity) = data.get(BASH_ACTIVITY_DISPLAY_MIME) {

@@ -65,10 +65,7 @@ async fn start_and_run(host: &str) -> LiveRun {
             package_path,
         }],
         env,
-        remote: Some(RemoteKernelTarget {
-            host: host.to_string(),
-            cwd: None,
-        }),
+        remote: Some(RemoteKernelTarget::validated(host.to_string(), None).expect("valid host")),
         ..KernelManagerOptions::default()
     });
     let progress = Arc::new(Mutex::new(Vec::new()));

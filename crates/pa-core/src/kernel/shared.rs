@@ -342,14 +342,18 @@ pub struct KernelSnapshotConfig {
 
 /// A kernel that runs on another machine over SSH (`rlm.spawn(..., host=...)`).
 /// Only the kernel runs remotely. The agent loop, model calls, and session
-/// persistence stay local.
+/// persistence stay local. Built by [`Self::validated`] only.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteKernelTarget {
     /// SSH destination as `ssh` understands it (`user@host`, a config
     /// alias), or `[user@]host:port`.
-    pub host: String,
+    host: String,
     /// The remote working directory. `None` means the remote login directory.
-    pub cwd: Option<String>,
+    cwd: Option<String>,
+    /// The session's model-visible skill dirs, uploaded with the install so
+    /// the remote child's skill inventory points at remote paths (set by
+    /// the session engine).
+    skill_dirs: Vec<std::path::PathBuf>,
 }
 
 impl RemoteKernelTarget {
@@ -365,7 +369,32 @@ impl RemoteKernelTarget {
         if let Some(cwd) = &cwd {
             crate::kernel::remote_policy::validate_remote_path(cwd, "rlm.spawn cwd")?;
         }
-        Ok(Self { host, cwd })
+        Ok(Self {
+            host,
+            cwd,
+            skill_dirs: Vec::new(),
+        })
+    }
+
+    /// The SSH destination.
+    #[must_use]
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
+    /// The remote working directory (`None`: the remote login directory).
+    #[must_use]
+    pub fn cwd(&self) -> Option<&str> {
+        self.cwd.as_deref()
+    }
+
+    pub(crate) fn skill_dirs(&self) -> &[std::path::PathBuf] {
+        &self.skill_dirs
+    }
+
+    pub(crate) fn with_skill_dirs(mut self, skill_dirs: Vec<std::path::PathBuf>) -> Self {
+        self.skill_dirs = skill_dirs;
+        self
     }
 }
 

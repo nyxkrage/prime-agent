@@ -1057,13 +1057,11 @@ async fn start_kernel_impl(
     if let Some(gate) = options.ready_gate.clone() {
         gate().await;
     }
-    // A remote kernel keeps no revivable namespace snapshot: the manager
-    // stats and restores the snapshot files on the local disk, and the
-    // remote kernel would write them on the remote one.
-    let snapshot_dir = match &options.remote {
-        Some(_) => None,
-        None => options.snapshot_dir.clone(),
-    };
+    // No revivable snapshot for a remote kernel: it would write on its host.
+    let snapshot_dir = options
+        .snapshot_dir
+        .clone()
+        .filter(|_| options.remote.is_none());
     // The bounded-await default keys on the bash.completed host handler:
     // one source of truth (the registry the daemon registers the notice in).
     let bootstrap_code = build_rlm_bootstrap_code(

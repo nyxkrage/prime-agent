@@ -42,8 +42,16 @@ pub(crate) const SSH_HARDENING_OPTIONS: &[&str] = &[
 
 /// Local env vars the `ssh` process keeps; its env is cleared first.
 /// `SSH_AUTH_SOCK` lets ssh authenticate with the local agent (never
-/// forwarded: see `ForwardAgent=no`).
-pub(crate) const SSH_ENV_ALLOWLIST: &[&str] = &["PATH", "HOME", "USER", "SSH_AUTH_SOCK", "LANG"];
+/// forwarded: see `ForwardAgent=no`), and `KRB5CCNAME` points GSSAPI
+/// (Kerberos) authentication at the user's credential cache.
+pub(crate) const SSH_ENV_ALLOWLIST: &[&str] = &[
+    "PATH",
+    "HOME",
+    "USER",
+    "SSH_AUTH_SOCK",
+    "LANG",
+    "KRB5CCNAME",
+];
 
 /// Env var name prefixes the `ssh` process keeps (locale categories).
 pub(crate) const SSH_ENV_ALLOWED_PREFIXES: &[&str] = &["LC_"];
@@ -68,9 +76,20 @@ pub(crate) const REMOTE_PATH_CHARS: &str =
 /// env) stays local. The remote launcher adds only its own generated keys:
 /// `PRIME_AGENT_CODING_AGENT_DIR` (a remote scratch dir),
 /// `PRIME_AGENT_KERNEL_OWNER_PID` (the remote sshd session), the remote
-/// orphan journal, `RLM_REMOTE_HOST`, `RLM_REMOTE_INSTALL_DIR`, and
-/// `RLM_HOST_HEARTBEAT_TIMEOUT_MS`.
+/// orphan journal, and the [`REMOTE_KERNEL_MARKER_ENV`] markers.
 pub(crate) const REMOTE_KERNEL_FORWARDED_ENV: &[&str] = &["RLM_SESSION_ID"];
+
+/// The remote launcher's markers: the remote runtime reads them and takes
+/// them out of its `os.environ` (`rlm/remote.py`), and a local kernel's
+/// spawn env drops them (`kernel_spawn_env`), so a `prime-agent` started
+/// from a remote kernel's `bash` never mistakes its own kernels for remote
+/// ones.
+pub(crate) const REMOTE_KERNEL_MARKER_ENV: &[&str] = &[
+    "RLM_REMOTE_HOST",
+    "RLM_REMOTE_INSTALL_DIR",
+    "RLM_HOST_HEARTBEAT_TIMEOUT_MS",
+    "RLM_REMOTE_SKILLS",
+];
 
 /// One rule of [`KERNEL_ENV_RESERVED`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -343,6 +362,7 @@ mod tests {
                 ("SSH_AUTH_SOCK", "/s"),
                 ("LANG", "C.UTF-8"),
                 ("LC_ALL", "C"),
+                ("KRB5CCNAME", "FILE:/tmp/krb5cc_1000"),
                 ("OPENAI_API_KEY", "secret"),
                 ("PRIME_AGENT_BASH_COMMAND_PREFIX", "x"),
                 ("PYTHONPATH", "/p"),
@@ -354,6 +374,7 @@ mod tests {
             env,
             [
                 ("HOME", "/h"),
+                ("KRB5CCNAME", "FILE:/tmp/krb5cc_1000"),
                 ("LANG", "C.UTF-8"),
                 ("LC_ALL", "C"),
                 ("PATH", "/bin"),
