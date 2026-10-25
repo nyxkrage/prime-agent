@@ -443,7 +443,7 @@ impl TreeNavigation {
         let _ =
             tokio::task::spawn_blocking(move || crate::session_store::read_session_info(&primed))
                 .await;
-        let (previous, transferred) = {
+        let (previous, transferred, identity) = {
             let mut core = self.core.lock().unwrap();
             // A navigating fork replaces its source: when the prepare could not
             // admit a distinct installation (registry at capacity), the
@@ -460,18 +460,24 @@ impl TreeNavigation {
                     });
                 forked.trace_upload.clone_from(&transferred);
             }
-            (core.store.replace(forked), transferred)
+            let previous = core.store.replace(forked);
+            (previous, transferred, core.adopt_replacement_identity())
         };
         if let Some(traces) = &transferred {
             // The fork was rewritten before its controller existed; the
             // pre-written file owes a delivery only after publication.
             traces.persisted(&new_path);
         }
+        crate::session_navigation::bind_engine_to_swapped_session(
+            &self.engine,
+            new_path.clone(),
+            identity,
+        )
+        .await;
         // The old store's lease release flushes the window and info
         // sidecars (megabytes for a large session): off the core lock
         // and the runtime.
         let _ = tokio::task::spawn_blocking(move || drop(previous)).await;
-        self.engine.set_session_file(new_path.clone());
         // TS re-restores the forked session's saved model: the fork resolves to the model its
         // own file pins (an explicit flag still wins inside).
         self.engine.restore_session_model(&new_path, None).await;

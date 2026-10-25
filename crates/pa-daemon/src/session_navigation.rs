@@ -51,7 +51,7 @@ impl SessionNavigation {
         let _ =
             tokio::task::spawn_blocking(move || crate::session_store::read_session_info(&primed))
                 .await;
-        let (previous, traces) = {
+        let (previous, traces, identity) = {
             let mut core = self.core.lock().unwrap();
             if file.trace_upload.is_none() {
                 file.trace_upload = core
@@ -62,18 +62,19 @@ impl SessionNavigation {
             }
             let traces = file.trace_upload.clone();
             // No await or fallible preparation between slot transfer and publication.
-            (core.store.replace(file), traces)
+            let previous = core.store.replace(file);
+            (previous, traces, core.adopt_replacement_identity())
         };
         if let Some(traces) = traces.filter(|_| trace_persisted) {
             // The successful prepare wrote this file before its controller existed.
             // Record bounded intent outside the core lock, after publication.
             traces.persisted(&new_path);
         }
+        bind_engine_to_swapped_session(&self.engine, new_path.clone(), identity).await;
         // The old store's lease release flushes the window and info
         // sidecars (megabytes for a large session): off the core lock
         // and the runtime.
         let _ = tokio::task::spawn_blocking(move || drop(previous)).await;
-        self.engine.set_session_file(new_path.clone());
         // The replacement session resolves to the model its own file pins,
         // not the previous session's (an explicit flag still wins).
         self.engine.restore_session_model(&new_path, None).await;
@@ -303,6 +304,28 @@ impl SessionNavigation {
             trace_persisted: false,
         })
     }
+}
+
+/// Bind the engine onto the session a replacement just swapped into the core
+/// (the same helper `branch_navigation` runs for forks), before the swap's
+/// first await: the session file and the RLM identity (the durable session
+/// id every model call routes under) move together. Worker commands run
+/// concurrently and several read seams build the engine lazily without the
+/// replacement gate, so a build during the swap's later awaits (the model
+/// restore's readiness wait) must already see the new session. A build that
+/// slipped in between the replacement's teardown and the swap captured the
+/// previous session, so the runtime retires again here; the next demand seam
+/// rebuilds on the new session.
+pub(crate) async fn bind_engine_to_swapped_session(
+    engine: &Arc<dyn SessionEngine>,
+    session_file: std::path::PathBuf,
+    identity: crate::engine::RlmSessionIdentity,
+) {
+    engine.set_session_file(session_file);
+    if let Err(error) = engine.configure_rlm_identity(identity) {
+        eprintln!("pa-daemon: replacement identity rebind failed: {error:#}");
+    }
+    engine.teardown_for_replacement().await;
 }
 
 /// Rebuild the engine's live context onto the moved session (the same

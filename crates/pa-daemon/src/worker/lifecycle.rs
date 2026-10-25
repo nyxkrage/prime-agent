@@ -2,8 +2,8 @@
 //! resume, compaction triggers, and the wait-for-settled arms.
 use super::{
     json, queue_lanes, response_failure, response_success, session_snapshot, AgentSessionEngine,
-    DaemonResponse, QueueCheckpoint, QueuePriority, QueuedItem, SessionFile, TurnPolicy, Value,
-    Worker, SIDE_QUESTION_SETTLE_TIMEOUT,
+    DaemonResponse, QueueCheckpoint, QueuePriority, QueuedItem, TurnPolicy, Value, Worker,
+    SIDE_QUESTION_SETTLE_TIMEOUT,
 };
 
 impl Worker {
@@ -260,40 +260,14 @@ impl Worker {
     /// TS dispatch handlers that call `rebindCronJobsToState` after the
     /// runtime call.
     pub(crate) async fn refresh_replaced_session_state(&self) {
-        let (rlm_depth, summary, child_script) = {
+        let (identity, summary) = {
             let (mut core, inputs) = self.summary_inputs();
-            // The moved-to file's persisted depth wins (the replacement
-            // carries no create-config depth).
-            let rlm_depth = core
-                .store
-                .as_ref()
-                .and_then(SessionFile::rlm_depth)
-                .unwrap_or(0);
-            core.rlm_depth = rlm_depth;
-            let child_script = core.child_script.clone();
-            (rlm_depth, self.summary_locked(&core, inputs), child_script)
+            let identity = core.adopt_replacement_identity();
+            (identity, self.summary_locked(&core, inputs))
         };
-        // No thinking flag rides the rebind (the create command's level is
-        // already resolved on the engine), and the TS replacement runtime
-        // carries no inherited max-depth: the moved-to session's persisted
-        // chat override, the global setting, the env, or the default
-        // resolve it (`_resolveRlmMaxDepth` precedence). The harness's
-        // child engine file rides along: TS children inherit the
-        // replacement runtime's `sessionConfig`, which the runtime keeps
-        // across its swaps.
-        match self
-            .engine
-            .configure_rlm_identity(crate::engine::RlmSessionIdentity {
-                rlm_depth,
-                rlm_max_depth: None,
-                cwd: Some(summary.cwd.clone()),
-                session_id: Some(summary.session_id.clone()),
-                session_file: summary.session_file.clone(),
-                thinking: None,
-                child_script,
-                // A TS replacement runtime has no semantic spawn.
-                semantic_spawn: None,
-            }) {
+        // The swap already bound this identity (before its first await); the
+        // re-bind is idempotent and re-seeds the children's parent identity.
+        match self.engine.configure_rlm_identity(identity) {
             Ok(()) => self.reseed_rlm_children().await,
             Err(error) => eprintln!("pa-daemon: replacement identity rebind failed: {error:#}"),
         }
