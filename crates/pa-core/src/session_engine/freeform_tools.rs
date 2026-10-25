@@ -1,8 +1,8 @@
 //! The `freeformTools` gate at the session's stream boundary: tools carry their free-text
 //! argument marker into every request only while the setting resolves on for the request's
 //! provider, so the provider picks the raw-text (custom) or JSON-schema wire form per request.
-//! The recorded session never stores the wire form, so toggling the setting mid-session replays
-//! the same history in the other form.
+//! The setting is read once at session start. The recorded session never stores the wire form,
+//! so a session resumed after the setting changed replays the same history in the other form.
 
 use std::sync::Arc;
 
