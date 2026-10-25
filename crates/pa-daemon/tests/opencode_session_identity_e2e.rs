@@ -1,10 +1,22 @@
 //! Port of the TS regression `6009-opencode-maintenance-session.test.ts`: every model
 //! request a session makes to the `opencode`/`opencode-go` providers routes under the
 //! owning session's durable id (`x-opencode-session` = the session file's id). That
-//! covers the main turns and every maintenance call: manual, split-turn and automatic
-//! compaction, the compact-trigger auto-refine review, `/refine` planning, tree
-//! branch summaries and side questions. Resume, reload and model switches keep the
-//! id; a replacement session (`/new`) and another session never reuse it.
+//! covers the main turns and every maintenance call: manual (turn-prefix, split-turn,
+//! history-only) and automatic compaction, the compact-trigger auto-refine review,
+//! `/refine` planning, tree branch summaries and side questions; every maintenance call
+//! also identifies as `prime-agent`, and each split-turn summary carries its own
+//! idempotency key. Resume, reload and model switches keep the id; a replacement
+//! session (`/new`, fork) and another session never reuse it.
+//!
+//! Not ported:
+//! - TS "retains session and request identity when retrying a summary" (a transient 503
+//!   retried with the same idempotency key and body): Rust has no summary retry; a
+//!   failed summary call fails the compaction.
+//! - TS "forwards refineHarness identity with explicit headers": the Rust refiner seam
+//!   carries no request headers (models.json headers never reach a refine call), so
+//!   there is no caller header to win over the session's id. The precedence itself (a
+//!   caller's `X-OpenCode-Session` and `User-Agent` win) is unit-tested in pa-ai's
+//!   `opencode_session` module.
 //!
 //! The mock answers like opencode-go: a request without the header is refused with
 //! the provider's `MissingSessionID` 400, so a call that drops the header fails the
@@ -128,14 +140,18 @@ impl OpencodeMock {
         );
     }
 
-    /// The test drove exactly `count` requests under `operation`, and every one
-    /// carried `session_id`.
-    fn assert_identity(&self, operation: &str, session_id: &str, count: usize) {
-        let requests: Vec<Recorded> = self
-            .requests()
+    /// The requests the test drove under `operation`.
+    fn requests_for(&self, operation: &str) -> Vec<Recorded> {
+        self.requests()
             .into_iter()
             .filter(|request| request.operation == operation)
-            .collect();
+            .collect()
+    }
+
+    /// The test drove exactly `count` requests under `operation`, and every one
+    /// carried `session_id` and identified as `prime-agent` (TS `^prime-agent(/|$)`).
+    fn assert_identity(&self, operation: &str, session_id: &str, count: usize) {
+        let requests = self.requests_for(operation);
         assert_eq!(requests.len(), count, "{operation} requests: {requests:#?}");
         let carried: Vec<Option<String>> = requests
             .iter()
@@ -146,6 +162,15 @@ impl OpencodeMock {
             vec![Some(session_id.to_string()); requests.len()],
             "every {operation} request routes under the owning session: {requests:#?}"
         );
+        for request in &requests {
+            let user_agent = request.headers.get("user-agent").map(String::as_str);
+            assert!(
+                user_agent.is_some_and(
+                    |agent| agent == "prime-agent" || agent.starts_with("prime-agent/")
+                ),
+                "every {operation} request identifies as prime-agent: {request:#?}"
+            );
+        }
     }
 }
 
@@ -481,7 +506,8 @@ impl Harness {
         );
     }
 
-    fn compact(&mut self, session: &Session, operation: &str, reply: &str) {
+    /// A manual compaction; returns the command's result.
+    fn compact(&mut self, session: &Session, operation: &str, reply: &str) -> Value {
         self.mock.set_operation(operation, reply);
         let compacted = self
             .client
@@ -491,6 +517,19 @@ impl Harness {
             "the compaction ran ({}): {compacted}",
             self.provider
         );
+        compacted
+    }
+
+    /// The live session's ids after a replacement inside the same worker.
+    fn replaced(&mut self, previous: &Session) -> Session {
+        let state = self
+            .client
+            .request(&json!({"type": "get_state", "activeSessionId": previous.active_id}));
+        Session {
+            active_id: previous.active_id.clone(),
+            durable_id: state["sessionId"].as_str().expect("session id").to_string(),
+            file: PathBuf::from(state["sessionFile"].as_str().expect("session file")),
+        }
     }
 
     /// The first assistant message entry id in the session file.
@@ -533,6 +572,18 @@ fn every_maintenance_call_routes_under_the_owning_session() {
         harness
             .mock
             .assert_identity("split-compaction", &session.durable_id, 2);
+        // Each summary slice is its own request: two distinct idempotency keys.
+        let keys: std::collections::BTreeSet<Option<String>> = harness
+            .mock
+            .requests_for("split-compaction")
+            .iter()
+            .map(|request| request.headers.get("idempotency-key").cloned())
+            .collect();
+        assert_eq!(keys.len(), 2, "two distinct idempotency keys: {keys:?}");
+        assert!(
+            !keys.contains(&None),
+            "every summary carries a key: {keys:?}"
+        );
 
         // `/refine` planning.
         harness.mock.set_operation("refinement-plan", PROPOSAL);
@@ -580,6 +631,20 @@ fn every_maintenance_call_routes_under_the_owning_session() {
             .client
             .request(&json!({"type": "reload", "activeSessionId": session.active_id}));
         harness.ordinary(&session, "after the reload");
+
+        // A history-only summary: a user bash row after the turn is a turn start, so
+        // the cut lands on it and only the history is summarized (no split).
+        let history = harness.create(None);
+        harness.ordinary(&history, "remember this request");
+        harness.client.request(&json!({
+            "type": "execute_bash_and_wait", "activeSessionId": history.active_id,
+            "command": "echo retained",
+        }));
+        let compacted = harness.compact(&history, "history", "OK");
+        assert_eq!(compacted["summary"], "OK", "{compacted}");
+        harness
+            .mock
+            .assert_identity("history", &history.durable_id, 1);
     }
 }
 
@@ -622,6 +687,8 @@ fn automatic_compaction_and_the_auto_refine_review_route_under_the_owning_sessio
             "message": "another request", "streamingBehavior": "followUp",
         }));
         harness.mock.assert_sent("refinement-review", "<trigger>");
+        // Two requests: the review, then the prompt's own main turn, which runs
+        // inside the same command and so shares the operation label.
         harness
             .mock
             .assert_identity("refinement-review", &session.durable_id, 2);
@@ -645,14 +712,7 @@ fn resume_keeps_and_replacement_changes_the_routing_identity() {
             .client
             .request(&json!({"type": "new_session", "activeSessionId": original.active_id}));
         assert_eq!(replaced["cancelled"], false, "{replaced}");
-        let state = harness
-            .client
-            .request(&json!({"type": "get_state", "activeSessionId": original.active_id}));
-        let replacement = Session {
-            active_id: original.active_id.clone(),
-            durable_id: state["sessionId"].as_str().expect("session id").to_string(),
-            file: PathBuf::from(state["sessionFile"].as_str().expect("session file")),
-        };
+        let replacement = harness.replaced(&original);
         assert_ne!(replacement.durable_id, original.durable_id);
         harness.ordinary(&replacement, "a fresh conversation");
         harness.compact(&replacement, "replacement-compaction", "OK");
@@ -666,6 +726,23 @@ fn resume_keeps_and_replacement_changes_the_routing_identity() {
             "sessionPath": original.file.to_string_lossy(),
         }));
         harness.ordinary(&original, "back on the original");
+
+        // A fork is a replacement too: the forked session routes under its own id.
+        let fork_point = Harness::first_assistant_entry(&original);
+        let forked = harness.client.request(&json!({
+            "type": "fork", "activeSessionId": original.active_id,
+            "entryId": fork_point, "position": "at",
+        }));
+        assert_eq!(forked["cancelled"], false, "{forked}");
+        let fork = harness.replaced(&original);
+        assert_ne!(fork.durable_id, original.durable_id);
+        assert_ne!(fork.durable_id, replacement.durable_id);
+        harness.ordinary(&fork, "continue on the fork");
+        // The fork carries the copied history plus the new turn: a split-turn compaction.
+        harness.compact(&fork, "fork-compaction", "OK");
+        harness
+            .mock
+            .assert_identity("fork-compaction", &fork.durable_id, 2);
 
         // A separate session never shares the original's id.
         let other = harness.create(None);
