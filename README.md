@@ -92,8 +92,13 @@ Each transport reads the variable once when its first client is initialized. The
 
 `rlm.spawn(prompt, name=..., host="user@box", cwd="~/work")` runs a subagent's
 Python REPL, files, and `bash` on another machine over your system `ssh`; the
-agent loop and model calls stay local. MCP servers and other features whose
-state lives on your machine are refused on remote kernels.
+agent loop and model calls stay local. Its own subagents stay on that host
+(and in its remote `cwd`) unless they pass `host="local"`, another host, or
+their own `cwd`. The session's skills (markdown and Python) are uploaded with
+the runtime under `~/.prime/agent/remote/` on the host, and the subagent's
+skill list points there. MCP servers and other features whose state lives on
+your machine are refused on remote kernels. Reopening a remote subagent's
+session (resume, fork, print mode) keeps its host and `env`.
 
 Pass environment variables to a subagent's kernel (local or remote) with `env`:
 
@@ -103,13 +108,28 @@ await rlm.spawn("train the model", name="train", host="gpu1",
                      "HF_TOKEN": None})      # copy this machine's value
 ```
 
-A `None` value is resolved by Prime Agent from its own environment, so the value
-never appears in the model's code, the transcript, or logs, and for a remote
-host it travels over the kernel's stdin, never on the ssh command line. A
+A `None` value is resolved by Prime Agent from its own environment (again at
+every kernel start), so the value is never part of the model's code or the
+spawn request, and for a remote host it travels over the kernel's stdin, never
+on the ssh command line. A
 missing variable fails the spawn by name. Children never inherit their parent's
 `env`. `RLM_*`, `PRIME_AGENT_*`, `PYTHON*`, `PATH`, `HOME`, and `VIRTUAL_ENV`
 are reserved. Pass-through values of 8 or more characters are masked as `***`
-in the subagent's output, as best-effort hygiene.
+in the subagent's output (streams, results, errors, diffs, and
+`agent_message.send` text), as best-effort hygiene: a value the subagent
+transforms (reversed, encoded) is not masked.
+
+Known limitations of remote subagents:
+
+- The TUI agents view does not show a remote subagent's host yet
+  (`rlm.list_subagents()` and the daemon roster do).
+- No namespace snapshot or revive for remote kernels: a restarted remote kernel
+  starts with an empty namespace.
+- The remote kernel exits when it hears nothing from this machine for 45
+  seconds (its heartbeat timeout), so a laptop that sleeps longer than that
+  ends its remote jobs.
+- Verification uses a fake `ssh` that runs the "remote" side locally, plus an
+  opt-in live test against a real host; there is no throwaway-`sshd` test.
 
 Threat model: a value sent to a host is trusted to that host (root there can
 read it), and the model can reach this machine's environment anyway; `None`

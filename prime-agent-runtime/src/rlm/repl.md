@@ -28,7 +28,10 @@ event.
   owner watchdog, the reader thread, `ready`, or any cell. The host writes it
   right after the launcher's stdio sentinel, so the values never ride the ssh
   command line or the launcher's `exec env` args (visible in the remote `ps`).
-  A missing or malformed frame exits the runtime before `ready`.
+  A missing or malformed frame exits the runtime before `ready`. The launcher's
+  markers (`RLM_REMOTE_HOST`, `RLM_REMOTE_INSTALL_DIR`, `RLM_REMOTE_SKILLS`,
+  `RLM_HOST_HEARTBEAT_TIMEOUT_MS`) are read and removed from `os.environ`
+  first, so no child process of the kernel inherits them.
 
 ## Requests
 
