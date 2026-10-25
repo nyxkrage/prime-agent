@@ -254,7 +254,7 @@ pub fn validate_config(
             }
         }
     }
-    // The alias rules: a non-empty single token (no `/`, whitespace, or glob
+    // The alias rules: a non-empty single token (no `/`, `:`, whitespace, or glob
     // characters, so it can never read as a selector or a pattern), unique
     // across providers (case-insensitive), and never a model ID the document
     // names. Errors name both models.
@@ -278,10 +278,10 @@ pub fn validate_config(
             let trimmed = alias.trim();
             if trimmed.is_empty()
                 || trimmed.contains(|c: char| c == '/' || c.is_whitespace())
-                || trimmed.contains(['*', '?', '['])
+                || trimmed.contains(['*', '?', '[', ':'])
             {
                 return Err(format!(
-                    "Model {selector}: invalid alias \"{alias}\" (use a single word without \"/\", spaces, or glob characters)."
+                    "Model {selector}: invalid alias \"{alias}\" (use a single word without \"/\", \":\", spaces, or glob characters)."
                 ));
             }
             if let Some((_, other)) = aliased
@@ -582,7 +582,16 @@ mod tests {
                     "gpt-6.1-sol": { "alias": "openai/sol" }
                 } } } }"#
             ),
-            "Model openai/gpt-6.1-sol: invalid alias \"openai/sol\" (use a single word without \"/\", spaces, or glob characters)."
+            "Model openai/gpt-6.1-sol: invalid alias \"openai/sol\" (use a single word without \"/\", \":\", spaces, or glob characters)."
+        );
+        // `:` would collide with the `--model alias:<thinking-level>` suffix.
+        assert_eq!(
+            alias_error(
+                r#"{ "providers": { "openai": { "modelOverrides": {
+                    "gpt-6.1-sol": { "alias": "sol:high" }
+                } } } }"#
+            ),
+            "Model openai/gpt-6.1-sol: invalid alias \"sol:high\" (use a single word without \"/\", \":\", spaces, or glob characters)."
         );
         let config = parse_models_config(
             r#"{ "providers": { "openai": { "modelOverrides": {

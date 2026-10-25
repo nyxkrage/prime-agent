@@ -1110,10 +1110,9 @@ async fn select_model(
     // not inherit an unrelated saved provider.
     if let Some(model_name) = config.model.as_deref() {
         let available: Vec<Model> = registry.get_available().into_iter().cloned().collect();
-        // A models.json alias resolves to its `provider/model-id` selector.
-        let model_name = registry
-            .resolve_model_alias(model_name)
-            .unwrap_or(model_name);
+        // A models.json alias (`sol`, `sol:high`) expands to its selector.
+        let expanded = registry.expand_model_alias(model_name);
+        let model_name = expanded.as_deref().unwrap_or(model_name);
         let resolved =
             pa_core::models::resolve_cli_model(config.provider.as_deref(), model_name, &available);
         if let Some(error) = resolved.error {

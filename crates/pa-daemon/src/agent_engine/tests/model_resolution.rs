@@ -108,6 +108,58 @@ fn create_config_flags_reach_the_engine_model_resolution() {
     );
 }
 
+/// `--model` expands a models.json alias, with or without a `:thinking`
+/// suffix, before fuzzy matching (a missed `turbo:high` would fuzzy-match
+/// `turbo-model` on the bare `turbo`).
+#[test]
+fn the_model_flag_expands_a_models_json_alias() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let agent_dir = dir.path().join("agent");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    std::fs::write(
+        agent_dir.join("models.json"),
+        serde_json::json!({ "providers": { "battery": {
+            "api": "openai-completions", "baseUrl": "http://127.0.0.1:9", "apiKey": "sk-battery",
+            "models": [
+                { "id": "fast-model", "alias": "turbo", "contextWindow": 128_000, "maxTokens": 4096 },
+                { "id": "turbo-model", "contextWindow": 128_000, "maxTokens": 4096 }
+            ]
+        } } })
+        .to_string(),
+    )
+    .unwrap();
+    let engine = AgentSessionEngine::new(AgentEngineConfig {
+        cwd: dir.path().to_path_buf(),
+        agent_dir,
+        provider: None,
+        model: None,
+        api_key: None,
+        thinking: None,
+        session_dir: None,
+        session_file: None,
+        faux_script: None,
+        supervisor_link: None,
+        telemetry_disabled: None,
+        cron_store: None,
+        queued_steering_probe: None,
+    })
+    .unwrap();
+    let resolved: Vec<String> = ["turbo", "TURBO:high"]
+        .into_iter()
+        .map(|flag| {
+            engine.configure_model(EngineModelSelection {
+                provider: None,
+                model: Some(flag.to_string()),
+                api_key: None,
+                thinking: None,
+            });
+            let model = engine.resolve_registry_model().expect("resolved model");
+            format!("{}/{}", model.provider, model.id)
+        })
+        .collect();
+    assert_eq!(resolved, ["battery/fast-model", "battery/fast-model"]);
+}
+
 #[test]
 fn settings_default_drives_unflagged_resolution() {
     let dir = tempfile::TempDir::new().unwrap();

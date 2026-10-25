@@ -445,6 +445,22 @@ impl ModelRegistry {
             .map(|(_, selector)| selector.as_str())
     }
 
+    /// A `--model` reference with its models.json alias expanded: `alias`
+    /// becomes `provider/model-id`, and `alias:<thinking-level>` keeps its
+    /// suffix (`provider/model-id:<level>`); `None` when no alias is named.
+    #[must_use]
+    pub fn expand_model_alias(&self, reference: &str) -> Option<String> {
+        if let Some(selector) = self.resolve_model_alias(reference) {
+            return Some(selector.to_string());
+        }
+        let (alias, level) = reference.trim().rsplit_once(':')?;
+        if !super::resolver::is_valid_thinking_level(level) {
+            return None;
+        }
+        self.resolve_model_alias(alias)
+            .map(|selector| format!("{selector}:{level}"))
+    }
+
     /// The alias models.json gives the model, if any.
     #[must_use]
     pub fn model_alias(&self, provider: &str, model_id: &str) -> Option<&str> {

@@ -315,6 +315,7 @@ mod tests {
                             {
                                 "id": "mock-vision",
                                 "name": "Mock Vision",
+                                "alias": "eyes",
                                 "api": "mock-battery",
                                 "contextWindow": 128_000,
                                 "maxTokens": 4096,
@@ -396,6 +397,21 @@ mod tests {
             .resolve_image_turn_route(false)
             .expect("image-free batches stay on the session model");
         assert!(none.is_none());
+    }
+
+    /// `imageModel` accepts a models.json alias.
+    #[test]
+    fn image_route_resolves_an_image_model_alias() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let engine = image_route_engine(dir.path(), &serde_json::json!({ "imageModel": "Eyes" }));
+        let route = engine
+            .resolve_image_turn_route(true)
+            .expect("the alias routes")
+            .expect("the text-only session model routes");
+        assert_eq!(
+            (route.model.provider.as_str(), route.model.id.as_str()),
+            ("battery", "mock-vision")
+        );
     }
 
     #[test]
