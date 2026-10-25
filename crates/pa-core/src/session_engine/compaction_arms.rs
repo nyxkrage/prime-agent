@@ -403,7 +403,10 @@ impl AgentSession {
             options,
             source,
             model,
-            refine::default_refiner_call(api_key, self.agent.session_id().map(str::to_string)),
+            refine::default_refiner_call(super::compaction_exec::SessionCallAuth {
+                api_key,
+                session_id: self.agent.session_id().map(str::to_string),
+            }),
             global_harness_dir,
         )
         .await

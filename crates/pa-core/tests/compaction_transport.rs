@@ -4,7 +4,7 @@ use std::time::Duration;
 use pa_core::session_engine::branch_summarization::{
     generate_branch_summary, GenerateBranchSummaryOptions, DEFAULT_BRANCH_RESERVE_TOKENS,
 };
-use pa_core::session_engine::compaction_exec::complete_summary_call;
+use pa_core::session_engine::compaction_exec::{complete_summary_call, SessionCallAuth};
 use pa_core::session_engine::refine::default_refiner_call;
 use pa_types::session::{AgentMessage, EntryBase, FileEntry};
 use serde_json::{json, Value};
@@ -92,14 +92,21 @@ async fn mock_summary(
     (model, request_rx, server)
 }
 
+/// The mock provider's key, with no owning session.
+fn synthetic_auth() -> SessionCallAuth {
+    SessionCallAuth {
+        api_key: Some("synthetic-key".into()),
+        session_id: None,
+    }
+}
+
 #[tokio::test]
 async fn summary_respects_mandatory_thinking() {
     let (model, request, server) = mock_summary(Reply::Complete).await;
     let summary = complete_summary_call(
         &model,
-        Some("synthetic-key".into()),
+        synthetic_auth(),
         None,
-        /*session_id*/ None,
         512,
         Vec::new(),
         None,
@@ -125,9 +132,8 @@ async fn dropped_summary_closes_hung_transport() {
         let task = tokio::spawn(async move {
             complete_summary_call(
                 &model,
-                Some("synthetic-key".into()),
+                synthetic_auth(),
                 None,
-                /*session_id*/ None,
                 512,
                 Vec::new(),
                 on_delta,
@@ -169,9 +175,8 @@ async fn summary_preserves_unspecified_reasoning_when_off_is_supported() {
         let model = serde_json::from_value(wire).unwrap();
         complete_summary_call(
             &model,
-            Some("synthetic-key".into()),
+            synthetic_auth(),
             None,
-            /*session_id*/ None,
             512,
             Vec::new(),
             None,
@@ -226,13 +231,9 @@ async fn branch_summary_respects_mandatory_thinking() {
 #[tokio::test]
 async fn refiner_call_respects_mandatory_thinking() {
     let (model, request, server) = mock_summary(Reply::Complete).await;
-    let reply = default_refiner_call(Some("synthetic-key".into()), /*session_id*/ None)(
-        model,
-        "system",
-        "prompt".into(),
-    )
-    .await
-    .unwrap();
+    let reply = default_refiner_call(synthetic_auth())(model, "system", "prompt".into())
+        .await
+        .unwrap();
     assert!(matches!(
         reply.content.as_slice(),
         [pa_types::ai::AssistantContentBlock::Text(text)] if text.text == "summary"

@@ -9,8 +9,8 @@ use super::compaction_exec;
 use super::compaction_exec::{
     add_assistant_usage, build_summarization_request, build_turn_prefix_request,
     compaction_entry_for, complete_summary_call, details_for, file_ops_block, split_summary,
-    summed_usage, CompactionDetails, CompactionResult, SummaryDeltaSink, SummarySlice,
-    NO_PRIOR_HISTORY,
+    summed_usage, CompactionDetails, CompactionResult, SessionCallAuth, SummaryDeltaSink,
+    SummarySlice, NO_PRIOR_HISTORY,
 };
 use super::compaction_utils;
 use crate::session::manager::SessionManager;
@@ -244,8 +244,7 @@ async fn summary_call_with_retry(
     compaction: Option<&super::semantic_edges::SemanticCompaction>,
     summary_headers: Option<std::collections::BTreeMap<String, String>>,
     model: &pa_types::ai::Model,
-    api_key: Option<String>,
-    session_id: Option<&str>,
+    auth: SessionCallAuth,
     max_tokens: u64,
     mut request: Vec<AgentMessage>,
     on_delta: Option<SummaryDeltaSink>,
@@ -255,9 +254,8 @@ async fn summary_call_with_retry(
         super::semantic_edges::summary_slice_call(compaction, summary_headers.clone(), |headers| {
             complete_summary_call(
                 model,
-                api_key.clone(),
+                auth.clone(),
                 headers,
-                session_id,
                 max_tokens,
                 request.clone(),
                 on_delta.clone(),
@@ -281,9 +279,7 @@ async fn summary_call_with_retry(
         }
     }
     let retry = super::semantic_edges::summary_slice_call(compaction, summary_headers, |headers| {
-        complete_summary_call(
-            model, api_key, headers, session_id, max_tokens, request, None, failure,
-        )
+        complete_summary_call(model, auth, headers, max_tokens, request, None, failure)
     })
     .await?;
     // Both attempts are wire calls, so both bill: the slice's usage is their sum.
@@ -401,8 +397,10 @@ pub(crate) async fn summarize_attempt(
             attempt.semantic_compaction.as_ref(),
             summary_headers.clone(),
             &model,
-            api_key.clone(),
-            options.session_id.as_deref(),
+            SessionCallAuth {
+                api_key: api_key.clone(),
+                session_id: options.session_id.clone(),
+            },
             history_max_tokens,
             request,
             options.summary_delta.clone(),
@@ -425,8 +423,10 @@ pub(crate) async fn summarize_attempt(
             attempt.semantic_compaction.as_ref(),
             summary_headers.clone(),
             &model,
-            api_key.clone(),
-            options.session_id.as_deref(),
+            SessionCallAuth {
+                api_key: api_key.clone(),
+                session_id: options.session_id.clone(),
+            },
             turn_prefix_max_tokens,
             request,
             None,
