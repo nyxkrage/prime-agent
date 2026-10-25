@@ -271,3 +271,38 @@ fn project_percentage_overrides_global_and_stale_writes_preserve_external_settin
     first.reload().unwrap();
     assert_eq!(first.get_compaction_threshold_percent(), 60.5);
 }
+
+/// Regression: `freeformTools` resolves per scope. A project `{"enabled": false}` overrides a
+/// global per-provider `true` (a deep merge kept the global provider entry, which wins over
+/// `enabled`), and a project that leaves it unset falls back to the global value.
+#[test]
+fn freeform_tools_project_scope_decides_on_its_own() {
+    let resolve = |project: Option<&str>| {
+        let storage = Arc::new(InMemorySettingsStorage::default());
+        storage
+            .with_lock(SettingsScope::Global, &mut |_| {
+                Some(r#"{"freeformTools":{"providers":{"openai":true,"opencode-go":true}}}"#.into())
+            })
+            .unwrap();
+        if let Some(project) = project {
+            storage
+                .with_lock(SettingsScope::Project, &mut |_| Some(project.to_string()))
+                .unwrap();
+        }
+        let settings = SettingsManager::from_storage(storage).get_freeform_tools();
+        ["openai", "opencode-go", "openai-codex"].map(|provider| settings.is_enabled_for(provider))
+    };
+
+    assert_eq!(
+        [
+            resolve(Some(r#"{"freeformTools":{"enabled":false}}"#)),
+            resolve(Some(r#"{"theme":"light"}"#)),
+            resolve(None),
+        ],
+        [
+            [false, false, false],
+            [true, true, true],
+            [true, true, true]
+        ]
+    );
+}

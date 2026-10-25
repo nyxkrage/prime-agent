@@ -863,10 +863,21 @@ impl SettingsManager {
         self.merged.request_timing.unwrap_or(false)
     }
 
-    /// `freeformTools`, merged across scopes (unset resolves to the built-in defaults).
+    /// `freeformTools`, resolved per scope rather than deep-merged: the highest scope that sets
+    /// it (runtime overrides, then project, then global) decides on its own, so a project
+    /// `{"enabled": false}` turns every provider off even under a global per-provider `true`.
+    /// Unset everywhere resolves to the built-in defaults.
     #[must_use]
     pub fn get_freeform_tools(&self) -> super::types::FreeformToolsSettings {
-        self.merged.freeform_tools.clone().unwrap_or_default()
+        [&self.runtime_overrides, &self.project, &self.global]
+            .into_iter()
+            .find_map(|scope| {
+                scope
+                    .freeform_tools
+                    .clone()
+                    .filter(|settings| *settings != super::types::FreeformToolsSettings::default())
+            })
+            .unwrap_or_default()
     }
 
     #[must_use]

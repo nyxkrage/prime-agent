@@ -256,6 +256,8 @@ pub struct TelemetrySettings {
 
 /// `freeformTools`: send free-text tools (`python_repl`) as raw-text custom tools on providers
 /// whose API has that form (the `OpenAI` Responses `"type": "custom"` tools). Rust-only setting.
+/// Not deep-merged: the highest scope that sets it decides alone
+/// (`SettingsManager::get_freeform_tools`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FreeformToolsSettings {
