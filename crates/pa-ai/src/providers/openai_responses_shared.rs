@@ -288,14 +288,16 @@ pub fn convert_responses_messages(
                                 // keeps the call after its reasoning item: an item id dropped while
                                 // its `rs_` reasoning item is still sent is rejected ("reasoning
                                 // item provided without its required following item"). A stored
-                                // non-`ctc_` id (an `fc_` id recorded as a function call) goes out
-                                // as `ctc_<id>`, mirroring the `function_call` rule below. Another
-                                // model's item id is omitted. History keeps the stored id.
+                                // `fc_` id (a call recorded as a function call) goes out as
+                                // `ctc_<id>`, mirroring the `function_call` rule below; any other
+                                // id passes through unchanged (gateways may issue their own item
+                                // ids). Another model's item id is omitted. History keeps the
+                                // stored id.
                                 if let Some(item_id) = item_id.filter(|_| is_same_model) {
-                                    let item_id = if item_id.starts_with("ctc_") {
-                                        item_id.to_string()
-                                    } else {
+                                    let item_id = if item_id.starts_with("fc_") {
                                         normalize_id_part(&format!("ctc_{item_id}"))
+                                    } else {
+                                        item_id.to_string()
                                     };
                                     entry.insert("id".into(), json!(item_id));
                                 }
@@ -466,6 +468,31 @@ mod tests {
             headers: None,
             compat: None,
         }
+    }
+
+    /// An `openai` provider model on the `openai-responses` API.
+    fn openai_model() -> Model {
+        Model {
+            id: "gpt-5.5".into(),
+            name: "gpt-5.5".into(),
+            api: "openai-responses".into(),
+            provider: "openai".into(),
+            base_url: "https://api.openai.com/v1".into(),
+            ..codex_model()
+        }
+    }
+
+    /// `messages` as recorded by `model`: every assistant turn carries its api, provider and id,
+    /// so the conversion treats them as same-model history.
+    fn recorded_by(model: &Model, mut messages: Vec<Message>) -> Vec<Message> {
+        for message in &mut messages {
+            if let Message::Assistant(assistant) = message {
+                assistant.api.clone_from(&model.api);
+                assistant.provider.clone_from(&model.provider);
+                assistant.model.clone_from(&model.id);
+            }
+        }
+        messages
     }
 
     fn user(text: &str) -> Message {
@@ -1172,5 +1199,42 @@ mod tests {
                 json!({ "type": "function_call_output", "call_id": "call_x", "output": "ok" }),
             ]
         );
+    }
+
+    /// Regression: replaying a same-model call as a `custom_tool_call` rewrites only a stored
+    /// `fc_` item id (to `ctc_<id>`), mirroring the `function_call` side, which rewrites only
+    /// `ctc_`. A `ctc_` id and a gateway's own item id pass through unchanged.
+    #[test]
+    fn custom_tool_call_rewrites_only_fc_item_ids() {
+        let cases = [
+            ("call_x|fc_y", "ctc_fc_y"),
+            ("call_x|ctc_y", "ctc_y"),
+            ("call_x|gw_item_1", "gw_item_1"),
+        ];
+        let opencode_model = Model {
+            provider: "opencode-go".into(),
+            ..openai_model()
+        };
+        for model in [codex_model(), openai_model(), opencode_model] {
+            for (tool_call_id, expected_id) in cases {
+                let items = convert_with_tools(
+                    &model,
+                    recorded_by(&model, reasoning_call_history(tool_call_id)),
+                    vec![python_tool(Some("code"))],
+                );
+                assert_eq!(
+                    items.get(2),
+                    Some(&json!({
+                        "type": "custom_tool_call",
+                        "id": expected_id,
+                        "call_id": "call_x",
+                        "name": "python_repl",
+                        "input": "print(1)",
+                    })),
+                    "provider {}, id {tool_call_id}",
+                    model.provider
+                );
+            }
+        }
     }
 }
