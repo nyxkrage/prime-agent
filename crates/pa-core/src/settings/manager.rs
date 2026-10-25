@@ -609,12 +609,12 @@ impl SettingsManager {
     /// `rlm.find_models` lists and `rlm.spawn`/`rlm.create_session` accept.
     /// Rust-only; `None` is unrestricted (never the `enabledModels` scope);
     /// global scope only, like [`Self::get_allowed_models`], so a project can
-    /// neither widen nor redefine it; a list that trims to empty behaves as unset.
-    /// A wrong-typed value also reads `None` here (the lenient load drops it);
-    /// enforcement goes through [`crate::models::SubagentModelFilter::load`],
-    /// which fails closed on it.
+    /// neither widen nor redefine it; blank patterns are dropped.
+    /// A wrong-typed value or a list of only blank patterns also reads `None`
+    /// here; enforcement goes through
+    /// [`crate::models::SubagentModelFilter::load`], which fails closed on both.
     #[must_use]
-    pub fn get_subagent_models(&self) -> Option<Vec<String>> {
+    pub(crate) fn get_subagent_models(&self) -> Option<Vec<String>> {
         let patterns = self.global.subagent_models.as_ref()?;
         let patterns: Vec<String> = patterns
             .iter()

@@ -194,11 +194,13 @@ custom models in `models[]`:
 ```
 
 Use an alias to name a model when you select it: `rlm.spawn(model="sol")`,
-`rlm.create_session(model=...)`, `--model`, and `imageModel`. An alias is a single
-word with no `/`, spaces, or glob characters. It must be unique across all providers
-and must not equal any real model ID. If an alias breaks these rules, `models.json`
-fails to load with an error naming both models. `modelOverrides.<id>.name` is still
-only a display name.
+`rlm.create_session(model=...)`, `--model` (also with a thinking level, as in
+`--model sol:high`), and `imageModel`. An alias is a single word with no `/`, `:`,
+spaces, or glob characters. It must be unique across all providers and must not equal
+any real model ID or the part of an ID after a `/` (an alias `DeepSeek-R1` would
+otherwise capture references to `deepseek-ai/DeepSeek-R1`). If an alias breaks these
+rules, `models.json` fails to load with an error naming both models.
+`modelOverrides.<id>.name` is still only a display name.
 
 To limit which models subagents can use, set `subagentModels` in the global
 `~/.prime/agent/settings.json`. Entries are `provider/model-id` selectors or
@@ -211,12 +213,14 @@ To limit which models subagents can use, set `subagentModels` in the global
 Aliases do not work in `subagentModels` or `allowedModels`: the filter always checks
 the real `provider/model-id` name. An alias you pass to `rlm.spawn` resolves to its
 real name first, and that name is what gets checked. An entry that equals an alias
-matches nothing; the agent logs a warning for it, and a refused spawn names it.
+matches nothing. A top-level session shows a warning naming it with the first prompt,
+and a refused spawn or a refused model under `allowedModels` names it too.
 
 When `subagentModels` is set:
 
 - `rlm.find_models()` lists only authenticated models that match. An aliased model
-  appears under its alias, with the full selector alongside.
+  keeps its display name and also carries its `alias`; a query matches the selector,
+  the ID, the alias, or the display name.
 - `rlm.spawn` and `rlm.create_session` refuse any other model, even an
   authenticated one, and the error lists the allowed models. This also applies to a
   spawn without `model=` that inherits a parent model outside the list. The agent
@@ -224,6 +228,8 @@ When `subagentModels` is set:
 - The system prompt lists the allowed models.
 
 Only the global setting counts. A project's `.prime/agent/settings.json` cannot
-change it. When `subagentModels` is unset, subagents are not filtered.
+change it. When `subagentModels` is unset or an empty list, subagents are not
+filtered. A malformed value (not a list of strings, or a list of only empty strings)
+refuses every subagent model until it is fixed.
 `enabledModels` never applies to subagents. A spawned model must pass both
 `allowedModels` and `subagentModels`.

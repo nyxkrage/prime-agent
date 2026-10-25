@@ -131,10 +131,39 @@ class RlmSubagentRegistryTest(unittest.TestCase):
         self.assertEqual(models[0].id, "claude-opus-4-7")
         self.assertEqual(models[0].name, "Claude Opus 4.7")
         self.assertEqual(models[0].selector, "anthropic/claude-opus-4-7")
+        self.assertIsNone(models[0].alias)
         host_request.assert_awaited_once_with(
             "rlm.find_models",
             {"query": "opus", "limit": 3},
         )
+
+    def test_find_models_carries_the_alias(self) -> None:
+        entry = {
+            "provider": "openai",
+            "id": "gpt-6.1-sol",
+            "name": "GPT-6.1 Sol",
+            "selector": "openai/gpt-6.1-sol",
+            "alias": "sol",
+        }
+        host_request = AsyncMock(return_value={"models": [entry]})
+        with patch.object(rlm_module, "host_request", host_request):
+            models = asyncio.run(rlm_module.find_models("sol"))
+        self.assertEqual(
+            models,
+            [
+                rlm_module.RLMModel(
+                    provider="openai",
+                    id="gpt-6.1-sol",
+                    name="GPT-6.1 Sol",
+                    selector="openai/gpt-6.1-sol",
+                    alias="sol",
+                )
+            ],
+        )
+        host_request = AsyncMock(return_value={"models": [{**entry, "alias": 42}]})
+        with patch.object(rlm_module, "host_request", host_request):
+            with self.assertRaisesRegex(RuntimeError, "invalid model entry"):
+                asyncio.run(rlm_module.find_models("sol"))
 
     def test_rejects_invalid_model_search_input_and_response(self) -> None:
         with self.assertRaisesRegex(TypeError, "query must be str"):

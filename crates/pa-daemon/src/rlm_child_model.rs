@@ -38,6 +38,7 @@ pub fn catalog_models(agent_dir: &Path) -> Vec<RlmModelInfo> {
             } else {
                 model.name.clone()
             },
+            alias: None,
         })
         .collect()
 }

@@ -47,6 +47,8 @@ class RLMModel:
     id: str
     name: str
     selector: str
+    # The models.json alias (the short name to spawn the model by), if any.
+    alias: str | None = None
 
 
 @dataclass(frozen=True)
@@ -211,7 +213,10 @@ def _model_from_payload(payload: Any) -> RLMModel:
     selector = payload.get("selector")
     if not all(isinstance(value, str) and value for value in (provider, model_id, name, selector)):
         raise RuntimeError("rlm.find_models returned an invalid model entry")
-    return RLMModel(provider=provider, id=model_id, name=name, selector=selector)
+    alias = payload.get("alias")
+    if alias is not None and not (isinstance(alias, str) and alias):
+        raise RuntimeError("rlm.find_models returned an invalid model entry")
+    return RLMModel(provider=provider, id=model_id, name=name, selector=selector, alias=alias)
 
 
 async def create_session(

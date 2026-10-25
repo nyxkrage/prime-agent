@@ -490,16 +490,17 @@ pub struct RlmHostBridge {
 }
 
 /// Where the bridge reads settings from: the session cwd and agent dir.
-pub struct RlmSettingsDirs {
-    pub cwd: std::path::PathBuf,
-    pub agent_dir: std::path::PathBuf,
+#[derive(Clone)]
+pub(crate) struct RlmSettingsDirs {
+    pub(crate) cwd: std::path::PathBuf,
+    pub(crate) agent_dir: std::path::PathBuf,
 }
 
 impl RlmHostBridge {
     /// Build the bridge over one child-session host: the daemon supplies
     /// [`SupervisorChildSessions`]; session embeddings without one pass
     /// [`NoRlmChildren`] (built against the session's own persistence).
-    pub fn new(
+    pub(crate) fn new(
         registry: Arc<ModelRegistry>,
         host: Arc<dyn RlmSubagentHost>,
         usage: Arc<super::rlm_usage::RlmChildUsageAttributions>,
@@ -519,16 +520,25 @@ impl RlmHostBridge {
     }
 
     /// Resolve a models.json alias in a requested child model to its
-    /// selector (counting the alias use); other references pass through
-    /// for the host's resolution.
-    fn resolve_requested_model(&self, model: Option<String>) -> Option<String> {
-        let model = model?;
+    /// selector; other references pass through for the host's resolution.
+    /// The second half is the alias use to count once the host admits the
+    /// spawn (a refused spawn counts as a refusal only).
+    fn resolve_requested_model(
+        &self,
+        model: Option<String>,
+    ) -> (
+        Option<String>,
+        Option<super::telemetry::SubagentModelPolicyEvent>,
+    ) {
+        let Some(model) = model else {
+            return (None, None);
+        };
         match self.registry.resolve_model_alias(&model) {
-            Some(selector) => {
-                self.note_policy(super::telemetry::SubagentModelPolicyEvent::AliasSpawn);
-                Some(selector.to_string())
-            }
-            None => Some(model),
+            Some(selector) => (
+                Some(selector.to_string()),
+                Some(super::telemetry::SubagentModelPolicyEvent::AliasSpawn),
+            ),
+            None => (Some(model), None),
         }
     }
 
@@ -587,11 +597,17 @@ fn register_find_models(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmHost
                 // The live `subagentModels` filter: global settings only
                 // (the cwd only locates the store), matched against canonical
                 // `provider/model-id` names (aliases are never expanded).
-                let settings = crate::settings::SettingsManager::create(
-                    &bridge.settings_dirs.cwd,
-                    &bridge.settings_dirs.agent_dir,
-                );
-                let filter = crate::models::SubagentModelFilter::load(&settings);
+                // The settings read is blocking disk I/O: off the runtime.
+                let RlmSettingsDirs { cwd, agent_dir } = bridge.settings_dirs.clone();
+                let filter = tokio::task::spawn_blocking(move || {
+                    crate::models::SubagentModelFilter::load(
+                        &crate::settings::SettingsManager::create(&cwd, &agent_dir),
+                    )
+                })
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!("rlm.find_models: the settings read task failed: {error}")
+                })?;
                 match &filter {
                     crate::models::SubagentModelFilter::Only(_) => bridge
                         .note_policy(super::telemetry::SubagentModelPolicyEvent::FilteredFind),
@@ -603,19 +619,22 @@ fn register_find_models(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmHost
                          the global settings.json is fixed."
                     ),
                 }
-                // An aliased model is listed under its alias (the name to
-                // spawn it by), the full selector alongside.
+                // An aliased model carries its alias (the name to spawn it
+                // by) beside its display name; the query matches either.
                 let models: Vec<RlmModelInfo> = registry
                     .get_rlm_subagent_models(&filter)
                     .into_iter()
                     .map(|model| RlmModelInfo {
                         provider: model.provider.clone(),
                         id: model.id.clone(),
-                        name: match registry.model_alias(&model.provider, &model.id) {
-                            Some(alias) => alias.to_string(),
-                            None if model.name.is_empty() => model.id.clone(),
-                            None => model.name.clone(),
+                        name: if model.name.is_empty() {
+                            model.id.clone()
+                        } else {
+                            model.name.clone()
                         },
+                        alias: registry
+                            .model_alias(&model.provider, &model.id)
+                            .map(str::to_string),
                     })
                     .collect();
                 let matches = find_rlm_model_matches(query, &models, limit as usize);
@@ -678,7 +697,8 @@ fn register_run(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmHostBridge>)
                     anyhow::bail!("rlm.spawn prompt must be a string");
                 };
                 let mut request = spawn_request_from_payload(prompt, data)?;
-                request.model = bridge.resolve_requested_model(request.model.take());
+                let (model, alias_use) = bridge.resolve_requested_model(request.model.take());
+                request.model = model;
                 // TS `_startRlmChildRun`: the spawning request is the turn
                 // whose tool call is executing now (the anchor is computed
                 // before the spawn admission's first await); a spawn
@@ -701,6 +721,9 @@ fn register_run(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmHostBridge>)
                     .spawn(request)
                     .await
                     .inspect_err(|error| bridge.note_spawn_error(error))?;
+                if let Some(event) = alias_use {
+                    bridge.note_policy(event);
+                }
                 // TS `_findLastAssistantMessage` at spawn: the spawning
                 // assistant row (persisted at `message_end` before tool
                 // execution) is the target every child-usage attribution
@@ -765,7 +788,7 @@ fn register_create_session(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmH
                 }
                 let model = optional_string_kwarg(&kwargs, "model", OPERATION)?;
                 let model = normalize_requested_rlm_subagent_model(model, OPERATION)?;
-                let model = bridge.resolve_requested_model(model);
+                let (model, alias_use) = bridge.resolve_requested_model(model);
                 let thinking = optional_string_kwarg(&kwargs, "thinking", OPERATION)?;
                 let thinking =
                     normalize_requested_rlm_subagent_thinking_level(thinking, OPERATION)?
@@ -792,6 +815,9 @@ fn register_create_session(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmH
                     })
                     .await
                     .inspect_err(|error| bridge.note_spawn_error(error))?;
+                if let Some(event) = alias_use {
+                    bridge.note_policy(event);
+                }
                 serde_json::to_value(&handle).map_err(anyhow::Error::new)
             })
         }),
@@ -964,6 +990,9 @@ mod tests {
     type RecordedRename = (String, Option<String>);
 
     struct RecordingHost {
+        /// While set, a spawn or session on this selector is refused with
+        /// the typed `subagentModels` refusal (as the real hosts do).
+        refused_selector: std::sync::Mutex<Option<String>>,
         spawn_requests: Arc<Mutex<Vec<RlmSpawnRequest>>>,
         create_requests: Arc<Mutex<Vec<RlmCreateSessionRequest>>>,
         targets: Arc<Mutex<Vec<String>>>,
@@ -974,6 +1003,7 @@ mod tests {
     impl RecordingHost {
         fn new() -> Arc<Self> {
             Arc::new(Self {
+                refused_selector: std::sync::Mutex::new(None),
                 spawn_requests: Arc::new(Mutex::new(Vec::new())),
                 create_requests: Arc::new(Mutex::new(Vec::new())),
                 targets: Arc::new(Mutex::new(Vec::new())),
@@ -981,12 +1011,31 @@ mod tests {
                 renames: Arc::new(Mutex::new(Vec::new())),
             })
         }
+
+        fn refusal(&self, model: Option<&str>) -> anyhow::Result<()> {
+            let refused = self.refused_selector.lock().unwrap();
+            match (refused.as_deref(), model) {
+                (Some(refused), Some(model)) if refused == model => {
+                    Err(crate::models::SubagentModelRefusal {
+                        selector: model.to_string(),
+                        cause: crate::models::SubagentModelRefusalCause::OutsideFilter {
+                            permitted: Vec::new(),
+                            alias_patterns: Vec::new(),
+                        },
+                    }
+                    .into())
+                }
+                _ => Ok(()),
+            }
+        }
     }
 
     impl RlmSubagentHost for RecordingHost {
         fn spawn(&self, request: RlmSpawnRequest) -> RlmHostFuture<RlmSpawnHandle> {
             let requests = Arc::clone(&self.spawn_requests);
+            let refusal = self.refusal(request.model.as_deref());
             Box::pin(async move {
+                refusal?;
                 requests.lock().await.push(request);
                 Ok(RlmSpawnHandle {
                     rlm_child_id: "sub-1".into(),
@@ -1001,7 +1050,9 @@ mod tests {
             request: RlmCreateSessionRequest,
         ) -> RlmHostFuture<RlmCreateSessionHandle> {
             let requests = Arc::clone(&self.create_requests);
+            let refusal = self.refusal(request.model.as_deref());
             Box::pin(async move {
+                refusal?;
                 requests.lock().await.push(request);
                 Ok(RlmCreateSessionHandle {
                     active_session_id: "live-2".into(),
@@ -1370,7 +1421,7 @@ mod tests {
 
     /// `subagentModels` (global settings, canonical selectors) narrows
     /// `rlm.find_models` to exactly the filtered set, the aliased model
-    /// listed under its alias; an alias as a pattern matches nothing
+    /// carrying its alias; an alias as a pattern matches nothing
     /// (patterns match canonical names only).
     #[tokio::test]
     async fn find_models_returns_only_the_subagent_filter() {
@@ -1400,8 +1451,9 @@ mod tests {
                 {
                     "provider": "test-provider",
                     "id": "glm-5.3-turbo",
-                    "name": "turbo",
+                    "name": "GLM Turbo",
                     "selector": "test-provider/glm-5.3-turbo",
+                    "alias": "turbo",
                 },
             ] })
         );
@@ -1422,8 +1474,9 @@ mod tests {
             json!({ "models": [{
                 "provider": "test-provider",
                 "id": "glm-5.3-turbo",
-                "name": "turbo",
+                "name": "GLM Turbo",
                 "selector": "test-provider/glm-5.3-turbo",
+                "alias": "turbo",
             }] })
         );
         std::fs::write(
@@ -1439,6 +1492,85 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(response, json!({ "models": [] }));
+    }
+
+    /// The display name stays searchable beside the alias and selector.
+    #[tokio::test]
+    async fn find_models_matches_the_display_name_and_the_alias() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let wiring = wired(dir.path(), None);
+        std::fs::write(
+            dir.path().join("settings.json"),
+            r#"{ "subagentModels": ["test-provider/*"] }"#,
+        )
+        .unwrap();
+        let turbo = json!({ "models": [{
+            "provider": "test-provider",
+            "id": "glm-5.3-turbo",
+            "name": "GLM Turbo",
+            "selector": "test-provider/glm-5.3-turbo",
+            "alias": "turbo",
+        }] });
+        for query in ["GLM Turbo", "turbo"] {
+            let response = call(
+                &wiring,
+                "rlm.find_models",
+                json!({ "type": "rlm.find_models", "query": query }),
+            )
+            .await
+            .unwrap();
+            assert_eq!(response, turbo, "query {query:?}");
+        }
+    }
+
+    /// The bridge's policy counters: a filtered `rlm.find_models`, a
+    /// `subagentModels` refusal from the host, and an alias spawn the host
+    /// admitted; an alias spawn the host refused counts as a refusal only.
+    #[tokio::test]
+    async fn the_bridge_counts_refusals_and_admitted_alias_spawns() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = RecordingHost::new();
+        *host.refused_selector.lock().unwrap() = Some("test-provider/glm-5.3-turbo".to_string());
+        let wiring = wired(
+            dir.path(),
+            Some(Arc::clone(&host) as Arc<dyn RlmSubagentHost>),
+        );
+        let telemetry = Arc::new(super::super::telemetry::SessionTelemetry::counting_only());
+        assert!(wiring.rlm.telemetry.set(Arc::clone(&telemetry)).is_ok());
+        std::fs::write(
+            dir.path().join("settings.json"),
+            r#"{ "subagentModels": ["test-provider/glm-5.3"] }"#,
+        )
+        .unwrap();
+        call(
+            &wiring,
+            "rlm.find_models",
+            json!({ "type": "rlm.find_models", "query": "" }),
+        )
+        .await
+        .unwrap();
+        let spawn = json!({ "type": "rlm.run", "prompt": "go", "kwargs": { "model": "turbo" } });
+        let create = json!({
+            "type": "rlm.create_session", "prompt": "go", "kwargs": { "model": "turbo" }
+        });
+        for (request_type, data) in [("rlm.run", &spawn), ("rlm.create_session", &create)] {
+            let error = call(&wiring, request_type, data.clone()).await.unwrap_err();
+            assert!(error
+                .downcast_ref::<crate::models::SubagentModelRefusal>()
+                .is_some());
+        }
+        assert_eq!(telemetry.subagent_model_policy_counts(), [1, 0, 2]);
+        *host.refused_selector.lock().unwrap() = None;
+        call(&wiring, "rlm.run", spawn).await.unwrap();
+        call(&wiring, "rlm.create_session", create).await.unwrap();
+        call(
+            &wiring,
+            "rlm.run",
+            json!({ "type": "rlm.run", "prompt": "go", "kwargs": { "model": "test-provider/glm-5.3" } }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(telemetry.subagent_model_policy_counts(), [1, 2, 2]);
     }
 
     /// A malformed `subagentModels` (a string, not a list) fails closed:

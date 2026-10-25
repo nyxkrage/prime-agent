@@ -464,7 +464,7 @@ impl ModelRegistry {
 
     /// The alias models.json gives the model, if any.
     #[must_use]
-    pub fn model_alias(&self, provider: &str, model_id: &str) -> Option<&str> {
+    pub(crate) fn model_alias(&self, provider: &str, model_id: &str) -> Option<&str> {
         let selector = format!("{provider}/{model_id}");
         self.model_aliases
             .iter()
@@ -499,7 +499,7 @@ impl ModelRegistry {
     /// The models RLM children may use: [`Self::get_rlm_searchable_models`]
     /// narrowed by the settings `subagentModels` filter.
     #[must_use]
-    pub fn get_rlm_subagent_models(
+    pub(crate) fn get_rlm_subagent_models(
         &self,
         filter: &super::allowlist::SubagentModelFilter,
     ) -> Vec<&Model> {

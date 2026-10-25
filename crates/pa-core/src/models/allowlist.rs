@@ -55,7 +55,8 @@ impl SubagentModelFilter {
     /// Read the global `subagentModels` list, failing closed on an
     /// unreadable global document or a malformed value (the lenient settings
     /// load drops a wrong-typed field to unset, which must not read as
-    /// "no filter"); explicit `null` and an empty list stay unset.
+    /// "no filter"), including a list of only blank patterns; explicit
+    /// `null` and an empty list stay unset.
     #[must_use]
     pub fn load(settings: &crate::settings::SettingsManager) -> Self {
         if let Some(error) = settings
@@ -78,10 +79,13 @@ impl SubagentModelFilter {
         }
         match raw.get("subagentModels") {
             None | Some(serde_json::Value::Null) => Self::Unrestricted,
+            Some(serde_json::Value::Array(items)) if items.is_empty() => Self::Unrestricted,
+            // Only blank patterns: a restriction was written but names
+            // nothing, which must not read as "no filter".
             Some(serde_json::Value::Array(items))
                 if items.iter().all(serde_json::Value::is_string) =>
             {
-                Self::Unrestricted
+                Self::Unreadable("subagentModels contains only empty patterns".to_string())
             }
             Some(_) => Self::Unreadable(
                 "subagentModels is present but is not an array of strings".to_string(),
@@ -332,6 +336,12 @@ mod tests {
         assert_eq!(
             load(r#"{ "subagentModels": [] }"#),
             SubagentModelFilter::Unrestricted
+        );
+        assert_eq!(
+            load(r#"{ "subagentModels": ["", " "] }"#),
+            SubagentModelFilter::Unreadable(
+                "subagentModels contains only empty patterns".to_string()
+            )
         );
         assert_eq!(load("{}"), SubagentModelFilter::Unrestricted);
         assert_eq!(

@@ -18,6 +18,8 @@ pub struct RlmModelInfo {
     pub provider: String,
     pub id: String,
     pub name: String,
+    /// The models.json alias, searchable beside the selector, id, and name.
+    pub alias: Option<String>,
 }
 
 impl RlmModelInfo {
@@ -34,6 +36,10 @@ pub struct RlmModelMatch {
     pub id: String,
     pub name: String,
     pub selector: String,
+    /// The models.json alias (the short name to spawn the model by);
+    /// omitted on the wire when the model has none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
 }
 
 fn error(operation: &str, message: &str) -> anyhow::Error {
@@ -236,11 +242,21 @@ pub fn find_rlm_model_matches(
         } else {
             model.name.clone()
         };
-        let fields = [selector.clone(), model.id.clone(), name.clone()];
+        // An absent alias is an empty field, which never matches a
+        // non-empty query.
+        let fields = [
+            selector.clone(),
+            model.id.clone(),
+            model.alias.clone().unwrap_or_default(),
+            name.clone(),
+        ];
         let normalized_fields: Vec<String> = fields
             .iter()
             .map(|f| normalize_model_search_text(f))
             .collect();
+        // Every exact match outranks every prefix match, which outranks
+        // every partial match; within a tier the earlier field wins.
+        let tier = fields.len() as f64;
         let mut score = if normalized_query.is_empty() {
             0.0
         } else {
@@ -256,12 +272,12 @@ pub fn find_rlm_model_matches(
                 .iter()
                 .position(|f| f.starts_with(&normalized_query))
             {
-                score = 3.0 + prefix as f64;
+                score = tier + prefix as f64;
             } else if let Some(partial) = normalized_fields
                 .iter()
                 .position(|f| f.contains(&normalized_query))
             {
-                score = 6.0 + partial as f64;
+                score = 2.0 * tier + partial as f64;
             }
         }
         if score.is_finite() {
@@ -271,6 +287,7 @@ pub fn find_rlm_model_matches(
                     id: model.id.clone(),
                     name,
                     selector,
+                    alias: model.alias.clone(),
                 },
                 score,
             ));
@@ -417,11 +434,13 @@ mod tests {
                 provider: "a".into(),
                 id: "glm-5.3".into(),
                 name: "GLM 5.3".into(),
+                alias: None,
             },
             RlmModelInfo {
                 provider: "pi".into(),
                 id: "glm-5.3-turbo".into(),
                 name: "GLM".into(),
+                alias: None,
             },
         ];
         let matches = find_rlm_model_matches("glm-5.3", &models, 8);
@@ -441,11 +460,13 @@ mod tests {
                 provider: "prime-inference".into(),
                 id: "z-ai/glm-5.3".into(),
                 name: "GLM".into(),
+                alias: None,
             },
             RlmModelInfo {
                 provider: "a".into(),
                 id: "glm-5.3".into(),
                 name: "GLM".into(),
+                alias: None,
             },
         ];
         assert!(find_unique_rlm_short_form_model_match("glm-5.3", &models, None).is_none());

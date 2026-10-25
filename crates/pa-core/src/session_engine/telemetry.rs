@@ -124,6 +124,42 @@ impl SessionTelemetry {
     }
 }
 
+#[cfg(test)]
+impl SessionTelemetry {
+    /// A handle with no sinks and no subscription, for seams that only
+    /// count; read back through [`Self::subagent_model_policy_counts`].
+    pub(crate) fn counting_only() -> Self {
+        let client = TelemetryClient::spawn(pa_telemetry::TelemetryClientConfig::new("test"))
+            .expect("spawn client");
+        let state = Arc::new(Mutex::new(TelemetryState {
+            session_id: String::new(),
+            started_at: 0,
+            totals: SessionTotals::default(),
+            active_run: None,
+            tool_starts: HashMap::new(),
+            telemetry_enabled: None,
+            recording: true,
+            now: Arc::new(now_millis),
+        }));
+        Self::detached(client, state, "test".to_string())
+    }
+
+    /// The subagent-model policy counts:
+    /// `[filtered finds, alias spawns, filter refusals]`.
+    pub(crate) fn subagent_model_policy_counts(&self) -> [u64; 3] {
+        let values = self
+            .counters
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        [
+            values.subagent_models_find_count,
+            values.model_alias_spawn_count,
+            values.subagent_models_refused_count,
+        ]
+    }
+}
+
 /// Everything the subscriber accumulates. One mutex: the agent delivers events
 /// serially, but the tracker is also fed from compaction call sites outside
 /// the event stream.
@@ -339,7 +375,7 @@ struct CounterValues {
 /// One subagent-model policy moment at the RLM bridge, counted on
 /// `agent session ended` (counts only; never a model ID or alias).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SubagentModelPolicyEvent {
+pub(crate) enum SubagentModelPolicyEvent {
     /// `rlm.find_models` answered under an active `subagentModels` filter.
     FilteredFind,
     /// `rlm.spawn`/`rlm.create_session` named its model by a models.json alias.
@@ -713,7 +749,7 @@ impl SessionTelemetry {
 
     /// A subagent-model policy moment (`subagentModels` filtering, alias
     /// spawns, filter refusals), counted on `agent session ended`.
-    pub fn note_subagent_model_policy(&self, event: SubagentModelPolicyEvent) {
+    pub(crate) fn note_subagent_model_policy(&self, event: SubagentModelPolicyEvent) {
         self.counters.with(|values| match event {
             SubagentModelPolicyEvent::FilteredFind => values.subagent_models_find_count += 1,
             SubagentModelPolicyEvent::AliasSpawn => values.model_alias_spawn_count += 1,
