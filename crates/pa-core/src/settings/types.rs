@@ -254,10 +254,8 @@ pub struct TelemetrySettings {
     pub local_mirror: Option<bool>,
 }
 
-/// `freeformTools`: send free-text tools (`python_repl`) as raw-text custom tools on providers
-/// whose API has that form (the `OpenAI` Responses `"type": "custom"` tools). Rust-only setting.
-/// Not deep-merged: the highest scope that sets it decides alone
-/// (`SettingsManager::get_freeform_tools`).
+/// `freeformTools`: send free-text tools (`python_repl`) as `OpenAI` Responses custom tools.
+/// Rust-only setting; not deep-merged (`SettingsManager::get_freeform_tools`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FreeformToolsSettings {
@@ -267,12 +265,11 @@ pub struct FreeformToolsSettings {
     pub providers: Option<std::collections::BTreeMap<String, bool>>,
 }
 
-/// Providers that get freeform tools when nothing is configured (verified to accept them).
+/// Providers verified to accept freeform tools: on when nothing is configured.
 const FREEFORM_TOOLS_DEFAULT_PROVIDERS: [&str; 2] = ["openai", "openai-codex"];
 
 impl FreeformToolsSettings {
-    /// Resolve for one provider: its `providers` entry, then the global `enabled`, then the
-    /// built-in default (on for `openai` and `openai-codex` only).
+    /// The provider's entry, then `enabled`, then the built-in default.
     #[must_use]
     pub fn is_enabled_for(&self, provider: &str) -> bool {
         self.providers
@@ -413,7 +410,7 @@ pub struct Settings {
     /// Log per-request provider timing phases to the diagnostic log
     /// (unset means OFF, exactly the TS default).
     pub request_timing: Option<bool>,
-    /// Freeform (raw-text custom) tools per provider; unset uses the built-in defaults.
+    /// Freeform (raw-text custom) tools per provider.
     pub freeform_tools: Option<FreeformToolsSettings>,
     /// Unknown keys survive load/save round-trips (forward compatibility).
     #[serde(flatten, skip_serializing_if = "serde_json::Map::is_empty")]

@@ -272,9 +272,9 @@ fn project_percentage_overrides_global_and_stale_writes_preserve_external_settin
     assert_eq!(first.get_compaction_threshold_percent(), 60.5);
 }
 
-/// Regression: `freeformTools` resolves per scope. A project `{"enabled": false}` overrides a
-/// global per-provider `true` (a deep merge kept the global provider entry, which wins over
-/// `enabled`), and a project that leaves it unset falls back to the global value.
+/// Regression: a project `{"enabled": false}` overrides a global per-provider `true` (a deep
+/// merge kept the global entry), and a project that leaves `freeformTools` unset falls back to
+/// the global value.
 #[test]
 fn freeform_tools_project_scope_decides_on_its_own() {
     let resolve = |project: Option<&str>| {

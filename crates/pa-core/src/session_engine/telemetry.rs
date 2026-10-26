@@ -377,13 +377,11 @@ impl SessionCounters {
         });
     }
 
-    /// One model request went out with freeform tools enabled (the setting resolved on for the
-    /// request's provider and a free-text tool was offered); no tool content is recorded.
+    /// One Responses request offered a freeform tool.
     pub fn note_freeform_tools_request(&self) {
         self.with(|values| values.freeform_tools_request_count += 1);
     }
 
-    /// The freeform-tools request count so far (the gate's tests read it directly).
     #[cfg(test)]
     pub(crate) fn freeform_tools_request_count(&self) -> u64 {
         self.inner

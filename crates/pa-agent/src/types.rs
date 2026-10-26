@@ -524,11 +524,10 @@ pub trait AgentTool: Send + Sync {
     fn accepts_alias(&self, _name: &str) -> bool {
         false
     }
-    /// The one string argument that carries this tool's whole free-text
-    /// payload (e.g. `code`), when the tool has one. Providers with a raw-text
-    /// tool form send such a tool in that form and hand the raw input back as
-    /// `{<argument>: input}`, so execution sees the same arguments either way.
-    /// `None` (the default) keeps the structured JSON-schema form.
+    /// The one string argument carrying this tool's whole free-text payload
+    /// (e.g. `code`). Providers with a raw-text tool form send the tool that
+    /// way and hand the input back as `{<argument>: input}`, so execution sees
+    /// the same arguments. `None` keeps the JSON-schema form.
     fn freeform_argument(&self) -> Option<&str> {
         None
     }

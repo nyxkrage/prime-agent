@@ -574,10 +574,9 @@ pub struct Tool {
     pub name: String,
     pub description: String,
     pub parameters: Value,
-    /// The one string argument that carries the tool's whole free-text payload (`code` for
-    /// `python_repl`). When set, providers with a raw-text tool form (the `OpenAI` Responses
-    /// custom tools) send the tool in that form and map the raw input onto this argument; every
-    /// other provider ignores it. `None` keeps the structured JSON-schema form everywhere.
+    /// The one string argument carrying the tool's whole free-text payload (`code` for
+    /// `python_repl`). Providers with a raw-text tool form (`OpenAI` Responses custom tools)
+    /// send the tool that way and map the raw input onto it; others ignore it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub freeform_argument: Option<String>,
 }
