@@ -1,7 +1,5 @@
-# Kernel-side package for the bundled apply-patch skill. It reports every
-# changed hunk through the bundled `edit` skill's diff display, and the kernel
-# always installs `edit` alongside it; `edit` is not published on PyPI, so it
-# is intentionally not declared as a dependency.
+# Imports the bundled `edit` skill (always installed beside it, not on PyPI),
+# so it is not declared as a dependency.
 [project]
 name = "apply-patch"
 version = "0.1.0"

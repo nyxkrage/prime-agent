@@ -176,15 +176,16 @@ window; it does not change every model's global compaction percentage.
 
 ### Edit format (`apply_patch`)
 
-Models trained on OpenAI's V4A patch format edit files from the Python REPL with
-`await apply_patch(r'''*** Begin Patch ... *** End Patch''')`, in the format of OpenAI
-Codex's `apply_patch`. The whole patch is checked before any file is written, files are
-rewritten in place like `edit` does, and a failure or interruption while writing undoes
-every change already made; each changed hunk shows its diff like an `edit` call.
-Other models keep using `edit.run(path, old_str, new_str)`.
+Models trained on OpenAI's V4A patch format (Codex's `apply_patch`) edit files from the
+Python REPL with `await apply_patch(r'''*** Begin Patch ... *** End Patch''')`. The
+whole patch is checked before any file is written, files are rewritten in place, and a
+failure while writing undoes every change already made. Other models use
+`edit.run(path, old_str, new_str)`, which stays available everywhere.
 
-The per-model `editFormat` option in `models.json` (`"edit"` or `"apply_patch"`) picks
-the format. It works on `modelOverrides` entries and custom `models[]` entries:
+By default GPT-5.1 and newer use `apply_patch` (also under provider spellings such as
+`openai/gpt-5.1:nitro`, `ft:gpt-5.1:org::id`, or `us.openai.gpt-5.1`) and every other
+model uses `edit`. Override it per model with `editFormat` (`"edit"` or `"apply_patch"`)
+in `models.json`, on `modelOverrides` or custom `models[]` entries:
 
 ```json
 {
@@ -201,14 +202,7 @@ the format. It works on `modelOverrides` entries and custom `models[]` entries:
 }
 ```
 
-If `editFormat` is unset, GPT-5.1 and newer (`gpt-5.1`, `gpt-5.2`, `gpt-5.10`,
-`gpt-6-luna`) use `apply_patch` and every other model uses `edit`. The model name is
-read through provider spellings: a provider prefix (`openai/gpt-5.1`), a variant suffix
-(`openai/gpt-5.1:nitro`), a fine-tune (`ft:gpt-5.1:org::id`), or a dotted vendor prefix
-(`openai.gpt-5.1`). Set `"applyPatch": "off"` in `settings.json` to make every model use
-`edit` (the default is `"auto"`). The format follows the session's current model: a
-`/model` switch (or a failover to another model) re-resolves it, swaps the prompt's
-edit guidance, and binds or hides `apply_patch` in the running kernel without
-restarting it. `edit` stays available in every session.
-`prime-agent prompt --model <provider/id>` shows the chosen variant in the core and
-usage layer sources.
+`"applyPatch": "off"` in `settings.json` makes every model use `edit`. The format
+follows the session's current model: a `/model` switch or a failover swaps the prompt's
+edit guidance and binds or hides `apply_patch` in the running kernel. `prime-agent
+prompt --model <provider/id>` shows the chosen variant in the layer sources.

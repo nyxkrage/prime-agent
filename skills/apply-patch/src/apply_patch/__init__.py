@@ -1,17 +1,11 @@
 """Apply V4A patches (the OpenAI Codex ``apply_patch`` format) from the kernel.
 
-Parsing and matching follow Codex's ``codex-rs/apply-patch`` (the lenient
-streaming parser, ``seek_sequence``'s whitespace/punctuation tolerance, the
-line-based replacement with preserved line endings, and the Add/Delete/Move
-semantics). Files are written in place, as Codex and ``edit.run`` write them,
-so a rewritten file keeps its identity (hardlinks, permissions, ownership,
-extended attributes). The one deliberate difference is atomicity: Codex
-applies file by file and can stop halfway, while here the whole patch is
-first replayed against an in-memory view of the filesystem (contents,
-existence, directory structure, write access), then every file to rewrite is
-opened for writing before anything changes, and a failure or interruption
-while writing undoes every change already made. Each changed hunk emits the
-same diff display event as the equivalent ``edit.run`` call.
+Parsing and matching follow Codex's ``codex-rs/apply-patch``, and files are
+written in place like Codex and ``edit.run`` write them (a rewritten file keeps
+its identity). The one deliberate difference is atomicity: Codex applies file
+by file and can stop halfway; here the whole patch is replayed in memory first,
+every file to rewrite is opened before anything changes, and a failure or
+interruption while writing undoes every change already made.
 """
 
 from __future__ import annotations
@@ -59,13 +53,10 @@ class PatchError(ValueError):
     """A patch that failed to parse, validate, or write.
 
     ``reason`` is one of ``parse``, ``context_not_found``, ``file_missing``,
-    ``path_conflict``, ``not_writable``, ``unreadable``, ``apply_failed``
-    (keep in sync with ``APPLY_PATCH_FAILURE_REASONS`` in
-    ``crates/pa-telemetry/src/catalog.rs``). Every reason except
-    ``apply_failed`` is raised before anything is written. ``apply_failed``
-    means a filesystem operation failed while the patch was being written;
-    every change already made was undone, unless the message lists files
-    whose undo failed too.
+    ``path_conflict``, ``not_writable``, ``unreadable``, ``apply_failed`` (keep
+    in sync with ``APPLY_PATCH_FAILURE_REASONS`` in pa-telemetry). Only
+    ``apply_failed`` is raised after writing started; its changes were undone
+    unless the message lists files whose undo failed too.
     """
 
     def __init__(self, message: str, *, reason: str) -> None:
@@ -753,31 +744,10 @@ async def _report(files: int, hunks: int, *, failure: str | None) -> None:
 async def run(patch: str) -> list[dict[str, Any]]:
     """Apply one V4A patch (``*** Begin Patch`` ... ``*** End Patch``).
 
-    The whole patch is parsed and replayed in memory first; any failure
-    raises :class:`PatchError` and no file is touched. Then every change is
-    written (existing files in place); a failure or interruption while
-    writing undoes every change already made. Each changed hunk emits the
-    same diff display event as the equivalent ``edit.run`` call.
-
-    Args:
-        patch: The patch text. Sections: ``*** Add File: <path>`` (``+``
-            lines; replaces an existing file), ``*** Delete File: <path>``,
-            ``*** Update File: <path>`` (optionally followed by ``*** Move to:
-            <path>``, which replaces an existing destination). Update hunks
-            start with ``@@`` or ``@@ <line>`` (the hunk is searched after the
-            first line matching it), then `` ``/``-``/``+`` lines;
-            ``*** End of File`` pins a hunk to the end of the file. Hunks
-            apply in order, each searched after the previous one; a hunk with
-            no context or ``-`` lines appends to the end of the file.
-
-    Returns:
-        One summary per file operation, in patch order:
-        ``{"path", "operation", "hunks", "move_to"}``.
-
-    Raises:
-        PatchError: The patch is malformed, a file is missing, unreadable,
-            or not writable, a path is blocked, a hunk's lines are not found,
-            or a write failed (see :class:`PatchError`).
+    The whole patch is checked first; any failure raises :class:`PatchError`
+    with no file touched. A failure while writing undoes every change. Each
+    changed hunk shows its diff like ``edit.run``. Returns one
+    ``{"path", "operation", "hunks", "move_to"}`` summary per file operation.
     """
     try:
         operations = _parse(patch)

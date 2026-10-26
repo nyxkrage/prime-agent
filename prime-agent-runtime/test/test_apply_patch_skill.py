@@ -206,43 +206,25 @@ class ApplyPatchSkillTest(unittest.TestCase):
                 _patch("*** Delete File: a.txt", "x"),
                 f"Invalid patch hunk on line 3: 'x' {not_a_header}",
             ),
+            # Codex: every Add line starts with '+'; a blank line is not a header.
+            (
+                _patch("*** Add File: b.txt", "+one", "", "+two"),
+                f"Invalid patch hunk on line 4: '' {not_a_header}",
+            ),
+            # Consecutive `@@` anchors are rejected, as in Codex.
+            (
+                _patch("*** Update File: a.txt", "@@ class A:", "@@     def f(self):", "-a"),
+                "Invalid patch hunk on line 4: Unexpected line found in update hunk: "
+                f"'@@     def f(self):'. {unexpected}",
+            ),
+            (
+                _patch("*** Update File: a.txt", "*** Move to: new.txt"),
+                "Invalid patch hunk on line 2: Update file hunk for path 'a.txt' is empty",
+            ),
         ]
         for patch, message in cases:
             with self.subTest(message=message):
                 self.assert_untouched(patch, "parse", message)
-
-    def test_a_bare_blank_line_in_an_added_file_is_rejected(self) -> None:
-        # Codex: every Add line starts with '+'; a blank line is not a header.
-        self.assert_untouched(
-            _patch("*** Add File: b.txt", "+one", "", "+two"),
-            "parse",
-            "Invalid patch hunk on line 4: '' is not a valid hunk header. Valid hunk headers: "
-            "'*** Add File: {path}', '*** Delete File: {path}', '*** Update File: {path}'",
-        )
-
-    def test_consecutive_anchors_are_rejected_like_codex(self) -> None:
-        self.write("nested.py", "class A:\n    def f(self):\n        return 1\n")
-        self.assert_untouched(
-            _patch(
-                "*** Update File: nested.py",
-                "@@ class A:",
-                "@@     def f(self):",
-                "-        return 1",
-                "+        return 2",
-            ),
-            "parse",
-            "Invalid patch hunk on line 4: Unexpected line found in update hunk: "
-            "'@@     def f(self):'. Every line should start with ' ' (context line), "
-            "'+' (added line), or '-' (removed line)",
-        )
-
-    def test_move_without_hunks_is_an_empty_update(self) -> None:
-        self.write("old.txt", "x\n")
-        self.assert_untouched(
-            _patch("*** Update File: old.txt", "*** Move to: new.txt"),
-            "parse",
-            "Invalid patch hunk on line 2: Update file hunk for path 'old.txt' is empty",
-        )
 
     def test_envelope_whitespace_heredoc_and_crlf_are_tolerated(self) -> None:
         patches = [
@@ -309,27 +291,6 @@ class ApplyPatchSkillTest(unittest.TestCase):
         self.assertEqual(self.read("a.txt"), "new a\n*** Update File: b.txt\nnew b\n")
         self.assertFalse((self.root / "b.txt").exists())
 
-    def test_a_blank_line_after_the_header_is_an_empty_context_line(self) -> None:
-        self.write("a.txt", "a\nb\n")
-        self.apply(_patch("*** Update File: a.txt", "", "@@", "-b", "+B"))
-        self.assertEqual(self.read("a.txt"), "a\nB\n")
-
-    def test_bare_blank_lines_in_a_hunk_are_empty_context(self) -> None:
-        # Codex test_streaming_patch_parser_preserves_bare_empty_update_lines.
-        self.write("ctx.txt", "context before\n\ncontext after\nold\n")
-        self.apply(
-            _patch(
-                "*** Update File: ctx.txt",
-                "@@",
-                " context before",
-                "",
-                " context after",
-                "-old",
-                "+new",
-            )
-        )
-        self.assertEqual(self.read("ctx.txt"), "context before\n\ncontext after\nnew\n")
-
     def test_a_context_only_hunk_is_a_no_op(self) -> None:
         self.write("a.txt", "a\n")
         summary = self.apply(_patch("*** Update File: a.txt", "@@", " a"))
@@ -341,29 +302,97 @@ class ApplyPatchSkillTest(unittest.TestCase):
 
     # -- matching (Codex seek_sequence.rs / file_update.rs) -------------------
 
-    def test_hunks_apply_in_order_after_the_previous_one(self) -> None:
-        # Hunk 1 introduces a line that hunk 2's context also matches; hunk 2
-        # is searched after hunk 1 in the original file, so it resolves to the
-        # original marker.
-        self.write("order.txt", "start\nmarker\nend\n")
-        self.apply(
-            _patch(
-                "*** Update File: order.txt",
-                "@@",
-                " start",
-                "+marker",
-                "+inserted",
-                "@@",
-                "-marker",
-                "+MARKER",
-            )
-        )
-        self.assertEqual(self.read("order.txt"), "start\nmarker\ninserted\nMARKER\nend\n")
-
-    def test_an_anchor_selects_the_occurrence_after_it(self) -> None:
-        self.write("dup.py", "x = 1\nprint(x)\ny = 2\nprint(x)\n")
-        self.apply(_patch("*** Update File: dup.py", "@@ y = 2", "-print(x)", "+print(y)"))
-        self.assertEqual(self.read("dup.py"), "x = 1\nprint(x)\ny = 2\nprint(y)\n")
+    def test_updates_match_like_codex(self) -> None:
+        cases = [
+            # Hunk 2 is searched after hunk 1 in the original file, so the
+            # marker hunk 1 inserts is not the one hunk 2 changes.
+            (
+                "start\nmarker\nend\n",
+                ["@@", " start", "+marker", "+inserted", "@@", "-marker", "+MARKER"],
+                "start\nmarker\ninserted\nMARKER\nend\n",
+            ),
+            # An anchor selects the occurrence after it.
+            (
+                "x = 1\nprint(x)\ny = 2\nprint(x)\n",
+                ["@@ y = 2", "-print(x)", "+print(y)"],
+                "x = 1\nprint(x)\ny = 2\nprint(y)\n",
+            ),
+            # Whitespace-tolerant context keeps the file's text.
+            (
+                "if x:   \n    y = 1\n",
+                ["@@", " if x:", "-    y = 1", "+    y = 2"],
+                "if x:   \n    y = 2\n",
+            ),
+            # Codex test_update_line_with_unicode_dash.
+            (
+                "import asyncio  # local import \u2013 avoids top\u2011level dep\n",
+                [
+                    "@@",
+                    "-import asyncio  # local import - avoids top-level dep",
+                    "+import asyncio  # HELLO",
+                ],
+                "import asyncio  # HELLO\n",
+            ),
+            ("x\ny\nx\n", ["@@", "-x", "+X", "*** End of File"], "x\ny\nX\n"),
+            # Codex test_update_file_hunk_interleaved_changes.
+            (
+                "a\nb\nc\nd\ne\nf\n",
+                [
+                    "@@",
+                    " a",
+                    "-b",
+                    "+B",
+                    "@@",
+                    " c",
+                    " d",
+                    "-e",
+                    "+E",
+                    "@@",
+                    " f",
+                    "+g",
+                    "*** End of File",
+                ],
+                "a\nB\nc\nd\nE\nf\ng\n",
+            ),
+            # Codex test_pure_addition_chunk_followed_by_removal: a pure
+            # addition goes to the end of the file.
+            (
+                "line1\nline2\nline3\n",
+                [
+                    "@@",
+                    "+after-context",
+                    "+second-line",
+                    "@@",
+                    " line1",
+                    "-line2",
+                    "-line3",
+                    "+line2-replacement",
+                ],
+                "line1\nline2-replacement\nafter-context\nsecond-line\n",
+            ),
+            # Even after an anchor, and a file without a final newline gains one.
+            ("a\nb", ["@@ a", "+appended"], "a\nb\nappended\n"),
+            # A blank line after the header, and bare blank lines in a hunk,
+            # are empty context (Codex
+            # test_streaming_patch_parser_preserves_bare_empty_update_lines).
+            ("a\nb\n", ["", "@@", "-b", "+B"], "a\nB\n"),
+            (
+                "context before\n\ncontext after\nold\n",
+                ["@@", " context before", "", " context after", "-old", "+new"],
+                "context before\n\ncontext after\nnew\n",
+            ),
+            # A pure addition goes before a final empty line, and a final
+            # empty line left after the hunks is the file's last newline.
+            ("a\n\n", ["@@", "+new"], "a\nnew\n"),
+            ("a\n\n\n", ["@@", "+new"], "a\n\nnew\n"),
+            ("a\n\n", ["@@", "-a", "+b"], "b\n"),
+            ("a\nb\n", ["@@", " a", "-b", "+b", "+"], "a\nb\n"),
+        ]
+        for original, body, expected in cases:
+            with self.subTest(original=original, body=body):
+                self.write("f.txt", original)
+                self.apply(_patch("*** Update File: f.txt", *body))
+                self.assertEqual(self.read("f.txt"), expected)
 
     def test_a_missing_anchor_names_it(self) -> None:
         self.write("a.py", "a\n")
@@ -373,98 +402,13 @@ class ApplyPatchSkillTest(unittest.TestCase):
             "Failed to find context 'def nope():' in a.py (hunk 1)",
         )
 
-    def test_whitespace_tolerant_context_keeps_the_file_text(self) -> None:
-        self.write("ws.py", "if x:   \n    y = 1\n")
-        self.apply(_patch("*** Update File: ws.py", "@@", " if x:", "-    y = 1", "+    y = 2"))
-        self.assertEqual(self.read("ws.py"), "if x:   \n    y = 2\n")
-
-    def test_ascii_patches_match_typographic_punctuation(self) -> None:
-        # Codex test_update_line_with_unicode_dash.
-        self.write(
-            "unicode.py", "import asyncio  # local import \u2013 avoids top\u2011level dep\n"
-        )
-        self.apply(
-            _patch(
-                "*** Update File: unicode.py",
-                "@@",
-                "-import asyncio  # local import - avoids top-level dep",
-                "+import asyncio  # HELLO",
-            )
-        )
-        self.assertEqual(self.read("unicode.py"), "import asyncio  # HELLO\n")
-
     def test_end_of_file_hunks_only_match_at_the_end(self) -> None:
-        self.write("tail.txt", "x\ny\nx\n")
-        self.apply(_patch("*** Update File: tail.txt", "@@", "-x", "+X", "*** End of File"))
-        self.assertEqual(self.read("tail.txt"), "x\ny\nX\n")
-        # No fallback to an earlier position when the end does not match.
         self.write("head.txt", "foo\nbar\nbaz\n")
         self.assert_untouched(
             _patch("*** Update File: head.txt", "@@", "-foo", "+FOO", "*** End of File"),
             "context_not_found",
             "Failed to find expected lines in head.txt (hunk 1):\nfoo",
         )
-
-    def test_interleaved_chunks_and_an_end_of_file_append(self) -> None:
-        # Codex test_update_file_hunk_interleaved_changes.
-        self.write("interleaved.txt", "a\nb\nc\nd\ne\nf\n")
-        self.apply(
-            _patch(
-                "*** Update File: interleaved.txt",
-                "@@",
-                " a",
-                "-b",
-                "+B",
-                "@@",
-                " c",
-                " d",
-                "-e",
-                "+E",
-                "@@",
-                " f",
-                "+g",
-                "*** End of File",
-            )
-        )
-        self.assertEqual(self.read("interleaved.txt"), "a\nB\nc\nd\nE\nf\ng\n")
-
-    def test_pure_additions_append_to_the_end_of_the_file(self) -> None:
-        # Codex test_pure_addition_chunk_followed_by_removal.
-        self.write("panic.txt", "line1\nline2\nline3\n")
-        self.apply(
-            _patch(
-                "*** Update File: panic.txt",
-                "@@",
-                "+after-context",
-                "+second-line",
-                "@@",
-                " line1",
-                "-line2",
-                "-line3",
-                "+line2-replacement",
-            )
-        )
-        self.assertEqual(
-            self.read("panic.txt"), "line1\nline2-replacement\nafter-context\nsecond-line\n"
-        )
-        # Even after an anchor, and a file without a final newline gains one.
-        self.write("ins.txt", "a\nb")
-        self.apply(_patch("*** Update File: ins.txt", "@@ a", "+appended"))
-        self.assertEqual(self.read("ins.txt"), "a\nb\nappended\n")
-
-    def test_a_final_empty_line_reads_as_the_last_newline(self) -> None:
-        # Codex: a pure addition goes before a final empty line, and a final
-        # empty line left after the hunks is the file's last newline.
-        for original, body, expected in [
-            ("a\n\n", ["@@", "+new"], "a\nnew\n"),
-            ("a\n\n\n", ["@@", "+new"], "a\n\nnew\n"),
-            ("a\n\n", ["@@", "-a", "+b"], "b\n"),
-            ("a\nb\n", ["@@", " a", "-b", "+b", "+"], "a\nb\n"),
-        ]:
-            with self.subTest(original=original, body=body):
-                self.write("blank.txt", original)
-                self.apply(_patch("*** Update File: blank.txt", *body))
-                self.assertEqual(self.read("blank.txt"), expected)
 
     def test_a_patch_and_its_hand_written_edit_calls_are_equivalent(self) -> None:
         original = "def f():\n    return 1\n\n\ndef g():\n    return 2\n"
@@ -544,18 +488,34 @@ class ApplyPatchSkillTest(unittest.TestCase):
             [{"path": "there.txt", "old_str": "x\n", "new_str": "y\n", "start_line": 1}],
         )
 
-    def test_move_onto_an_existing_file_replaces_it(self) -> None:
-        self.write("src.txt", "line\n")
-        self.write("dst.txt", "old destination\n")
-        self.apply(
-            _patch("*** Update File: src.txt", "*** Move to: dst.txt", "@@", "-line", "+line2")
-        )
-        self.assertEqual(self.tree(), {"dst.txt": "line2\n"})
-
-    def test_delete_then_add_the_same_path(self) -> None:
-        self.write("same.txt", "before\n")
-        self.apply(_patch("*** Delete File: same.txt", "*** Add File: same.txt", "+after"))
-        self.assertEqual(self.tree(), {"same.txt": "after\n"})
+    def test_replacing_paths(self) -> None:
+        cases = [
+            # A move onto an existing file replaces it.
+            (
+                {"src.txt": "line\n", "dst.txt": "old destination\n"},
+                ["*** Update File: src.txt", "*** Move to: dst.txt", "@@", "-line", "+line2"],
+                {"dst.txt": "line2\n"},
+            ),
+            (
+                {"same.txt": "before\n"},
+                ["*** Delete File: same.txt", "*** Add File: same.txt", "+after"],
+                {"same.txt": "after\n"},
+            ),
+            # A deleted file can become a directory.
+            (
+                {"notes": "flat\n"},
+                ["*** Delete File: notes", "*** Add File: notes/today.txt", "+y"],
+                {"notes/today.txt": "y\n"},
+            ),
+        ]
+        for files, body, expected in cases:
+            with self.subTest(body=body):
+                for name, content in files.items():
+                    self.write(name, content)
+                self.apply(_patch(*body))
+                self.assertEqual(self.tree(), expected)
+                for name in expected:
+                    (self.root / name).unlink()
 
     def test_missing_files_fail_validation(self) -> None:
         self.write("a.txt", "a\n")
@@ -647,11 +607,6 @@ class ApplyPatchSkillTest(unittest.TestCase):
             "path_conflict",
             "Failed to delete file pkg: path is a directory",
         )
-
-    def test_a_deleted_file_can_become_a_directory(self) -> None:
-        self.write("notes", "flat\n")
-        self.apply(_patch("*** Delete File: notes", "*** Add File: notes/today.txt", "+y"))
-        self.assertEqual(self.tree(), {"notes/today.txt": "y\n"})
 
     @unittest.skipIf(_AS_ROOT, "root bypasses permission bits")
     def test_unwritable_targets_fail_validation(self) -> None:
@@ -877,40 +832,42 @@ class ApplyPatchSkillTest(unittest.TestCase):
         )
         self.assertEqual(self.tree(), before)
 
-    def test_updates_follow_symlinks_and_deletes_remove_the_link(self) -> None:
-        self.write("real.txt", "real\n")
-        os.symlink("real.txt", self.root / "link.txt")
-        self.apply(_patch("*** Update File: link.txt", "@@", "-real", "+through link"))
-        self.assertEqual(self.tree(), {"link.txt": "-> real.txt", "real.txt": "through link\n"})
-        self.apply(_patch("*** Delete File: link.txt"))
-        self.assertEqual(self.tree(), {"real.txt": "through link\n"})
-
-    def test_deleting_a_link_leaves_its_target_in_play(self) -> None:
-        self.write("real.txt", "real\n")
-        os.symlink("real.txt", self.root / "link.txt")
-        # The target still exists after the link is deleted, so it can be
-        # updated, and an Add of it replaces it (Codex Add semantics).
-        self.apply(
-            _patch(
-                "*** Delete File: link.txt",
-                "*** Update File: real.txt",
-                "@@",
-                "-real",
-                "+updated",
-            )
-        )
-        self.assertEqual(self.tree(), {"real.txt": "updated\n"})
-        os.symlink("real.txt", self.root / "link.txt")
-        self.apply(_patch("*** Delete File: link.txt", "*** Add File: real.txt", "+added"))
-        self.assertEqual(self.tree(), {"real.txt": "added\n"})
-
-    def test_moving_a_link_moves_the_link_not_its_target(self) -> None:
-        self.write("real.txt", "real\n")
-        os.symlink("real.txt", self.root / "link.txt")
-        self.apply(
-            _patch("*** Update File: link.txt", "*** Move to: moved.txt", "@@", "-real", "+moved")
-        )
-        self.assertEqual(self.tree(), {"moved.txt": "moved\n", "real.txt": "real\n"})
+    def test_updates_follow_links_while_deletes_and_moves_take_the_link(self) -> None:
+        cases = [
+            (
+                ["*** Update File: link.txt", "@@", "-real", "+through link"],
+                {"link.txt": "-> real.txt", "real.txt": "through link\n"},
+            ),
+            (["*** Delete File: link.txt"], {"real.txt": "real\n"}),
+            # The target is still in play after its link is deleted: it can
+            # be updated, and an Add of it replaces it (Codex Add semantics).
+            (
+                [
+                    "*** Delete File: link.txt",
+                    "*** Update File: real.txt",
+                    "@@",
+                    "-real",
+                    "+updated",
+                ],
+                {"real.txt": "updated\n"},
+            ),
+            (
+                ["*** Delete File: link.txt", "*** Add File: real.txt", "+added"],
+                {"real.txt": "added\n"},
+            ),
+            (
+                ["*** Update File: link.txt", "*** Move to: moved.txt", "@@", "-real", "+moved"],
+                {"moved.txt": "moved\n", "real.txt": "real\n"},
+            ),
+        ]
+        for body, expected in cases:
+            with self.subTest(body=body):
+                for path in self.root.iterdir():
+                    path.unlink()
+                self.write("real.txt", "real\n")
+                os.symlink("real.txt", self.root / "link.txt")
+                self.apply(_patch(*body))
+                self.assertEqual(self.tree(), expected)
 
     def test_a_link_to_a_directory_cannot_be_deleted(self) -> None:
         os.mkdir(self.root / "dir")
