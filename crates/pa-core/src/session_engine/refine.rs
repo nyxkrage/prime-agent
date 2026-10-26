@@ -613,9 +613,7 @@ impl AgentSession {
     }
 }
 
-/// The default model seam over pa-ai completion. `auth` carries the owning
-/// session's id (TS `refineHarness`/`reviewAutoRefine` take `sessionId`): the
-/// refiner calls route and cache under it like the session's own turns.
+/// The default model seam over pa-ai completion.
 #[must_use]
 pub fn default_refiner_call(
     auth: super::compaction_exec::SessionCallAuth,

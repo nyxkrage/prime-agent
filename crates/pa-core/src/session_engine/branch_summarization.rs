@@ -300,8 +300,7 @@ pub struct GenerateBranchSummaryOptions<'a> {
     /// When present, the summary call resolves its model through the
     /// `auxiliaryModel` setting with a context-window fit check.
     pub auxiliary: Option<&'a super::auxiliary_model::AuxiliaryModelContext>,
-    /// The owning session's id (TS `GenerateBranchSummaryOptions.sessionId`): the
-    /// summary call routes and caches under it like the session's own turns.
+    /// The owning session's id (TS `GenerateBranchSummaryOptions.sessionId`).
     pub session_id: Option<&'a str>,
 }
 

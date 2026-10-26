@@ -126,20 +126,16 @@ pub fn build_turn_prefix_request(messages: &[AgentMessage]) -> Vec<AgentMessage>
 /// the final summary comes from the terminal assistant message.
 pub type SummaryDeltaSink = std::sync::Arc<dyn Fn(&str) + Send + Sync>;
 
-/// How a session's out-of-loop model call (a summary, a refiner call)
-/// authenticates and routes: the resolved API key, and the owning session's
-/// durable id the call routes and caches under like the session's own turns
-/// (TS passes `this.sessionId`). `None` fields fall back to the provider's
-/// env key and a sessionless call.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// The key and owning session id for a session's out-of-loop model call (a
+/// summary, a refiner call). TS passes `this.sessionId` to these calls too.
+#[derive(Debug, Clone)]
 pub struct SessionCallAuth {
     pub api_key: Option<String>,
     pub session_id: Option<String>,
 }
 
-/// Run one summarizer wire call through `pa_ai::complete_simple`: `auth`
-/// is the key and owning session ([`SessionCallAuth`]); `headers` are the
-/// routed model's merged request headers; `on_delta` is the live sink
+/// Run one summarizer wire call through `pa_ai::complete_simple`: `headers`
+/// are the routed model's merged request headers; `on_delta` is the live sink
 /// ([`SummaryDeltaSink`]); `failure` labels the unusable-reply bails. Only a
 /// reply with non-empty text is a usable summary — anything less would be
 /// committed as the compaction row and replace the transcript. A reply

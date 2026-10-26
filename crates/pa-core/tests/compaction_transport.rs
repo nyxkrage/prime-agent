@@ -92,7 +92,6 @@ async fn mock_summary(
     (model, request_rx, server)
 }
 
-/// The mock provider's key, with no owning session.
 fn synthetic_auth() -> SessionCallAuth {
     SessionCallAuth {
         api_key: Some("synthetic-key".into()),

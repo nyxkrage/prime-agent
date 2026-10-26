@@ -59,8 +59,7 @@ pub struct CompactOptions<'a> {
     /// request id, and the compaction's terminal event lands before the
     /// compaction entry persists. `None` records nothing.
     pub semantic_edges: Option<std::sync::Arc<super::semantic_edges::SemanticEdgeRecorder>>,
-    /// The owning session's id (TS `_performCompaction` passes `this.sessionId`): every
-    /// summary call routes and caches under it like the session's own turns.
+    /// The owning session's id (TS `_performCompaction` passes `this.sessionId`).
     pub session_id: Option<String>,
 }
 
@@ -354,6 +353,10 @@ pub(crate) async fn summarize_attempt(
         }
         None => (options.model.clone(), options.api_key.clone(), None),
     };
+    let auth = SessionCallAuth {
+        api_key,
+        session_id: options.session_id.clone(),
+    };
     let history_max_tokens = history_summary_completion_budget(options.settings.reserve_tokens);
     let turn_prefix_max_tokens =
         turn_prefix_summary_completion_budget(options.settings.reserve_tokens);
@@ -397,10 +400,7 @@ pub(crate) async fn summarize_attempt(
             attempt.semantic_compaction.as_ref(),
             summary_headers.clone(),
             &model,
-            SessionCallAuth {
-                api_key: api_key.clone(),
-                session_id: options.session_id.clone(),
-            },
+            auth.clone(),
             history_max_tokens,
             request,
             options.summary_delta.clone(),
@@ -423,10 +423,7 @@ pub(crate) async fn summarize_attempt(
             attempt.semantic_compaction.as_ref(),
             summary_headers.clone(),
             &model,
-            SessionCallAuth {
-                api_key: api_key.clone(),
-                session_id: options.session_id.clone(),
-            },
+            auth.clone(),
             turn_prefix_max_tokens,
             request,
             None,
