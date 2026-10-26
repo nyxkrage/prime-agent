@@ -116,7 +116,8 @@ pub struct SessionEngine {
     pub skill_diagnostics: Vec<crate::skills::ResourceDiagnostic>,
     pub prompt_templates: Vec<PromptTemplate>,
     pub agents_files: Vec<crate::resources::ContextFile>,
-    pub system_prompt: String,
+    /// The system prompt; its model-dependent parts follow model switches.
+    pub(crate) prompt: super::session_prompt::SessionPrompt,
     /// The same instance the kernel `goal.*` host handlers reach, so `/goal`
     /// and `goal.complete()` observe one state machine.
     pub goal_driver: std::sync::Arc<tokio::sync::Mutex<super::goal_driver::GoalDriver>>,
@@ -273,8 +274,6 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // Captured before `settings` moves into the resource loader: the
     // per-cell watchdog budget (default 60s, `0` disables).
     let python_cell_timeout_ms = settings.get_python_cell_timeout_ms();
-    // Captured before `settings` moves into the resource loader: the
-    // `applyPatch` switch over the model's edit format.
     let apply_patch_setting = settings.get_apply_patch();
     let (mcp_skill_overrides, mcp_generic_servers, built_manager) =
         mcp_gating(&settings, config.agent_dir.clone()).await?;
@@ -325,13 +324,18 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         },
     };
     let model_context_window = model.context_window;
-    // The one edit-format decision for this session: the static prompt's
-    // edit guidance and the `apply-patch` kernel skill binding both follow it.
-    let edit_format = crate::models::resolve_edit_format(
+    // The model-dependent prompt inputs; the edit format also decides whether
+    // the kernel binds `apply_patch`. Both follow every model switch.
+    let (prompt_facts, model_prompt_errors) = super::session_prompt::resolve(
         apply_patch_setting,
-        &model_info.id,
+        &config.agent_dir,
+        &model_info,
         config.model_info.as_ref().and_then(|full| full.edit_format),
     );
+    let hidden_skills = crate::kernel::HiddenPythonSkills::default();
+    hidden_skills.set(super::session_prompt::hidden_skills_for(
+        prompt_facts.edit_format,
+    ));
 
     let session_id = wiring.session.lock().await.get_session_id().to_string();
     let mut handlers = wiring.handlers.clone();
@@ -471,14 +475,9 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             &mut handlers,
         );
     }
-    // One model-visible skill list, computed now that the host-handler
-    // registry is final (every registration, the refine handlers, and
-    // the in-process bash notices are in): a controller-backed bundled
-    // skill whose host request never registered drops out (TS
-    // `_modelVisibleSkills`).
-    // The `apply_patch` skill reports its adoption counters here; registered
-    // only when the skill is bound.
-    if edit_format == pa_types::ai::EditFormat::ApplyPatch {
+    // The `apply_patch` skill reports its adoption counters here. Registered
+    // in every session: a model switch can bind the skill at any point.
+    {
         let counters = std::sync::Arc::clone(&session_counters);
         handlers.register(
             super::runtime_wiring::APPLY_PATCH_REPORT_REQUEST,
@@ -488,11 +487,20 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             }),
         );
     }
-    let model_visible_skills = super::runtime_wiring::skills_for_edit_format(
-        super::runtime_wiring::model_visible_skills(resources.skills.clone(), &handlers),
-        edit_format,
-    );
+    // One model-visible skill list, computed now that the host-handler
+    // registry is final (every registration, the refine handlers, and
+    // the in-process bash notices are in): a controller-backed bundled
+    // skill whose host request never registered drops out (TS
+    // `_modelVisibleSkills`). The kernel installs and imports all of them,
+    // `apply-patch` included, so a model switch can bind it without a restart;
+    // the prompt lists `apply-patch` only for the `apply_patch` edit format.
+    let model_visible_skills =
+        super::runtime_wiring::model_visible_skills(resources.skills.clone(), &handlers);
     let python_skills = super::runtime_wiring::kernel_python_skills(&model_visible_skills);
+    let prompt_skills = super::runtime_wiring::skills_for_edit_format(
+        model_visible_skills.clone(),
+        prompt_facts.edit_format,
+    );
     // TS resolves the serper credential on the host: `!command` key refs
     // cannot run in-kernel (the websearch skill's auth.json fallback reads
     // literals and env-var names, not commands). The credential is read
@@ -522,6 +530,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         session_id,
         handlers,
         python_skills.clone(),
+        hidden_skills.clone(),
         cwd.clone(),
         &config.agent_dir,
         kernel_shell_path,
@@ -582,50 +591,68 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         });
     }
 
-    let prompt_model_selector = format!("{}/{}", model_info.provider, model_info.id);
-    let prompt_vision_capable = Some(model_info.input.contains(&pa_types::ai::ModelInput::Image));
-    let model_prompts = crate::prompts::model_prompts::load_model_prompts(
-        Some(&prompt_model_selector),
-        &config.agent_dir,
-    );
-    if !model_prompts.errors.is_empty() {
+    if !model_prompt_errors.is_empty() {
         boot_notice_rows
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(crate::prompts::model_prompts::model_prompt_error_message(
-                &model_prompts.errors,
+                &model_prompt_errors,
             ));
     }
-    let system_prompt = crate::prompts::system_prompt::build_system_prompt(
-        &crate::prompts::system_prompt::BuildSystemPromptOptions {
-            custom_prompt: resources.system_prompt.clone(),
-            model_prompt_extras: model_prompts.extras.as_deref(),
-            edit_format,
-            vision_capable: prompt_vision_capable,
-            cwd: cwd.display().to_string(),
-            messages_path: conversation_log.clone(),
-            context_files: resources
-                .agents_files
-                .iter()
-                .map(|file| (file.path.display().to_string(), file.content.clone()))
-                .collect(),
-            skills: model_visible_skills.clone(),
-            selected_tools: Some(
-                active_tool_names
-                    .iter()
-                    .map(String::as_str)
-                    .collect::<Vec<_>>(),
-            ),
-            allow_recursion: config.allow_recursion,
-            // A spawned child's prompt must read "depth: N (not root)" with
-            // the child-agent reply doctrine, never the root identity.
-            rlm_depth: config.rlm_depth,
-            daemonless: config.daemonless,
-            can_spawn: config.rlm_subagent_host.is_some(),
-            generic_mcp_servers,
-            append_system_prompt: Some(resources.append_system_prompt.join("\n\n")),
-            ..Default::default()
-        },
+    let build_prompt: super::session_prompt::PromptBuilder = {
+        let custom_prompt = resources.system_prompt.clone();
+        let cwd = cwd.display().to_string();
+        let messages_path = conversation_log.clone();
+        let context_files: Vec<(String, String)> = resources
+            .agents_files
+            .iter()
+            .map(|file| (file.path.display().to_string(), file.content.clone()))
+            .collect();
+        let skills = model_visible_skills.clone();
+        let active_tool_names = active_tool_names.clone();
+        let allow_recursion = config.allow_recursion;
+        // A spawned child's prompt must read "depth: N (not root)" with
+        // the child-agent reply doctrine, never the root identity.
+        let rlm_depth = config.rlm_depth;
+        let daemonless = config.daemonless;
+        let can_spawn = config.rlm_subagent_host.is_some();
+        let append_system_prompt = resources.append_system_prompt.join("\n\n");
+        Box::new(move |facts| {
+            crate::prompts::system_prompt::build_system_prompt(
+                &crate::prompts::system_prompt::BuildSystemPromptOptions {
+                    custom_prompt: custom_prompt.clone(),
+                    model_prompt_extras: facts.extras.as_deref(),
+                    edit_format: facts.edit_format,
+                    vision_capable: Some(facts.vision_capable),
+                    cwd: cwd.clone(),
+                    messages_path: messages_path.clone(),
+                    context_files: context_files.clone(),
+                    skills: super::runtime_wiring::skills_for_edit_format(
+                        skills.clone(),
+                        facts.edit_format,
+                    ),
+                    selected_tools: Some(
+                        active_tool_names
+                            .iter()
+                            .map(String::as_str)
+                            .collect::<Vec<_>>(),
+                    ),
+                    allow_recursion,
+                    rlm_depth,
+                    daemonless,
+                    can_spawn,
+                    generic_mcp_servers: generic_mcp_servers.clone(),
+                    append_system_prompt: Some(append_system_prompt.clone()),
+                    ..Default::default()
+                },
+            )
+        })
+    };
+    let prompt = super::session_prompt::SessionPrompt::new(
+        build_prompt,
+        apply_patch_setting,
+        config.agent_dir.clone(),
+        prompt_facts,
     );
 
     // Captured before the digest context moves the local harness dir and
@@ -643,7 +670,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             .iter()
             .any(|name| name == PYTHON_TOOL_NAME),
         include_shell_examples: active_tool_names.iter().any(|name| name == "bash"),
-        include_refine: model_visible_skills.iter().any(|skill| {
+        include_refine: prompt_skills.iter().any(|skill| {
             !skill.disable_model_invocation
                 && skill.name == crate::prompts::system_prompt::REFINE_SKILL_NAME
         }),
@@ -723,7 +750,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     };
     let agent = Agent::new(AgentOptions {
         initial_state: AgentInitialState {
-            system_prompt: Some(system_prompt.clone()),
+            system_prompt: Some(prompt.text()),
             model: Some(model),
             thinking_level: Some(thinking_level),
             tools: Some(tools),
@@ -900,8 +927,9 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     let telemetry = match (config.telemetry.take(), config.rlm_depth.unwrap_or(0)) {
         (Some(wiring), 0) => {
             let skill_counts = super::telemetry::SkillCounts {
-                skill_count: model_visible_skills.len(),
-                python_skill_count: python_skills.len(),
+                skill_count: prompt_skills.len(),
+                python_skill_count: super::runtime_wiring::kernel_python_skills(&prompt_skills)
+                    .len(),
             };
             let installed = super::telemetry::install_session_telemetry(
                 &telemetry_agent,
@@ -945,7 +973,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         skill_diagnostics: resources.skill_diagnostics,
         prompt_templates: resources.prompts,
         agents_files: resources.agents_files,
-        system_prompt,
+        prompt,
         goal_driver,
         queued_goal_context_purge: config.queued_goal_context_purge.clone(),
         mcp_manager,
@@ -959,18 +987,35 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
 }
 
 impl SessionEngine {
-    /// After a model switch, the `model.info` handler and the usage
-    /// estimate's context window follow the model the session now runs.
-    pub fn update_model_facts(&self, model: &pa_types::ai::Model) {
+    /// The current system prompt.
+    #[must_use]
+    pub fn system_prompt(&self) -> String {
+        self.prompt.text()
+    }
+
+    /// After a model switch, everything that depends on the model follows the
+    /// model the session now runs: the `model.info` handler, the usage
+    /// estimate's context window, the system prompt's model-dependent parts
+    /// (rebuilt only when they changed), and whether the kernel binds
+    /// `apply_patch` (applied before the next cell; the kernel keeps running).
+    pub async fn update_model_facts(&self, model: &pa_types::ai::Model) {
+        let info = super::turn_boundary::ModelInfo {
+            id: model.id.clone(),
+            provider: model.provider.clone(),
+            input: model.input.clone(),
+        };
         super::turn_boundary::TurnBoundaryRequests::rebind_model_facts(
             &self.turn_boundary,
-            super::turn_boundary::ModelInfo {
-                id: model.id.clone(),
-                provider: model.provider.clone(),
-                input: model.input.clone(),
-            },
+            info.clone(),
             (model.context_window > 0).then_some(model.context_window),
         );
+        let edit_format = self
+            .prompt
+            .switch(self.session.agent(), &info, model.edit_format)
+            .await;
+        self.provisioner
+            .hidden_skills()
+            .set(super::session_prompt::hidden_skills_for(edit_format));
     }
 
     /// A weak reference for lock-free kernel liveness probes without

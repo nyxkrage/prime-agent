@@ -6,6 +6,7 @@
 
 pub mod bootstrap;
 pub mod cancellation;
+mod hidden_skills;
 pub mod live_kernels;
 pub mod manager;
 pub mod orphan_journal;
@@ -20,6 +21,7 @@ pub use bootstrap::{
     KernelBootstrapProgressHandler, KernelPythonSkill, PYTHON_SKILL_IMPORT_ERROR_REPORT_MARKER,
 };
 pub use cancellation::AbortSignal;
+pub use hidden_skills::HiddenPythonSkills;
 pub use manager::ReplKernelManager;
 pub use provisioner::IpythonKernelProvisioner;
 pub use rlm_runtime::{

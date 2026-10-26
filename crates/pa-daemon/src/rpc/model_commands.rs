@@ -96,9 +96,9 @@ async fn apply_model_selection(
             .await;
         handle.model.clone_from(model);
         handle.api_key.clone_from(&resolved.api_key);
-        // The turn-boundary model facts follow the switch: `model.info` and
-        // the usage estimate's context window report the model NOW running.
-        handle.engine.update_model_facts(model);
+        // The model facts follow the switch: `model.info`, the context
+        // window, the prompt, and the `apply_patch` binding.
+        handle.engine.update_model_facts(model).await;
         let persistence = handle.engine.session.shared_persistence();
         let mut manager = persistence.lock().await;
         let _ = manager.append_model_change(&model.provider, &model.id);

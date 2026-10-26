@@ -466,10 +466,10 @@ impl SessionEngine for AgentSessionEngine {
                 core.session
                     .set_model_and_thinking_level(&model, &provider, &model_id, level),
             );
-            // The turn-boundary model facts follow the switch: `model.info`
-            // and the usage estimate's context window report the model now
-            // running. A core that is not built yet rebinds at its build.
-            core.update_model_facts(&model);
+            // The model facts follow the switch (`model.info`, the context
+            // window, the prompt, the `apply_patch` binding). A core that is
+            // not built yet resolves them at its build.
+            self.runtime.block_on(core.update_model_facts(&model));
         }
         if let Some(children) = &self.children {
             children.set_model(format!("{}/{}", model.provider, model.id));
@@ -512,7 +512,9 @@ impl SessionEngine for AgentSessionEngine {
     /// The built session's assembled prompt (the export embeds it); best-effort.
     fn export_system_prompt(&self) -> Option<String> {
         let session = self.session.try_lock().ok()?;
-        session.as_deref().map(|core| core.system_prompt.clone())
+        session
+            .as_deref()
+            .map(pa_core::session_engine::engine::SessionEngine::system_prompt)
     }
 
     /// The built session's live tool registry mapped to the export's tools
@@ -1198,7 +1200,7 @@ impl SessionEngine for AgentSessionEngine {
             self.ensure_core_session_async(&model).await?;
             let guard = self.session.lock().await;
             let engine = guard.as_deref().expect("session built above");
-            Ok(engine.system_prompt.clone())
+            Ok(engine.system_prompt())
         })
     }
 

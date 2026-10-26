@@ -50,6 +50,7 @@ pub mod turn_boundary;
 
 mod admission;
 mod compaction_arms;
+mod session_prompt;
 mod wiring;
 
 use std::sync::Arc;

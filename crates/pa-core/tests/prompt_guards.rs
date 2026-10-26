@@ -472,7 +472,7 @@ fn documented_surface_tokens(core_layer: &str) -> BTreeSet<String> {
     documented
 }
 
-/// The kernel import of the `apply-patch` skill, bound only in sessions whose edit format is
+/// The kernel import of the `apply-patch` skill, bound only while the session's edit format is
 /// `apply_patch` (so only that core-layer variant documents it).
 const APPLY_PATCH_IMPORT: &str = "apply_patch";
 
@@ -548,8 +548,7 @@ const TS_PACKAGED_SKILL_SET: &[&str] = &[
 ];
 
 /// Deliberate Rust-only bundled skills, absent from the TS packaged set: `apply-patch`, bound only
-/// for models whose edit format is `apply_patch` (by default GPT-5.1 and newer, so a session on
-/// such a model sees it unless `"applyPatch": "off"` is set).
+/// while the session's model edits with `apply_patch` (by default GPT-5.1 and newer).
 const RUST_ONLY_PACKAGED_SKILLS: &[&str] = &["apply-patch"];
 
 /// The bundled skills directory matches the TS packaged set name-for-name (plus the deliberate

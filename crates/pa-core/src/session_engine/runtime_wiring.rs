@@ -224,10 +224,8 @@ pub(crate) const APPLY_PATCH_SKILL_NAME: &str = "apply-patch";
 /// over (`{"files", "hunks", "failure"}`; no paths or content).
 pub(crate) const APPLY_PATCH_REPORT_REQUEST: &str = "apply_patch.report";
 
-/// The skill list for a session's resolved edit format: the `apply-patch`
-/// skill stays only for [`EditFormat::ApplyPatch`]. The kernel bootstrap and
-/// the prompt's skills inventory both read the filtered list, so the prompt
-/// never lists a skill the kernel does not bind.
+/// The prompt's skill list for an edit format: `apply-patch` is listed only
+/// for [`pa_types::ai::EditFormat::ApplyPatch`], the format that binds it.
 #[must_use]
 pub fn skills_for_edit_format(
     skills: Vec<Skill>,
@@ -272,6 +270,7 @@ pub fn kernel_provisioner(
     session_id: String,
     handlers: HostRequestHandlers,
     python_skills: Vec<KernelPythonSkill>,
+    hidden_skills: crate::kernel::HiddenPythonSkills,
     cwd: std::path::PathBuf,
     agent_dir: &std::path::Path,
     shell_path: Option<std::path::PathBuf>,
@@ -321,6 +320,7 @@ pub fn kernel_provisioner(
             session_id: Some(session_id),
             host_handlers: handlers,
             python_skills,
+            hidden_skills,
             // Only persistent sessions (which have an artifact dir) get
             // a revivable snapshot (TS `snapshotDir`).
             snapshot_dir: session_artifact_dir,
@@ -380,6 +380,7 @@ impl IpythonKernelProvisioner for KernelProvisioner {
             Ok(Box::new(KernelManagerExecutor {
                 manager,
                 cell_timeout_ms,
+                hidden_skills: this.hidden_skills().clone(),
             }) as Box<dyn KernelExecutor>)
         })
     }
@@ -397,6 +398,7 @@ struct KernelManagerExecutor {
     manager: crate::kernel::manager::ReplKernelManager,
     /// The provisioner-resolved per-cell watchdog budget (`None`: never armed).
     cell_timeout_ms: Option<u64>,
+    hidden_skills: crate::kernel::HiddenPythonSkills,
 }
 
 impl KernelExecutor for KernelManagerExecutor {
@@ -415,12 +417,18 @@ impl KernelExecutor for KernelManagerExecutor {
         let signal = options.signal;
         let on_late_sent_agent_message = options.on_late_sent_agent_message;
         let cell_timeout_ms = self.cell_timeout_ms;
+        let hidden_skills = self.hidden_skills.clone();
         Box::pin(async move {
+            let signal = signal.map(crate::kernel::cancellation::AbortSignal::from_token);
+            hidden_skills
+                .sync(&manager, signal.clone())
+                .await
+                .map_err(KernelExecError::Other)?;
             let result = manager
                 .execute(
                     &code,
                     crate::kernel::shared::ExecuteOptions {
-                        signal: signal.map(crate::kernel::cancellation::AbortSignal::from_token),
+                        signal,
                         on_late_sent_agent_message,
                         cell_timeout_ms,
                         ..Default::default()

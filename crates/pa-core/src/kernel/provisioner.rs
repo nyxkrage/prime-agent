@@ -118,6 +118,8 @@ pub struct IpythonKernelProvisionerOptions {
     pub session_id: Option<String>,
     pub host_handlers: HostRequestHandlers,
     pub python_skills: Vec<KernelPythonSkill>,
+    /// Bootstrapped skills kept out of the user namespace.
+    pub hidden_skills: crate::kernel::HiddenPythonSkills,
     /// Artifact directory of a persistent session; the revivable snapshot and
     /// the stderr log live there. `None` for ephemeral sessions.
     pub snapshot_dir: Option<PathBuf>,
@@ -295,6 +297,12 @@ impl IpythonKernelProvisioner {
     #[must_use]
     pub(crate) fn python_skills(&self) -> &[KernelPythonSkill] {
         &self.inner.options.python_skills
+    }
+
+    /// The bootstrapped skills kept out of the user namespace.
+    #[must_use]
+    pub(crate) fn hidden_skills(&self) -> &crate::kernel::HiddenPythonSkills {
+        &self.inner.options.hidden_skills
     }
 
     /// Result of reviving a prior session's namespace on the last kernel start.
@@ -1056,13 +1064,14 @@ async fn start_kernel_impl(
     let snapshot_dir = options.snapshot_dir.clone();
     // The bounded-await default keys on the bash.completed host handler:
     // one source of truth (the registry the daemon registers the notice in).
+    let (binding_code, binding_generation) = options.hidden_skills.binding_code();
     let bootstrap_code = build_rlm_bootstrap_code(
         &options.python_skills,
         options
             .host_handlers
             .get(BASH_COMPLETED_REQUEST_TYPE)
             .is_some(),
-    );
+    ) + &binding_code;
     let mut env = options.env.clone();
     if let Some(shell_path) = &options.shell_path {
         env.insert(
@@ -1198,6 +1207,9 @@ async fn start_kernel_impl(
             return Err(anyhow!("Kernel provisioner disposed during startup"));
         }
         Ok(bootstrap) if bootstrap.status == ExecuteStatus::Ok => {
+            options
+                .hidden_skills
+                .mark_applied(manager.process_id(), binding_generation);
             if snapshot_existed {
                 // The just-restored namespace is fresh: the debounced
                 // auto-snapshot would rewrite identical content.

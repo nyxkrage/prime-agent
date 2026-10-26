@@ -97,9 +97,9 @@ async fn engine_runs_tool_loop_and_persists() {
 
     // The system prompt is the layered assembly: static core layer
     // first, dynamic tail after.
-    assert!(engine.system_prompt.starts_with("# prime-agent harness"));
+    assert!(engine.system_prompt().starts_with("# prime-agent harness"));
     assert!(engine
-        .system_prompt
+        .system_prompt()
         .contains("Recursive agent depth: 0 (root)"));
 
     let outcome = engine
@@ -200,9 +200,9 @@ async fn spawned_child_prompt_stamps_its_depth() {
     .unwrap();
 
     assert!(engine
-        .system_prompt
+        .system_prompt()
         .contains("Recursive agent depth: 2 (not root)"));
-    assert!(!engine.system_prompt.contains("depth: 0 (root)"));
+    assert!(!engine.system_prompt().contains("depth: 0 (root)"));
 }
 
 /// The login chain's prompt-gating end to end: a settings-declared OAuth
@@ -296,7 +296,7 @@ async fn oauth_creds_unlock_generic_mcp_gating_in_new_sessions() {
     let engine = create_session(config(&cwd, &agent_dir, provider.stream_fn()))
         .await
         .unwrap();
-    assert!(!engine.system_prompt.contains("# Generic MCP Connections"));
+    assert!(!engine.system_prompt().contains("# Generic MCP Connections"));
 
     // The persisted credential begin_login leaves behind (the TS
     // McpCredentials shape, endpoint-bound).
@@ -325,14 +325,14 @@ async fn oauth_creds_unlock_generic_mcp_gating_in_new_sessions() {
     let engine = create_session(config(&cwd, &agent_dir, provider.stream_fn()))
         .await
         .unwrap();
-    assert!(!engine.system_prompt.contains("# Generic MCP Connections"));
+    assert!(!engine.system_prompt().contains("# Generic MCP Connections"));
 
     write_credential("https://fixture.example/mcp");
     let engine = create_session(config(&cwd, &agent_dir, provider.stream_fn()))
         .await
         .unwrap();
-    assert!(engine.system_prompt.contains("# Generic MCP Connections"));
-    assert!(engine.system_prompt.contains("`fixture-oauth`"));
+    assert!(engine.system_prompt().contains("# Generic MCP Connections"));
+    assert!(engine.system_prompt().contains("`fixture-oauth`"));
 }
 
 #[tokio::test]
@@ -547,7 +547,7 @@ async fn engine_over(
 
 fn prompt_lists_skill(engine: &SessionEngine, name: &str) -> bool {
     engine
-        .system_prompt
+        .system_prompt()
         .contains(&format!("<name>{name}</name>"))
 }
 
@@ -898,5 +898,67 @@ async fn late_receipts_recorded_before_the_row_lands_apply_on_landing() {
                     == crate::session_engine::late_sent_messages::IPYTHON_SENT_AGENT_MESSAGE_CUSTOM_TYPE
         )),
         "the receipt persists as a custom entry"
+    );
+}
+
+/// A model switch re-resolves the edit format: GPT-5.1 starts with the
+/// `apply_patch` guidance, skill listing, and kernel binding; switching to
+/// Claude swaps all three to `edit` (in the agent's live prompt too), and
+/// switching back restores them.
+#[tokio::test]
+async fn a_model_switch_follows_the_edit_format() {
+    fn ai_model(provider: &str, id: &str) -> pa_types::ai::Model {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "name": id, "api": "openai-responses", "provider": provider,
+            "baseUrl": "http://localhost", "reasoning": false, "input": ["text"],
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+            "contextWindow": 100_000, "maxTokens": 8_000
+        }))
+        .unwrap()
+    }
+    let gpt = ai_model("openai", "gpt-5.1");
+    let agent_model: pa_agent::types::Model =
+        crate::session_engine::provider_adapter::json_round_trip(&gpt).unwrap();
+    let provider = Arc::new(ScriptedProvider::new(agent_model.clone()));
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let engine = create_session(SessionEngineConfig {
+        cwd,
+        agent_dir: tmp.path().join("agent"),
+        model: Some(agent_model),
+        model_info: Some(gpt.clone()),
+        stream_fn: Some(provider.stream_fn()),
+        daemonless: true,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    // (apply_patch guidance, apply-patch listed, apply_patch bound, live prompt current)
+    let observe = || async {
+        let prompt = engine.system_prompt();
+        let hidden = engine.provisioner.hidden_skills().names();
+        let bound = kernel_skill_imports(&engine)
+            .into_iter()
+            .any(|name| name == "apply_patch" && !hidden.contains(&name));
+        (
+            prompt.contains("- `apply_patch(patch: str)"),
+            prompt_lists_skill(&engine, "apply-patch"),
+            bound,
+            engine.session.agent().state().await.system_prompt == prompt,
+        )
+    };
+    let mut seen = vec![observe().await];
+    for model in [ai_model("anthropic", "claude-sonnet-4-5"), gpt] {
+        engine.update_model_facts(&model).await;
+        seen.push(observe().await);
+    }
+    assert_eq!(
+        seen,
+        vec![
+            (true, true, true, true),
+            (false, false, false, true),
+            (true, true, true, true),
+        ]
     );
 }
