@@ -24,7 +24,8 @@ use std::time::{Duration, Instant};
 
 use pa_core::kernel::manager::{KernelStartOptions, ReplKernelManager};
 use pa_core::kernel::shared::{
-    ExecuteOptions, ExecuteStatus, KernelManagerOptions, KernelShutdownOptions, RemoteKernelTarget,
+    ExecuteOptions, ExecuteResult, ExecuteStatus, KernelManagerOptions, KernelShutdownOptions,
+    RemoteKernelTarget,
 };
 use pa_core::kernel::{AbortSignal, KernelPythonSkill};
 
@@ -190,6 +191,44 @@ async fn start(manager: &ReplKernelManager) {
         .expect("remote kernel starts");
 }
 
+async fn shutdown(manager: &ReplKernelManager) {
+    manager
+        .shutdown(KernelShutdownOptions::default())
+        .await
+        .expect("shutdown");
+}
+
+/// Start a cell that prints a marker and sleeps; returns once it runs.
+async fn sleeping_cell(
+    manager: &ReplKernelManager,
+    signal: Option<AbortSignal>,
+) -> tokio::task::JoinHandle<anyhow::Result<ExecuteResult>> {
+    let running = Arc::new(tokio::sync::Notify::new());
+    let on_stream = {
+        let running = Arc::clone(&running);
+        Arc::new(move |chunk: &str, _stream| {
+            if chunk.contains("cell-running") {
+                running.notify_one();
+            }
+        })
+    };
+    let manager = manager.clone();
+    let cell = tokio::spawn(async move {
+        manager
+            .execute(
+                "import time\nprint('cell-running', flush=True)\ntime.sleep(600)",
+                ExecuteOptions {
+                    on_stream: Some(on_stream),
+                    signal,
+                    ..ExecuteOptions::default()
+                },
+            )
+            .await
+    });
+    running.notified().await;
+    cell
+}
+
 async fn run(manager: &ReplKernelManager, code: &str) -> String {
     let result = manager
         .execute(code, ExecuteOptions::default())
@@ -275,10 +314,7 @@ async fn a_remote_kernel_gets_hardened_ssh_and_only_allowlisted_env() {
         root.join("agent").to_string_lossy(),
         "a remote scratch agent dir"
     );
-    manager
-        .shutdown(KernelShutdownOptions::default())
-        .await
-        .expect("shutdown");
+    shutdown(&manager).await;
 
     // Every ssh invocation carries the hardening options before `--`.
     let argv = std::fs::read_to_string(fake_ssh_base().join("argv-box")).expect("argv log");
@@ -324,10 +360,7 @@ async fn a_remote_kernel_gets_hardened_ssh_and_only_allowlisted_env() {
         run(&second, "import os\nprint(os.getcwd())").await.trim(),
         work.to_string_lossy()
     );
-    second
-        .shutdown(KernelShutdownOptions::default())
-        .await
-        .expect("shutdown");
+    shutdown(&second).await;
     assert_eq!(base_builds("box"), 1, "one base build per machine");
     let probe_only = std::fs::read_to_string(fake_ssh_base().join("log-again@box")).expect("log");
     assert_eq!(
@@ -372,10 +405,7 @@ async fn spawn_env_reaches_the_remote_kernel_over_stdin_and_never_the_command_li
     let cmdline = std::fs::read(format!("/proc/{kernel_pid}/cmdline")).expect("kernel cmdline");
     let cmdline = String::from_utf8_lossy(&cmdline).replace('\0', " ");
     assert!(cmdline.contains("rlm.repl"), "{cmdline}");
-    manager
-        .shutdown(KernelShutdownOptions::default())
-        .await
-        .expect("shutdown");
+    shutdown(&manager).await;
     let argv = std::fs::read_to_string(fake_ssh_base().join("argv-env@box")).expect("argv log");
     let remote_commands =
         std::fs::read_to_string(fake_ssh_base().join("log-env@box")).expect("remote command log");
@@ -400,10 +430,7 @@ async fn teardown_leaves_no_remote_processes() {
     start(&manager).await;
     let (kernel, bash) = kernel_and_bash_pids(&manager).await;
     assert!(alive(kernel) && alive(bash));
-    manager
-        .shutdown(KernelShutdownOptions::default())
-        .await
-        .expect("shutdown");
+    shutdown(&manager).await;
     assert_eq!(wait_gone(&[kernel, bash]).await, Vec::<i32>::new());
     assert!(
         !remote_root("box")
@@ -458,10 +485,7 @@ await attempt("bash(persistent=True)", persistent)
             "bash(persistent=True) -> bash(persistent=True) is not available on remote kernels yet (this kernel runs on refuse@box): a persistent shell outlives its kernel, and nothing on the orchestrator's machine can reattach or reap it there".to_string(),
         ]
     );
-    manager
-        .shutdown(KernelShutdownOptions::default())
-        .await
-        .expect("shutdown");
+    shutdown(&manager).await;
 }
 
 /// Also behind a noisy login shell: rc output (even a line that parses as
@@ -470,33 +494,8 @@ await attempt("bash(persistent=True)", persistent)
 async fn an_interrupt_reaches_the_remote_kernel_behind_login_shell_noise() {
     let manager = remote_manager("noisy@box", None);
     start(&manager).await;
-    let running = Arc::new(tokio::sync::Notify::new());
-    let on_stream = {
-        let running = Arc::clone(&running);
-        Arc::new(move |chunk: &str, _stream| {
-            if chunk.contains("cell-running") {
-                running.notify_one();
-            }
-        })
-    };
     let signal = AbortSignal::new();
-    let cell = {
-        let manager = manager.clone();
-        let signal = signal.clone();
-        tokio::spawn(async move {
-            manager
-                .execute(
-                    "import time\nprint('cell-running', flush=True)\ntime.sleep(600)",
-                    ExecuteOptions {
-                        on_stream: Some(on_stream),
-                        signal: Some(signal),
-                        ..ExecuteOptions::default()
-                    },
-                )
-                .await
-        })
-    };
-    running.notified().await;
+    let cell = sleeping_cell(&manager, Some(signal.clone())).await;
     signal.abort();
     let result = tokio::time::timeout(Duration::from_secs(30), cell)
         .await
@@ -508,10 +507,7 @@ async fn an_interrupt_reaches_the_remote_kernel_behind_login_shell_noise() {
         run(&manager, "print('still alive')").await.trim(),
         "still alive"
     );
-    manager
-        .shutdown(KernelShutdownOptions::default())
-        .await
-        .expect("shutdown");
+    shutdown(&manager).await;
 }
 
 /// A target is only built through `RemoteKernelTarget::validated`, so a
@@ -599,10 +595,7 @@ async fn concurrent_installs_build_once_recover_and_collect_garbage() {
     .await;
     let install_dir = PathBuf::from(install_dir.trim());
     for manager in [&first, &second] {
-        manager
-            .shutdown(KernelShutdownOptions::default())
-            .await
-            .expect("shutdown");
+        shutdown(manager).await;
     }
     assert!(!old.exists(), "an idle install of ours is collected");
     assert!(
@@ -620,10 +613,7 @@ async fn concurrent_installs_build_once_recover_and_collect_garbage() {
     start(&third).await;
     assert_eq!(base_builds("twin"), 2);
     assert_eq!(run(&third, "import edit\nprint('ok')").await.trim(), "ok");
-    third
-        .shutdown(KernelShutdownOptions::default())
-        .await
-        .expect("shutdown");
+    shutdown(&third).await;
 }
 
 #[tokio::test]
@@ -652,30 +642,7 @@ async fn a_dropped_connection_fails_the_cell_and_the_remote_kernel_exits() {
     let manager = remote_manager("drop@box", None);
     start(&manager).await;
     let (kernel, bash) = kernel_and_bash_pids(&manager).await;
-    let running = Arc::new(tokio::sync::Notify::new());
-    let on_stream = {
-        let running = Arc::clone(&running);
-        Arc::new(move |chunk: &str, _stream| {
-            if chunk.contains("cell-running") {
-                running.notify_one();
-            }
-        })
-    };
-    let cell = {
-        let manager = manager.clone();
-        tokio::spawn(async move {
-            manager
-                .execute(
-                    "import time\nprint('cell-running', flush=True)\ntime.sleep(600)",
-                    ExecuteOptions {
-                        on_stream: Some(on_stream),
-                        ..ExecuteOptions::default()
-                    },
-                )
-                .await
-        })
-    };
-    running.notified().await;
+    let cell = sleeping_cell(&manager, None).await;
     // The local ssh process dies (the connection drops): its remote child
     // loses its parent, like a kernel whose sshd session ended.
     let ssh = manager.process_id().expect("ssh pid");
@@ -793,10 +760,7 @@ async fn concurrent_sessions_keep_their_own_skill_versions() {
         "a dotfile was uploaded"
     );
     for manager in [&first, &second] {
-        manager
-            .shutdown(KernelShutdownOptions::default())
-            .await
-            .expect("shutdown");
+        shutdown(manager).await;
     }
 }
 
@@ -827,8 +791,5 @@ async fn a_failed_start_reprovisions_a_broken_install() {
     start(&manager).await;
     assert_eq!(run(&manager, "print('rebuilt')").await.trim(), "rebuilt");
     assert_eq!(base_builds("rebuild"), 2);
-    manager
-        .shutdown(KernelShutdownOptions::default())
-        .await
-        .expect("shutdown");
+    shutdown(&manager).await;
 }
