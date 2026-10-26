@@ -480,16 +480,12 @@ pub struct RlmHostBridge {
     /// The spawn anchor [`register_run`] reads the in-flight turn from
     /// (`None` until the engine built the session's agent).
     pub(crate) semantic_spawn: std::sync::OnceLock<SemanticSpawnAnchor>,
-    /// The settings store the `subagentModels` filter is read from on each
-    /// `rlm.find_models` (global scope only; the cwd only locates the store).
+    /// Where `rlm.find_models` re-reads the `subagentModels` filter.
     settings_dirs: RlmSettingsDirs,
-    /// The `subagent_model_*` / `model_alias_spawn_count` session counters'
-    /// handle (`None` until the engine installs it; sessions without
-    /// telemetry never set it).
+    /// The subagent-model policy counters; unset without telemetry.
     pub(crate) telemetry: std::sync::OnceLock<Arc<super::telemetry::SessionTelemetry>>,
 }
 
-/// Where the bridge reads settings from: the session cwd and agent dir.
 #[derive(Clone)]
 pub(crate) struct RlmSettingsDirs {
     pub(crate) cwd: std::path::PathBuf,
@@ -520,29 +516,18 @@ impl RlmHostBridge {
     }
 
     /// Resolve a models.json alias in a requested child model to its
-    /// selector; other references pass through for the host's resolution.
-    /// The second half is the alias use to count once the host admits the
-    /// spawn (a refused spawn counts as a refusal only).
-    fn resolve_requested_model(
-        &self,
-        model: Option<String>,
-    ) -> (
-        Option<String>,
-        Option<super::telemetry::SubagentModelPolicyEvent>,
-    ) {
-        let Some(model) = model else {
-            return (None, None);
-        };
-        match self.registry.resolve_model_alias(&model) {
-            Some(selector) => (
-                Some(selector.to_string()),
-                Some(super::telemetry::SubagentModelPolicyEvent::AliasSpawn),
-            ),
-            None => (Some(model), None),
+    /// selector (other references pass through to the host); `true` when an
+    /// alias resolved, counted once the host admits the spawn.
+    fn resolve_requested_model(&self, model: Option<String>) -> (Option<String>, bool) {
+        let alias_selector = model
+            .as_deref()
+            .and_then(|model| self.registry.resolve_model_alias(model));
+        match alias_selector {
+            Some(selector) => (Some(selector.to_string()), true),
+            None => (model, false),
         }
     }
 
-    /// Count a subagent-filter refusal the host returned.
     fn note_spawn_error(&self, error: &anyhow::Error) {
         if error
             .downcast_ref::<crate::models::SubagentModelRefusal>()
@@ -594,10 +579,7 @@ fn register_find_models(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmHost
                         "rlm.find_models limit must be an integer from 1 to {MAX_RLM_MODEL_SEARCH_LIMIT}"
                     );
                 };
-                // The live `subagentModels` filter: global settings only
-                // (the cwd only locates the store), matched against canonical
-                // `provider/model-id` names (aliases are never expanded).
-                // The settings read is blocking disk I/O: off the runtime.
+                // Blocking disk I/O: off the runtime.
                 let RlmSettingsDirs { cwd, agent_dir } = bridge.settings_dirs.clone();
                 let filter = tokio::task::spawn_blocking(move || {
                     crate::models::SubagentModelFilter::load(
@@ -612,15 +594,12 @@ fn register_find_models(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmHost
                     crate::models::SubagentModelFilter::Only(_) => bridge
                         .note_policy(super::telemetry::SubagentModelPolicyEvent::FilteredFind),
                     crate::models::SubagentModelFilter::Unrestricted => {}
-                    // Fails closed: an unknown policy lists nothing, loudly.
                     crate::models::SubagentModelFilter::Unreadable(error) => anyhow::bail!(
                         "rlm.find_models: the subagent model filter (settings \"subagentModels\") \
                          could not be read ({error}); no model is permitted for subagents until \
                          the global settings.json is fixed."
                     ),
                 }
-                // An aliased model carries its alias (the name to spawn it
-                // by) beside its display name; the query matches either.
                 let models: Vec<RlmModelInfo> = registry
                     .get_rlm_subagent_models(&filter)
                     .into_iter()
@@ -697,7 +676,7 @@ fn register_run(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmHostBridge>)
                     anyhow::bail!("rlm.spawn prompt must be a string");
                 };
                 let mut request = spawn_request_from_payload(prompt, data)?;
-                let (model, alias_use) = bridge.resolve_requested_model(request.model.take());
+                let (model, via_alias) = bridge.resolve_requested_model(request.model.take());
                 request.model = model;
                 // TS `_startRlmChildRun`: the spawning request is the turn
                 // whose tool call is executing now (the anchor is computed
@@ -721,8 +700,8 @@ fn register_run(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmHostBridge>)
                     .spawn(request)
                     .await
                     .inspect_err(|error| bridge.note_spawn_error(error))?;
-                if let Some(event) = alias_use {
-                    bridge.note_policy(event);
+                if via_alias {
+                    bridge.note_policy(super::telemetry::SubagentModelPolicyEvent::AliasSpawn);
                 }
                 // TS `_findLastAssistantMessage` at spawn: the spawning
                 // assistant row (persisted at `message_end` before tool
@@ -788,7 +767,7 @@ fn register_create_session(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmH
                 }
                 let model = optional_string_kwarg(&kwargs, "model", OPERATION)?;
                 let model = normalize_requested_rlm_subagent_model(model, OPERATION)?;
-                let (model, alias_use) = bridge.resolve_requested_model(model);
+                let (model, via_alias) = bridge.resolve_requested_model(model);
                 let thinking = optional_string_kwarg(&kwargs, "thinking", OPERATION)?;
                 let thinking =
                     normalize_requested_rlm_subagent_thinking_level(thinking, OPERATION)?
@@ -815,8 +794,8 @@ fn register_create_session(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmH
                     })
                     .await
                     .inspect_err(|error| bridge.note_spawn_error(error))?;
-                if let Some(event) = alias_use {
-                    bridge.note_policy(event);
+                if via_alias {
+                    bridge.note_policy(super::telemetry::SubagentModelPolicyEvent::AliasSpawn);
                 }
                 serde_json::to_value(&handle).map_err(anyhow::Error::new)
             })
@@ -992,8 +971,7 @@ mod tests {
     type RecordedRename = (String, Option<String>);
 
     struct RecordingHost {
-        /// While set, a spawn or session on this selector is refused with
-        /// the typed `subagentModels` refusal (as the real hosts do).
+        /// A spawn or session on this selector is refused like the real hosts.
         refused_selector: std::sync::Mutex<Option<String>>,
         spawn_requests: Arc<Mutex<Vec<RlmSpawnRequest>>>,
         create_requests: Arc<Mutex<Vec<RlmCreateSessionRequest>>>,
@@ -1018,12 +996,10 @@ mod tests {
             let refused = self.refused_selector.lock().unwrap();
             match (refused.as_deref(), model) {
                 (Some(refused), Some(model)) if refused == model => {
-                    Err(crate::models::SubagentModelRefusal {
+                    Err(crate::models::SubagentModelRefusal::OutsideFilter {
                         selector: model.to_string(),
-                        cause: crate::models::SubagentModelRefusalCause::OutsideFilter {
-                            permitted: Vec::new(),
-                            alias_patterns: Vec::new(),
-                        },
+                        permitted: Vec::new(),
+                        alias_patterns: Vec::new(),
                     }
                     .into())
                 }

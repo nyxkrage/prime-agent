@@ -605,14 +605,10 @@ impl SettingsManager {
         (!patterns.is_empty()).then_some(patterns)
     }
 
-    /// The RLM subagent model filter (settings `subagentModels`): the models
-    /// `rlm.find_models` lists and `rlm.spawn`/`rlm.create_session` accept.
-    /// Rust-only; `None` is unrestricted (never the `enabledModels` scope);
-    /// global scope only, like [`Self::get_allowed_models`], so a project can
-    /// neither widen nor redefine it; blank patterns are dropped.
-    /// A wrong-typed value or a list of only blank patterns also reads `None`
-    /// here; enforcement goes through
-    /// [`crate::models::SubagentModelFilter::load`], which fails closed on both.
+    /// `subagentModels`, global scope only like [`Self::get_allowed_models`]
+    /// so a project cannot widen or redefine it; blank patterns dropped.
+    /// Enforcement reads [`crate::models::SubagentModelFilter::load`], which
+    /// fails closed where this returns `None` for a malformed value.
     #[must_use]
     pub(crate) fn get_subagent_models(&self) -> Option<Vec<String>> {
         let patterns = self.global.subagent_models.as_ref()?;
@@ -1104,9 +1100,7 @@ mod tests {
         assert!(!manager.get_factory_enabled());
     }
 
-    /// `subagentModels` is global-only: a project value neither enables
-    /// the filter nor overrides the global list, while the merged view
-    /// (which a regressed accessor would read) does carry the project value.
+    /// The merged view carries the project value; the accessor must not.
     #[test]
     fn subagent_models_read_the_global_scope_only() {
         let dir = tempfile::tempdir().unwrap();

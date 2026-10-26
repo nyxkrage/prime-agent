@@ -126,8 +126,7 @@ impl SessionTelemetry {
 
 #[cfg(test)]
 impl SessionTelemetry {
-    /// A handle with no sinks and no subscription, for seams that only
-    /// count; read back through [`Self::subagent_model_policy_counts`].
+    /// A handle with no sinks and no subscription.
     pub(crate) fn counting_only() -> Self {
         let client = TelemetryClient::spawn(pa_telemetry::TelemetryClientConfig::new("test"))
             .expect("spawn client");
@@ -372,8 +371,8 @@ struct CounterValues {
     feature_outcomes: std::collections::BTreeMap<String, u64>,
 }
 
-/// One subagent-model policy moment at the RLM bridge, counted on
-/// `agent session ended` (counts only; never a model ID or alias).
+/// A subagent-model policy moment at the RLM bridge, counted on
+/// `agent session ended`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SubagentModelPolicyEvent {
     /// `rlm.find_models` answered under an active `subagentModels` filter.
@@ -747,8 +746,6 @@ impl SessionTelemetry {
         });
     }
 
-    /// A subagent-model policy moment (`subagentModels` filtering, alias
-    /// spawns, filter refusals), counted on `agent session ended`.
     pub(crate) fn note_subagent_model_policy(&self, event: SubagentModelPolicyEvent) {
         self.counters.with(|values| match event {
             SubagentModelPolicyEvent::FilteredFind => values.subagent_models_find_count += 1,

@@ -117,49 +117,43 @@ pub fn resolve_child_model_unchecked(
     Err(model_unavailable_error(reference, target, &candidates))
 }
 
-/// Enforce the settings `subagentModels` filter on a resolved child model
-/// (explicit or inherited from the parent, both hosts): a model outside the
-/// filter is refused with the typed [`SubagentModelRefusal`] listing the
-/// permitted models, even when it is authenticated, never a fallback; an
-/// unreadable filter refuses every model (fails closed).
-///
-/// [`SubagentModelRefusal`]: pa_core::models::SubagentModelRefusal
+/// Enforce the `subagentModels` filter on a resolved child model, explicit
+/// or inherited; there is never a fallback to another model.
 ///
 /// # Errors
-/// Returns the typed refusal when the filter excludes the selector or could
-/// not be read.
+/// The typed [`pa_core::models::SubagentModelRefusal`] when the filter
+/// excludes the selector or could not be read.
 pub fn assert_subagent_model_permitted(
     agent_dir: &Path,
     filter: &pa_core::models::SubagentModelFilter,
     selector: &str,
 ) -> Result<()> {
-    let cause = match filter {
+    let selector = selector.to_string();
+    let refusal = match filter {
         pa_core::models::SubagentModelFilter::Unrestricted => return Ok(()),
         pa_core::models::SubagentModelFilter::Only(patterns) => {
-            if pa_core::models::model_allowed(selector, patterns) {
+            if pa_core::models::model_allowed(&selector, patterns) {
                 return Ok(());
             }
-            // The registry is built only on the refusal path: the permitted
-            // list and any alias-named patterns (which match nothing).
+            // Built only on the refusal path.
             let registry = crate::state_getters::worker_model_registry(agent_dir);
-            pa_core::models::SubagentModelRefusalCause::OutsideFilter {
+            pa_core::models::SubagentModelRefusal::OutsideFilter {
+                selector,
                 permitted: registry.subagent_model_names(filter),
                 alias_patterns: registry.alias_patterns(patterns),
             }
         }
         pa_core::models::SubagentModelFilter::Unreadable(error) => {
-            pa_core::models::SubagentModelRefusalCause::UnreadableFilter(error.clone())
+            pa_core::models::SubagentModelRefusal::UnreadableFilter {
+                selector,
+                error: error.clone(),
+            }
         }
     };
-    Err(pa_core::models::SubagentModelRefusal {
-        selector: selector.to_string(),
-        cause,
-    }
-    .into())
+    Err(refusal.into())
 }
 
-/// The live `subagentModels` filter for a child spawn: global settings
-/// (the cwd only locates the store), matched against canonical names.
+/// The live `subagentModels` filter (the cwd only locates the settings).
 #[must_use]
 pub fn load_subagent_filter(cwd: &Path, agent_dir: &Path) -> pa_core::models::SubagentModelFilter {
     let settings = pa_core::settings::SettingsManager::create(cwd, agent_dir);
@@ -405,172 +399,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(resolved, "test-provider/glm-5.3");
-    }
-
-    /// `subagentModels` (global settings, a canonical selector) refuses an
-    /// authenticated model outside the filter, named explicitly or inherited
-    /// from the parent, with the typed refusal listing the permitted models
-    /// (under their alias); the listed model passes.
-    #[test]
-    fn the_subagent_filter_refuses_authenticated_models_outside_it() {
-        let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(
-            dir.path().join("models.json"),
-            json!({
-                "providers": {
-                    "test-provider": {
-                        "baseUrl": "http://localhost:9",
-                        "apiKey": "test-key",
-                        "api": "openai-completions",
-                        "models": [
-                            { "id": "glm-5.3", "contextWindow": 1000, "maxTokens": 100 },
-                            { "id": "glm-5.3-turbo", "alias": "turbo", "contextWindow": 1000, "maxTokens": 100 }
-                        ]
-                    }
-                }
-            })
-            .to_string(),
-        )
-        .unwrap();
-        std::fs::write(
-            dir.path().join("settings.json"),
-            r#"{ "subagentModels": ["test-provider/glm-5.3-turbo"] }"#,
-        )
-        .unwrap();
-        let filter = load_subagent_filter(dir.path(), dir.path());
-        assert_eq!(
-            filter,
-            pa_core::models::SubagentModelFilter::Only(vec![
-                "test-provider/glm-5.3-turbo".to_string()
-            ])
-        );
-        let expected = pa_core::models::SubagentModelRefusal {
-            selector: "test-provider/glm-5.3".to_string(),
-            cause: pa_core::models::SubagentModelRefusalCause::OutsideFilter {
-                permitted: vec!["turbo (test-provider/glm-5.3-turbo)".to_string()],
-                alias_patterns: Vec::new(),
-            },
-        };
-        for (reference, parent) in [
-            (Some("test-provider/glm-5.3"), None),
-            (None, Some("test-provider/glm-5.3")),
-        ] {
-            let selector = resolve_child_model(
-                dir.path(),
-                reference,
-                parent,
-                "subagent",
-                &DaemonAllowlist::Unrestricted,
-            )
-            .unwrap();
-            let error =
-                assert_subagent_model_permitted(dir.path(), &filter, &selector).unwrap_err();
-            assert_eq!(
-                error.downcast_ref::<pa_core::models::SubagentModelRefusal>(),
-                Some(&expected)
-            );
-        }
-        assert!(assert_subagent_model_permitted(
-            dir.path(),
-            &filter,
-            "test-provider/glm-5.3-turbo"
-        )
-        .is_ok());
-        assert!(assert_subagent_model_permitted(
-            dir.path(),
-            &pa_core::models::SubagentModelFilter::Unrestricted,
-            "test-provider/glm-5.3"
-        )
-        .is_ok());
-    }
-
-    /// A malformed `subagentModels` (a string, not a list) fails closed:
-    /// every spawn, explicit or inherited, is refused naming the problem.
-    #[test]
-    fn a_malformed_subagent_filter_refuses_every_spawn() {
-        let dir = tempfile::TempDir::new().unwrap();
-        write_catalog(dir.path());
-        std::fs::write(
-            dir.path().join("settings.json"),
-            r#"{ "subagentModels": "test-provider/glm-5.3" }"#,
-        )
-        .unwrap();
-        let filter = load_subagent_filter(dir.path(), dir.path());
-        for (reference, parent) in [
-            (Some("test-provider/glm-5.3"), None),
-            (None, Some("test-provider/glm-5.3")),
-        ] {
-            let selector = resolve_child_model(
-                dir.path(),
-                reference,
-                parent,
-                "subagent",
-                &DaemonAllowlist::Unrestricted,
-            )
-            .unwrap();
-            let error =
-                assert_subagent_model_permitted(dir.path(), &filter, &selector).unwrap_err();
-            assert_eq!(
-                error.downcast_ref::<pa_core::models::SubagentModelRefusal>(),
-                Some(&pa_core::models::SubagentModelRefusal {
-                    selector: "test-provider/glm-5.3".to_string(),
-                    cause: pa_core::models::SubagentModelRefusalCause::UnreadableFilter(
-                        "subagentModels is present but is not an array of strings".to_string()
-                    ),
-                })
-            );
-        }
-    }
-
-    /// Patterns match canonical names only: a `subagentModels` entry that
-    /// equals a models.json alias is never expanded, so it permits nothing
-    /// (not even the aliased model), and the refusal says why.
-    #[test]
-    fn an_alias_in_the_subagent_filter_matches_nothing_and_is_explained() {
-        let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(
-            dir.path().join("models.json"),
-            json!({
-                "providers": {
-                    "test-provider": {
-                        "baseUrl": "http://localhost:9",
-                        "apiKey": "test-key",
-                        "api": "openai-completions",
-                        "models": [
-                            { "id": "glm-5.3-turbo", "alias": "turbo", "contextWindow": 1000, "maxTokens": 100 }
-                        ]
-                    }
-                }
-            })
-            .to_string(),
-        )
-        .unwrap();
-        std::fs::write(
-            dir.path().join("settings.json"),
-            r#"{ "subagentModels": ["turbo"] }"#,
-        )
-        .unwrap();
-        let filter = load_subagent_filter(dir.path(), dir.path());
-        assert_eq!(
-            filter,
-            pa_core::models::SubagentModelFilter::Only(vec!["turbo".to_string()])
-        );
-        let error =
-            assert_subagent_model_permitted(dir.path(), &filter, "test-provider/glm-5.3-turbo")
-                .unwrap_err();
-        assert_eq!(
-            error.downcast_ref::<pa_core::models::SubagentModelRefusal>(),
-            Some(&pa_core::models::SubagentModelRefusal {
-                selector: "test-provider/glm-5.3-turbo".to_string(),
-                cause: pa_core::models::SubagentModelRefusalCause::OutsideFilter {
-                    permitted: Vec::new(),
-                    alias_patterns: vec![pa_core::models::AliasPattern {
-                        pattern: "turbo".to_string(),
-                        selector: "test-provider/glm-5.3-turbo".to_string(),
-                    }],
-                },
-            })
-        );
     }
 
     #[test]

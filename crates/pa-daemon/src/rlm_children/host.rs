@@ -14,9 +14,8 @@ use super::{
 };
 
 /// Resolve the child model with the daemon `allowedModels` allowlist enforced, refusing loudly with
-/// the typed error and the `model refused` event, then the settings `subagentModels` filter
-/// (typed `SubagentModelRefusal` listing the permitted models); the settings reads run on the
-/// blocking pool.
+/// the typed error and the `model refused` event, then the `subagentModels` filter; the settings
+/// reads run on the blocking pool.
 async fn resolve_child_model_allowlisted(
     this: &SupervisorChildSessionsInner,
     reference: Option<&str>,
@@ -35,8 +34,6 @@ async fn resolve_child_model_allowlisted(
     })
     .await
     .context("the allowlist load task join failed")?;
-    // The daemon allowlist gates first (a box-level policy), then the
-    // `subagentModels` filter (RLM children only).
     let resolved = resolve_child_model(
         &this.agent_dir,
         reference,

@@ -974,7 +974,6 @@ fn headless_image_model_router(
                     session_model: &session_model,
                     thinking_level,
                     service_tier: None,
-                    // A models.json alias resolves to its selector.
                     image_model_reference: image_model_reference.as_deref().map(|reference| {
                         registry.resolve_model_alias(reference).unwrap_or(reference)
                     }),

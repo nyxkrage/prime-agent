@@ -10,8 +10,6 @@
 pub struct ModelAllowlistRefusal {
     /// The refused model, full selector form `provider/model-id`.
     pub selector: String,
-    /// `allowedModels` patterns that name a models.json alias instead of a
-    /// model (they match nothing); listed so the refusal explains itself.
     pub alias_patterns: Vec<AliasPattern>,
 }
 
@@ -33,30 +31,24 @@ impl std::fmt::Display for ModelAllowlistRefusal {
 
 impl std::error::Error for ModelAllowlistRefusal {}
 
-/// The settings `subagentModels` filter: the models `rlm.find_models` lists
-/// and `rlm.spawn`/`rlm.create_session` accept. Global settings only; unset
-/// never falls back to `enabledModels`. Patterns match canonical
-/// `provider/model-id` names only (models.json aliases are never expanded).
-/// Like the daemon `allowedModels` allowlist it fails CLOSED: a policy that
-/// could not be read is never an unrestricted one.
+/// The settings `subagentModels` filter on RLM child models. Read from
+/// global settings only; never falls back to `enabledModels`. Like
+/// `allowedModels` it fails closed: an unreadable policy is not an
+/// unrestricted one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubagentModelFilter {
-    /// No `subagentModels` configured: every searchable model.
     Unrestricted,
-    /// The configured patterns, matched against canonical selectors.
+    /// Patterns matched against canonical `provider/model-id` selectors.
     Only(Vec<String>),
-    /// The global settings document could not be loaded, or `subagentModels`
-    /// is present but not an array of strings: the configured policy is
-    /// unknown, so no model is permitted for subagents.
+    /// The global settings or the `subagentModels` value could not be read:
+    /// no model is permitted.
     Unreadable(String),
 }
 
 impl SubagentModelFilter {
-    /// Read the global `subagentModels` list, failing closed on an
-    /// unreadable global document or a malformed value (the lenient settings
-    /// load drops a wrong-typed field to unset, which must not read as
-    /// "no filter"), including a list of only blank patterns; explicit
-    /// `null` and an empty list stay unset.
+    /// The lenient settings load drops a wrong-typed field to unset, so the
+    /// raw document is checked too: a malformed value or a list of only
+    /// blank patterns fails closed; `null` and `[]` stay unset.
     #[must_use]
     pub fn load(settings: &crate::settings::SettingsManager) -> Self {
         if let Some(error) = settings
@@ -80,8 +72,6 @@ impl SubagentModelFilter {
         match raw.get("subagentModels") {
             None | Some(serde_json::Value::Null) => Self::Unrestricted,
             Some(serde_json::Value::Array(items)) if items.is_empty() => Self::Unrestricted,
-            // Only blank patterns: a restriction was written but names
-            // nothing, which must not read as "no filter".
             Some(serde_json::Value::Array(items))
                 if items.iter().all(serde_json::Value::is_string) =>
             {
@@ -93,8 +83,6 @@ impl SubagentModelFilter {
         }
     }
 
-    /// Whether the resolved `provider/model-id` selector passes the filter
-    /// (never when the filter is unreadable).
     #[must_use]
     pub fn permits(&self, selector: &str) -> bool {
         match self {
@@ -106,12 +94,10 @@ impl SubagentModelFilter {
 }
 
 /// A model pattern (`allowedModels`, `subagentModels`) that equals a
-/// models.json alias and matches no canonical model name. Patterns match
-/// `provider/model-id` names only, so such a pattern selects nothing; it is
-/// surfaced as a warning instead of being silently expanded.
+/// models.json alias and matches no model: patterns never expand aliases,
+/// so it is reported instead.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AliasPattern {
-    /// The pattern as configured.
     pub pattern: String,
     /// The `provider/model-id` selector the alias names.
     pub selector: String,
@@ -128,39 +114,28 @@ impl std::fmt::Display for AliasPattern {
     }
 }
 
-/// An RLM child model outside the settings `subagentModels` filter (named
-/// explicitly or inherited from the parent), refused even when it is
-/// authenticated; typed so the spawn seams can count the refusal.
+/// An RLM child model refused by the `subagentModels` filter, even when
+/// authenticated; typed so the spawn seams can count it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SubagentModelRefusal {
-    /// The refused model, full selector form `provider/model-id`.
-    pub selector: String,
-    /// Why the filter refused it.
-    pub cause: SubagentModelRefusalCause,
-}
-
-/// Why [`SubagentModelRefusal`] refused a model.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SubagentModelRefusalCause {
-    /// The model matches none of the configured patterns.
+pub enum SubagentModelRefusal {
     OutsideFilter {
-        /// The permitted models as spawnable names (`alias (selector)` or
-        /// the selector), so the caller can retry in one step.
+        selector: String,
+        /// Spawnable names (`alias (selector)` or the selector) so the
+        /// caller can retry in one step.
         permitted: Vec<String>,
-        /// Filter patterns that name an alias instead of a model (they
-        /// match nothing); listed so the refusal explains a short list.
         alias_patterns: Vec<AliasPattern>,
     },
-    /// The filter could not be read ([`SubagentModelFilter::Unreadable`]):
-    /// every model is refused until the settings are fixed.
-    UnreadableFilter(String),
+    UnreadableFilter {
+        selector: String,
+        error: String,
+    },
 }
 
 impl std::fmt::Display for SubagentModelRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let selector = &self.selector;
-        match &self.cause {
-            SubagentModelRefusalCause::OutsideFilter {
+        match self {
+            Self::OutsideFilter {
+                selector,
                 permitted,
                 alias_patterns,
             } => {
@@ -182,7 +157,7 @@ impl std::fmt::Display for SubagentModelRefusal {
                 }
                 Ok(())
             }
-            SubagentModelRefusalCause::UnreadableFilter(error) => write!(
+            Self::UnreadableFilter { selector, error } => write!(
                 f,
                 "The subagent model filter (settings \"subagentModels\") could not be read ({error}); \
                  refusing model \"{selector}\": the filter fails closed instead of allowing every \
@@ -292,75 +267,71 @@ mod tests {
         assert!(message.contains("never falls back"), "{message}");
     }
 
-    #[test]
-    fn the_subagent_filter_permits_only_matching_selectors() {
-        assert!(SubagentModelFilter::Unrestricted.permits("zai/glm-5.3"));
-        let filter =
-            SubagentModelFilter::Only(vec!["openai/gpt-6.1-sol".to_string(), "zai/*".to_string()]);
-        assert!(filter.permits("openai/gpt-6.1-sol"));
-        assert!(filter.permits("zai/glm-5.3"));
-        assert!(!filter.permits("openai/gpt-6-luna"));
-    }
-
-    /// A wrong-typed `subagentModels` or an unreadable global document
-    /// fails closed (the lenient load would otherwise read it as unset, so
-    /// every model would pass); `null` and an empty list stay unset.
+    /// The lenient load would read a wrong-typed value as unset (every
+    /// model passes); it must fail closed instead.
     #[test]
     fn a_malformed_subagent_models_setting_fails_closed() {
         let dir = tempfile::tempdir().unwrap();
         let agent_dir = dir.path().join("agent");
         std::fs::create_dir_all(&agent_dir).unwrap();
-        let load = |document: &str| {
-            std::fs::write(agent_dir.join("settings.json"), document).unwrap();
-            SubagentModelFilter::load(&crate::settings::SettingsManager::create(
-                dir.path(),
-                &agent_dir,
-            ))
+        let malformed = || {
+            SubagentModelFilter::Unreadable(
+                "subagentModels is present but is not an array of strings".to_string(),
+            )
         };
-        let malformed = SubagentModelFilter::Unreadable(
-            "subagentModels is present but is not an array of strings".to_string(),
-        );
-        assert_eq!(load(r#"{ "subagentModels": "sol" }"#), malformed);
-        assert_eq!(load(r#"{ "subagentModels": ["zai/*", 42] }"#), malformed);
-        assert_eq!(load(r#"{ "subagentModels": { "sol": true } }"#), malformed);
-        assert!(!malformed.permits("zai/glm-5.3"));
+        let cases = [
+            (r#"{ "subagentModels": "sol" }"#, malformed()),
+            (r#"{ "subagentModels": ["zai/*", 42] }"#, malformed()),
+            (r#"{ "subagentModels": { "sol": true } }"#, malformed()),
+            (
+                r#"{ "subagentModels": ["", " "] }"#,
+                SubagentModelFilter::Unreadable(
+                    "subagentModels contains only empty patterns".to_string(),
+                ),
+            ),
+            (
+                "[]",
+                SubagentModelFilter::Unreadable(
+                    "the global settings document is not a JSON object".to_string(),
+                ),
+            ),
+            (
+                r#"{ "subagentModels": null }"#,
+                SubagentModelFilter::Unrestricted,
+            ),
+            (
+                r#"{ "subagentModels": [] }"#,
+                SubagentModelFilter::Unrestricted,
+            ),
+            ("{}", SubagentModelFilter::Unrestricted),
+            (
+                r#"{ "subagentModels": ["zai/*"] }"#,
+                SubagentModelFilter::Only(vec!["zai/*".to_string()]),
+            ),
+        ];
+        for (document, expected) in cases {
+            std::fs::write(agent_dir.join("settings.json"), document).unwrap();
+            let settings = crate::settings::SettingsManager::create(dir.path(), &agent_dir);
+            assert_eq!(SubagentModelFilter::load(&settings), expected, "{document}");
+        }
+        std::fs::write(agent_dir.join("settings.json"), "{ not json").unwrap();
+        let settings = crate::settings::SettingsManager::create(dir.path(), &agent_dir);
         assert!(matches!(
-            load("{ not json"),
+            SubagentModelFilter::load(&settings),
             SubagentModelFilter::Unreadable(_)
         ));
-        assert!(matches!(load("[]"), SubagentModelFilter::Unreadable(_)));
-        assert_eq!(
-            load(r#"{ "subagentModels": null }"#),
-            SubagentModelFilter::Unrestricted
-        );
-        assert_eq!(
-            load(r#"{ "subagentModels": [] }"#),
-            SubagentModelFilter::Unrestricted
-        );
-        assert_eq!(
-            load(r#"{ "subagentModels": ["", " "] }"#),
-            SubagentModelFilter::Unreadable(
-                "subagentModels contains only empty patterns".to_string()
-            )
-        );
-        assert_eq!(load("{}"), SubagentModelFilter::Unrestricted);
-        assert_eq!(
-            load(r#"{ "subagentModels": ["zai/*"] }"#),
-            SubagentModelFilter::Only(vec!["zai/*".to_string()])
-        );
+        assert!(!malformed().permits("zai/glm-5.3"));
     }
 
     #[test]
     fn the_subagent_refusal_lists_the_permitted_models() {
-        let refusal = SubagentModelRefusal {
+        let refusal = SubagentModelRefusal::OutsideFilter {
             selector: "openai/gpt-6-luna".to_string(),
-            cause: SubagentModelRefusalCause::OutsideFilter {
-                permitted: vec!["sol (openai/gpt-6.1-sol)".to_string()],
-                alias_patterns: vec![AliasPattern {
-                    pattern: "luna".to_string(),
-                    selector: "openai/gpt-6-luna".to_string(),
-                }],
-            },
+            permitted: vec!["sol (openai/gpt-6.1-sol)".to_string()],
+            alias_patterns: vec![AliasPattern {
+                pattern: "luna".to_string(),
+                selector: "openai/gpt-6-luna".to_string(),
+            }],
         };
         assert_eq!(
             refusal.to_string(),

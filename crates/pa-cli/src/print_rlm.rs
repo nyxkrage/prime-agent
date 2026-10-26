@@ -713,9 +713,7 @@ impl RlmSubagentHost for InlineHost {
                     "subagent",
                 )
                 .map_err(|error| anyhow::anyhow!("{error:#}"))?;
-                // The `subagentModels` filter binds print-mode children too
-                // (unlike `allowedModels`); the typed refusal reaches the
-                // bridge intact for its counter.
+                // Unlike `allowedModels`, `subagentModels` binds print mode too.
                 pa_daemon::rlm_child_model::assert_subagent_model_permitted(
                     &config.agent_dir,
                     &pa_daemon::rlm_child_model::load_subagent_filter(
@@ -1305,13 +1303,11 @@ mod tests {
         assert_eq!(admitted, 0);
     }
 
-    /// The print host enforces `subagentModels` on a real `InlineHost::spawn`:
-    /// an authenticated model outside the filter is refused, named
-    /// explicitly or inherited from the parent, and a malformed setting
-    /// fails closed; nothing is admitted.
+    /// The print host enforces `subagentModels` on a real spawn, explicit or
+    /// inherited, and fails closed on a malformed setting.
     #[tokio::test]
     async fn the_inline_host_enforces_the_subagent_filter_on_spawn() {
-        use pa_core::models::{SubagentModelRefusal, SubagentModelRefusalCause};
+        use pa_core::models::SubagentModelRefusal;
         let directory = tempfile::tempdir().unwrap();
         let options = run_options(directory.path());
         let agent_dir = &options.config.agent_dir;
@@ -1338,28 +1334,25 @@ mod tests {
         let mut node = root_node(&options, &manager, None);
         Arc::get_mut(&mut node).unwrap().max_depth = 2;
         *node.model_selector.lock().unwrap() = Some("test-provider/glm-5.3".to_string());
-        let outside = SubagentModelRefusalCause::OutsideFilter {
-            permitted: vec!["turbo (test-provider/glm-5.3-turbo)".to_string()],
-            alias_patterns: Vec::new(),
-        };
-        let unreadable = SubagentModelRefusalCause::UnreadableFilter(
-            "subagentModels is present but is not an array of strings".to_string(),
-        );
-        for (settings, cause) in [
+        let selector = "test-provider/glm-5.3".to_string();
+        for (settings, expected) in [
             (
                 r#"{ "subagentModels": ["test-provider/glm-5.3-turbo"] }"#,
-                outside,
+                SubagentModelRefusal::OutsideFilter {
+                    selector: selector.clone(),
+                    permitted: vec!["turbo (test-provider/glm-5.3-turbo)".to_string()],
+                    alias_patterns: Vec::new(),
+                },
             ),
             (
                 r#"{ "subagentModels": "test-provider/glm-5.3" }"#,
-                unreadable,
+                SubagentModelRefusal::UnreadableFilter {
+                    selector: selector.clone(),
+                    error: "subagentModels is present but is not an array of strings".to_string(),
+                },
             ),
         ] {
             std::fs::write(agent_dir.join("settings.json"), settings).unwrap();
-            let expected = SubagentModelRefusal {
-                selector: "test-provider/glm-5.3".to_string(),
-                cause,
-            };
             for model in [Some("test-provider/glm-5.3"), None] {
                 let result = InlineHost(Arc::clone(&node))
                     .spawn(RlmSpawnRequest {

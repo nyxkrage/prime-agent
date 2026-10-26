@@ -1107,7 +1107,5 @@ mod usage_emit_tests;
 #[cfg(test)]
 mod spawn_name_reservation_tests;
 
-/// The `subagentModels` filter driven through real `spawn` /
-/// `create_session` calls against a recording fake supervisor.
 #[cfg(test)]
 mod subagent_model_filter_tests;

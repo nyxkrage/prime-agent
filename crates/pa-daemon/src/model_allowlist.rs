@@ -64,7 +64,7 @@ pub(crate) fn load(cwd: &Path, agent_dir: &Path) -> DaemonAllowlist {
 /// (and when no allowlist is configured), the typed refusal for an
 /// off-allowlist model, and a fail-closed error when the policy is
 /// unreadable. A refusal names any pattern that is a models.json alias
-/// (read from `agent_dir`): patterns match canonical names only.
+/// (read from `agent_dir`).
 pub(crate) fn assert_allowed(
     agent_dir: &Path,
     allowlist: &DaemonAllowlist,
@@ -76,8 +76,8 @@ pub(crate) fn assert_allowed(
             if pa_core::models::model_allowed(selector, patterns) {
                 return Ok(());
             }
-            // An alias is a single token without `/` or glob characters, so
-            // the registry is built only when some pattern could be one.
+            // Aliases never contain `/` or glob characters: skip the
+            // registry build when no pattern could be one.
             let alias_patterns = if patterns
                 .iter()
                 .any(|pattern| !pattern.contains(['/', '*', '?', '[']))
@@ -242,9 +242,7 @@ mod tests {
         assert_eq!(refusal.selector, "zai/glm-5.3");
     }
 
-    /// Patterns match canonical names only: an `allowedModels` entry that
-    /// names a models.json alias blocks even the aliased model, and the
-    /// refusal says why.
+    /// An alias pattern blocks even the aliased model; the refusal says why.
     #[test]
     fn the_refusal_names_an_alias_pattern() {
         let dir = tempfile::tempdir().expect("tempdir");

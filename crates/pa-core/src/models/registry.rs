@@ -93,8 +93,7 @@ pub struct ModelRegistry {
     authorized_private_ids: HashSet<String>,
     authorized_private_models: Vec<Model>,
     authorized_team_id: Option<String>,
-    /// models.json aliases (`alias`, `provider/model-id`), validated at
-    /// load: unique and never a catalog model ID.
+    /// models.json `(alias, provider/model-id)` pairs.
     model_aliases: Vec<(String, String)>,
     /// The process-shared live catalog chain (`catalog_chain::catalog_for`);
     /// `resolve()` sources built-ins from it.
@@ -413,9 +412,8 @@ impl ModelRegistry {
         built_in.extend(private_models.into_values());
         self.models = Self::merge_custom_models(built_in, result.models);
         self.apply_subscription_model_adaptations();
-        // An alias must never shadow a catalog model ID (built-in, live, or
-        // private): a collision is a models.json load error and disables
-        // every alias rather than letting one name mean two models.
+        // `validate_config` only sees the IDs models.json names; here the
+        // full catalog is checked. A collision disables every alias.
         let collision = self.model_aliases.iter().find_map(|(alias, selector)| {
             self.models
                 .iter()
@@ -436,7 +434,7 @@ impl ModelRegistry {
     }
 
     /// The `provider/model-id` selector a models.json alias names
-    /// (case-insensitive); `None` when `reference` is not an alias.
+    /// (case-insensitive).
     #[must_use]
     pub fn resolve_model_alias(&self, reference: &str) -> Option<&str> {
         let reference = reference.trim();
@@ -446,9 +444,8 @@ impl ModelRegistry {
             .map(|(_, selector)| selector.as_str())
     }
 
-    /// A `--model` reference with its models.json alias expanded: `alias`
-    /// becomes `provider/model-id`, and `alias:<thinking-level>` keeps its
-    /// suffix (`provider/model-id:<level>`); `None` when no alias is named.
+    /// A `--model` reference with its alias expanded, keeping a
+    /// `:<thinking-level>` suffix (`sol:high` -> `openai/gpt-6.1-sol:high`).
     #[must_use]
     pub fn expand_model_alias(&self, reference: &str) -> Option<String> {
         if let Some(selector) = self.resolve_model_alias(reference) {
@@ -462,7 +459,6 @@ impl ModelRegistry {
             .map(|selector| format!("{selector}:{level}"))
     }
 
-    /// The alias models.json gives the model, if any.
     #[must_use]
     pub(crate) fn model_alias(&self, provider: &str, model_id: &str) -> Option<&str> {
         let selector = format!("{provider}/{model_id}");
@@ -472,10 +468,7 @@ impl ModelRegistry {
             .map(|(alias, _)| alias.as_str())
     }
 
-    /// The patterns (`allowedModels`, `subagentModels`) that equal a
-    /// models.json alias and match no canonical model. Patterns match
-    /// `provider/model-id` names only and aliases are never expanded in
-    /// them, so each one selects nothing; callers warn about it.
+    /// The patterns that name an alias and match no model, for warnings.
     #[must_use]
     pub fn alias_patterns(&self, patterns: &[String]) -> Vec<super::allowlist::AliasPattern> {
         patterns
@@ -496,8 +489,6 @@ impl ModelRegistry {
             .collect()
     }
 
-    /// The models RLM children may use: [`Self::get_rlm_searchable_models`]
-    /// narrowed by the settings `subagentModels` filter.
     #[must_use]
     pub(crate) fn get_rlm_subagent_models(
         &self,
@@ -509,8 +500,8 @@ impl ModelRegistry {
             .collect()
     }
 
-    /// The permitted subagent models as the names to spawn them by:
-    /// `alias (provider/model-id)` for an aliased model, else the selector.
+    /// The permitted subagent models as `alias (provider/model-id)` for an
+    /// aliased model, else the selector.
     #[must_use]
     pub fn subagent_model_names(
         &self,

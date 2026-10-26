@@ -18,7 +18,6 @@ pub struct RlmModelInfo {
     pub provider: String,
     pub id: String,
     pub name: String,
-    /// The models.json alias, searchable beside the selector, id, and name.
     pub alias: Option<String>,
 }
 
@@ -36,8 +35,7 @@ pub struct RlmModelMatch {
     pub id: String,
     pub name: String,
     pub selector: String,
-    /// The models.json alias (the short name to spawn the model by);
-    /// omitted on the wire when the model has none.
+    /// The models.json alias, also accepted by `model=`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
 }
@@ -242,8 +240,7 @@ pub fn find_rlm_model_matches(
         } else {
             model.name.clone()
         };
-        // An absent alias is an empty field, which never matches a
-        // non-empty query.
+        // An absent alias is an empty field: it never matches a query.
         let fields = [
             selector.clone(),
             model.id.clone(),

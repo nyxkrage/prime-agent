@@ -901,10 +901,8 @@ async fn late_receipts_recorded_before_the_row_lands_apply_on_landing() {
     );
 }
 
-/// A settings model pattern that only names a models.json alias matches
-/// nothing; a top-level session says so on a display row riding its first
-/// turn (never in the model's context), and a child engine (same settings)
-/// does not repeat it.
+/// An alias-only model pattern warns on a display row of the top-level
+/// session only, never in the model's context.
 #[tokio::test]
 async fn an_alias_model_pattern_warns_the_top_level_session_once() {
     let model = pa_agent::types::Model {

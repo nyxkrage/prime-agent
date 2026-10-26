@@ -1,15 +1,14 @@
 use super::*;
 use crate::protocol::response_failure;
-use pa_core::models::{SubagentModelRefusal, SubagentModelRefusalCause};
+use pa_core::models::{AliasPattern, SubagentModelRefusal};
 use pa_types::platform::transport::bind_transport;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 
-/// A fake supervisor that records every command type it receives and
-/// refuses it: a spawn that slips past the `subagentModels` filter reaches
-/// it (and fails with a different error) instead of hanging.
+/// A fake supervisor that records and refuses every command, so a child
+/// that slips past the filter fails differently instead of hanging.
 async fn spawn_recording_supervisor(
     socket: std::path::PathBuf,
     seen_tx: mpsc::UnboundedSender<String>,
@@ -59,12 +58,44 @@ async fn spawn_recording_supervisor(
     });
 }
 
-/// An agent dir with two authenticated models and the given global
-/// settings document.
-fn agent_dir_with_settings(settings: &str) -> tempfile::TempDir {
+/// The supervisor host enforces `subagentModels` on real `spawn` and
+/// `create_session` calls, for an explicit and an inherited model, before
+/// anything reaches the supervisor.
+#[tokio::test]
+async fn the_supervisor_host_refuses_children_outside_the_subagent_filter() {
+    let refused = |permitted: &[&str], alias_patterns| SubagentModelRefusal::OutsideFilter {
+        selector: "test-provider/glm-5.3".to_string(),
+        permitted: permitted.iter().map(ToString::to_string).collect(),
+        alias_patterns,
+    };
+    let cases = [
+        (
+            r#"{ "subagentModels": ["test-provider/glm-5.3-turbo"] }"#,
+            refused(&["turbo (test-provider/glm-5.3-turbo)"], Vec::new()),
+        ),
+        // An alias pattern is never expanded: it permits nothing.
+        (
+            r#"{ "subagentModels": ["turbo"] }"#,
+            refused(
+                &[],
+                vec![AliasPattern {
+                    pattern: "turbo".to_string(),
+                    selector: "test-provider/glm-5.3-turbo".to_string(),
+                }],
+            ),
+        ),
+        (
+            r#"{ "subagentModels": "test-provider/glm-5.3" }"#,
+            SubagentModelRefusal::UnreadableFilter {
+                selector: "test-provider/glm-5.3".to_string(),
+                error: "subagentModels is present but is not an array of strings".to_string(),
+            },
+        ),
+    ];
     let dir = tempfile::TempDir::new().unwrap();
+    let agent_dir = dir.path();
     std::fs::write(
-        dir.path().join("models.json"),
+        agent_dir.join("models.json"),
         json!({
             "providers": {
                 "test-provider": {
@@ -81,22 +112,11 @@ fn agent_dir_with_settings(settings: &str) -> tempfile::TempDir {
         .to_string(),
     )
     .unwrap();
-    std::fs::write(dir.path().join("settings.json"), settings).unwrap();
-    dir
-}
-
-/// The children registry for a depth-0 parent on `test-provider/glm-5.3`,
-/// against the recording supervisor.
-async fn sessions_for(
-    agent_dir: &Path,
-    seen_tx: mpsc::UnboundedSender<String>,
-) -> SupervisorChildSessions {
-    // Inside the test's temp agent dir, so the socket goes with it.
+    let (seen_tx, mut seen_rx) = mpsc::unbounded_channel();
     let socket = agent_dir.join("supervisor.sock");
     spawn_recording_supervisor(socket.clone(), seen_tx).await;
-    let link = Arc::new(crate::supervisor_link::SupervisorLink::new(socket));
     let sessions = SupervisorChildSessions::new(
-        link,
+        Arc::new(crate::supervisor_link::SupervisorLink::new(socket)),
         agent_dir.to_path_buf(),
         "parent-live".to_string(),
         Arc::new(crate::model_allowlist::ModelRefusalTelemetry::new(
@@ -110,92 +130,44 @@ async fn sessions_for(
         cwd: Some(agent_dir.to_string_lossy().to_string()),
         ..ParentIdentity::with_default_depth()
     });
-    sessions
-}
-
-fn spawn_request(model: Option<&str>) -> RlmSpawnRequest {
-    RlmSpawnRequest {
-        prompt: "go".to_string(),
-        name: None,
-        model: model.map(str::to_string),
-        thinking: None,
-        spawned_by_request_id: None,
-    }
-}
-
-fn create_session_request(model: Option<&str>) -> RlmCreateSessionRequest {
-    RlmCreateSessionRequest {
-        prompt: "go".to_string(),
-        name: None,
-        model: model.map(str::to_string),
-        thinking: None,
-        cwd: None,
-    }
-}
-
-/// Drive `spawn` and `create_session` for the explicit and the inherited
-/// (`model=None`) form; each must be refused with exactly `expected` before
-/// any command reaches the supervisor.
-async fn assert_every_child_refused(settings: &str, expected: &SubagentModelRefusal) {
-    let dir = agent_dir_with_settings(settings);
-    let (seen_tx, mut seen_rx) = mpsc::unbounded_channel();
-    let sessions = sessions_for(dir.path(), seen_tx).await;
-    for model in [Some(expected.selector.as_str()), None] {
-        let spawned = sessions
-            .spawn(spawn_request(model))
-            .await
-            .expect_err("the spawn must be refused");
-        assert_eq!(
-            spawned.downcast_ref::<SubagentModelRefusal>(),
-            Some(expected),
-            "spawn(model={model:?}): {spawned:#}"
-        );
-        let created = sessions
-            .create_session(create_session_request(model))
-            .await
-            .expect_err("create_session must be refused");
-        assert_eq!(
-            created.downcast_ref::<SubagentModelRefusal>(),
-            Some(expected),
-            "create_session(model={model:?}): {created:#}"
-        );
+    for (settings, expected) in cases {
+        std::fs::write(agent_dir.join("settings.json"), settings).unwrap();
+        for model in [Some("test-provider/glm-5.3"), None] {
+            let model = model.map(str::to_string);
+            let spawned = sessions
+                .spawn(RlmSpawnRequest {
+                    prompt: "go".to_string(),
+                    name: None,
+                    model: model.clone(),
+                    thinking: None,
+                    spawned_by_request_id: None,
+                })
+                .await
+                .expect_err("the spawn must be refused");
+            assert_eq!(
+                spawned.downcast_ref::<SubagentModelRefusal>(),
+                Some(&expected),
+                "{settings} spawn(model={model:?}): {spawned:#}"
+            );
+            let created = sessions
+                .create_session(RlmCreateSessionRequest {
+                    prompt: "go".to_string(),
+                    name: None,
+                    model: model.clone(),
+                    thinking: None,
+                    cwd: None,
+                })
+                .await
+                .expect_err("create_session must be refused");
+            assert_eq!(
+                created.downcast_ref::<SubagentModelRefusal>(),
+                Some(&expected),
+                "{settings} create_session(model={model:?}): {created:#}"
+            );
+        }
     }
     assert!(
         seen_rx.try_recv().is_err(),
         "a refused child must never reach the supervisor"
     );
-}
-
-/// The supervisor host enforces `subagentModels` on a real spawn and
-/// `create_session`: an authenticated model outside the filter is refused,
-/// named explicitly or inherited from the parent.
-#[tokio::test]
-async fn the_supervisor_host_refuses_children_outside_the_subagent_filter() {
-    assert_every_child_refused(
-        r#"{ "subagentModels": ["test-provider/glm-5.3-turbo"] }"#,
-        &SubagentModelRefusal {
-            selector: "test-provider/glm-5.3".to_string(),
-            cause: SubagentModelRefusalCause::OutsideFilter {
-                permitted: vec!["turbo (test-provider/glm-5.3-turbo)".to_string()],
-                alias_patterns: Vec::new(),
-            },
-        },
-    )
-    .await;
-}
-
-/// A malformed `subagentModels` (a string, not a list) fails closed on the
-/// supervisor host: every child is refused, naming the problem.
-#[tokio::test]
-async fn the_supervisor_host_fails_closed_on_a_malformed_subagent_filter() {
-    assert_every_child_refused(
-        r#"{ "subagentModels": "test-provider/glm-5.3" }"#,
-        &SubagentModelRefusal {
-            selector: "test-provider/glm-5.3".to_string(),
-            cause: SubagentModelRefusalCause::UnreadableFilter(
-                "subagentModels is present but is not an array of strings".to_string(),
-            ),
-        },
-    )
-    .await;
 }

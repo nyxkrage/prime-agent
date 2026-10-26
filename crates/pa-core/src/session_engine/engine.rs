@@ -271,40 +271,22 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // pin), like the request-timing snapshot above.
     let factory_allowed_models = settings.get_allowed_models();
     // Captured before `settings` moves into the resource loader: the
-    // `subagentModels` filter's permitted models for the prompt tail
-    // (enforcement re-reads the live setting at every spawn).
-    let prompt_subagent_models = {
-        let filter = crate::models::SubagentModelFilter::load(&settings);
-        match &filter {
-            crate::models::SubagentModelFilter::Unrestricted => None,
-            crate::models::SubagentModelFilter::Only(_) => {
-                Some(wiring.rlm.registry.subagent_model_names(&filter))
-            }
-            // Fails closed: no model is permitted until settings are fixed.
-            crate::models::SubagentModelFilter::Unreadable(_) => Some(Vec::new()),
+    // permitted subagent models for the prompt tail (spawns re-read the
+    // setting). An unreadable filter permits none.
+    let prompt_subagent_models = match crate::models::SubagentModelFilter::load(&settings) {
+        crate::models::SubagentModelFilter::Unrestricted => None,
+        filter @ (crate::models::SubagentModelFilter::Only(_)
+        | crate::models::SubagentModelFilter::Unreadable(_)) => {
+            Some(wiring.rlm.registry.subagent_model_names(&filter))
         }
     };
-    // Model patterns match canonical `provider/model-id` names, never
-    // models.json aliases: a pattern that only names an alias selects
-    // nothing, so a top-level session says so on a display row (children
-    // share the same settings and would only repeat it).
+    // Children share the settings and would only repeat the warning.
     let model_pattern_notice = if config.rlm_depth.unwrap_or(0) == 0 {
-        let subagent_models = settings.get_subagent_models();
-        let alias_patterns: Vec<(&str, crate::models::AliasPattern)> = [
-            ("allowedModels", factory_allowed_models.as_deref()),
-            ("subagentModels", subagent_models.as_deref()),
-        ]
-        .into_iter()
-        .flat_map(|(setting, patterns)| {
-            wiring
-                .rlm
-                .registry
-                .alias_patterns(patterns.unwrap_or_default())
-                .into_iter()
-                .map(move |alias_pattern| (setting, alias_pattern))
-        })
-        .collect();
-        super::model_pattern_notice::notice_message(&alias_patterns)
+        super::model_pattern_notice::notice_message(
+            &wiring.rlm.registry,
+            factory_allowed_models.as_deref(),
+            settings.get_subagent_models().as_deref(),
+        )
     } else {
         None
     };
@@ -943,8 +925,6 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         // Same lifetime for the `rlm_child_*` session counters: the
         // producer's flush counts through this handle.
         wiring.rlm_usage.set_telemetry(telemetry.clone());
-        // And the subagent-model policy counters (`rlm.find_models`
-        // filtering, alias spawns, filter refusals).
         let _ = wiring.rlm.telemetry.set(telemetry.clone());
     }
     let goal_driver = wiring.runtime.goal_driver().clone();

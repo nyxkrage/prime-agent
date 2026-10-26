@@ -694,8 +694,6 @@ const AGENT_SESSION_ENDED: EventRule = EventRule {
         ("rlm_child_cache_read_tokens", optional(tokens())),
         ("rlm_child_cache_write_tokens", optional(tokens())),
         ("rlm_child_cost", optional(cost())),
-        // The subagent-model policy (settings `subagentModels`, models.json
-        // aliases): counts only, never a model ID or alias.
         ("subagent_models_find_count", optional(count())),
         ("subagent_models_refused_count", optional(count())),
         ("model_alias_spawn_count", optional(count())),

@@ -96,9 +96,7 @@ pub struct BuildSystemPromptOptions<'a> {
     pub can_spawn: bool,
     /// Enabled user-configured generic MCP servers.
     pub generic_mcp_servers: Vec<String>,
-    /// The models `rlm.spawn` accepts when settings `subagentModels` is set
-    /// (`alias (provider/model-id)` or the selector; empty when none is
-    /// permitted, including an unreadable filter); `None` when unset.
+    /// The models `rlm.spawn` accepts under `subagentModels`; `None` when unset.
     pub subagent_models: Option<Vec<String>>,
 }
 
@@ -497,8 +495,7 @@ mod tests {
             .contains("You are a child agent spawned by the lead."));
     }
 
-    /// An active `subagentModels` filter lists the permitted models in the
-    /// session-role tail (cached prefix untouched); unset adds nothing.
+    /// The permitted list rides the dynamic tail, never the cached prefix.
     #[test]
     fn subagent_filter_lists_permitted_models_in_the_tail() {
         let unset = system_prompt_breakdown(&base_options());

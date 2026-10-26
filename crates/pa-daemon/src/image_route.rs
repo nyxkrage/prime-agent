@@ -69,7 +69,6 @@ impl AgentSessionEngine {
                 session_model: &session_model,
                 thinking_level: self.effective_thinking(),
                 service_tier: *self.service_tier.read().expect("service tier lock"),
-                // A models.json alias resolves to its selector.
                 image_model_reference: image_model_reference
                     .as_deref()
                     .map(|reference| registry.resolve_model_alias(reference).unwrap_or(reference)),

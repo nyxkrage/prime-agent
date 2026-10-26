@@ -106,8 +106,7 @@ pub struct ModelCostConfig {
 pub struct ModelDefinition {
     pub id: String,
     pub name: Option<String>,
-    /// The short name the model resolves by (`rlm.spawn(model="sol")`);
-    /// unique across providers and never equal to a real model ID.
+    /// The short name the model resolves by (`rlm.spawn(model="sol")`).
     pub alias: Option<String>,
     pub api: Option<String>,
     pub base_url: Option<String>,
@@ -126,8 +125,6 @@ pub struct ModelDefinition {
 pub struct ModelOverride {
     /// Display name only; [`Self::alias`] is the name a model resolves by.
     pub name: Option<String>,
-    /// The short name the model resolves by; unique across providers and
-    /// never equal to a real model ID.
     pub alias: Option<String>,
     pub reasoning: Option<bool>,
     pub thinking_level_map: Option<BTreeMap<String, Option<String>>>,
@@ -190,8 +187,7 @@ pub fn parse_models_config(content: &str) -> Result<ModelsConfig, String> {
 ///
 /// Error when a provider lacks its base URL, API key, or API kind, a
 /// model lacks an id or zero limits, or a model alias is malformed,
-/// duplicated across providers, or equal to a model ID the document names
-/// (the registry checks the full catalog at load).
+/// duplicated, or shadows a model ID the document names.
 pub fn validate_config(
     config: &ModelsConfig,
     built_in_providers: &dyn Fn(&str) -> bool,
@@ -254,10 +250,8 @@ pub fn validate_config(
             }
         }
     }
-    // The alias rules: a non-empty single token (no `/`, `:`, whitespace, or glob
-    // characters, so it can never read as a selector or a pattern), unique
-    // across providers (case-insensitive), and never a model ID the document
-    // names. Errors name both models.
+    // No `/`, glob characters, or whitespace, so an alias never reads as a
+    // selector or pattern; no `:`, which `--model alias:<level>` splits on.
     let mut aliased: Vec<(&str, String)> = Vec::new();
     let mut model_ids: Vec<(&str, String)> = Vec::new();
     for (provider_name, provider_config) in &config.providers {
@@ -310,12 +304,10 @@ pub fn validate_config(
     Ok(())
 }
 
-/// The alias-collision error's middle: `alias "x" <this> provider/model-id`.
 pub(crate) const SHADOWED_MODEL_ID: &str =
     "equals the ID (or a trailing \"/\" segment of the ID) of model";
 
-/// Whether `alias` would capture references to `model_id`: it equals,
-/// case-insensitively, the ID or any `/`-delimited suffix of it, which
+/// Whether `alias` equals the ID or a `/`-delimited suffix of it, which
 /// model references also accept (`DeepSeek-R1` reaches
 /// `deepseek-ai/DeepSeek-R1`).
 pub(crate) fn alias_shadows_model_id(alias: &str, model_id: &str) -> bool {
@@ -565,66 +557,51 @@ mod tests {
         assert!(validate_config(&config, &|p| p == "custom").is_ok());
     }
 
-    fn alias_error(document: &str) -> String {
-        let config = parse_models_config(document).unwrap();
-        validate_config(&config, &|_| true).unwrap_err()
-    }
-
     #[test]
-    fn aliases_must_be_unique_across_providers() {
-        assert_eq!(
-            alias_error(
+    fn invalid_aliases_fail_validation() {
+        let invalid = |alias: &str| {
+            format!(
+                "Model openai/gpt-6.1-sol: invalid alias \"{alias}\" (use a single word without \"/\", \":\", spaces, or glob characters)."
+            )
+        };
+        let cases = [
+            (
                 r#"{ "providers": {
                     "anthropic": { "modelOverrides": { "claude-x": { "alias": "Sol" } } },
                     "openai": { "modelOverrides": { "gpt-6.1-sol": { "alias": "sol" } } }
-                } }"#
+                } }"#,
+                "Model openai/gpt-6.1-sol: alias \"sol\" is already used by model anthropic/claude-x; aliases must be unique.".to_string(),
             ),
-            "Model openai/gpt-6.1-sol: alias \"sol\" is already used by model anthropic/claude-x; aliases must be unique."
-        );
-    }
-
-    #[test]
-    fn an_alias_must_not_shadow_a_model_id_or_read_as_a_selector() {
-        assert_eq!(
-            alias_error(
+            (
                 r#"{ "providers": { "openai": { "modelOverrides": {
                     "gpt-6.1-sol": { "alias": "gpt-6-luna" },
                     "gpt-6-luna": { "name": "Luna" }
-                } } } }"#
+                } } } }"#,
+                "Model openai/gpt-6.1-sol: alias \"gpt-6-luna\" equals the ID (or a trailing \"/\" segment of the ID) of model openai/gpt-6-luna; an alias must not shadow a model ID.".to_string(),
             ),
-            "Model openai/gpt-6.1-sol: alias \"gpt-6-luna\" equals the ID (or a trailing \"/\" segment of the ID) of model openai/gpt-6-luna; an alias must not shadow a model ID."
-        );
-        assert_eq!(
-            alias_error(
-                r#"{ "providers": { "openai": { "modelOverrides": {
-                    "gpt-6.1-sol": { "alias": "openai/sol" }
-                } } } }"#
+            (
+                r#"{ "providers": { "openai": { "modelOverrides": { "gpt-6.1-sol": { "alias": "openai/sol" } } } } }"#,
+                invalid("openai/sol"),
             ),
-            "Model openai/gpt-6.1-sol: invalid alias \"openai/sol\" (use a single word without \"/\", \":\", spaces, or glob characters)."
-        );
-        // `:` would collide with the `--model alias:<thinking-level>` suffix.
-        assert_eq!(
-            alias_error(
-                r#"{ "providers": { "openai": { "modelOverrides": {
-                    "gpt-6.1-sol": { "alias": "sol:high" }
-                } } } }"#
+            (
+                r#"{ "providers": { "openai": { "modelOverrides": { "gpt-6.1-sol": { "alias": "sol:high" } } } } }"#,
+                invalid("sol:high"),
             ),
-            "Model openai/gpt-6.1-sol: invalid alias \"sol:high\" (use a single word without \"/\", \":\", spaces, or glob characters)."
-        );
-        // References also accept a trailing `/` segment of an ID, so an
-        // alias equal to one would redirect them.
-        assert_eq!(
-            alias_error(
+            (
                 r#"{ "providers": { "together": {
                     "baseUrl": "https://together.example", "apiKey": "k", "api": "openai-completions",
                     "models": [
                         { "id": "deepseek-ai/DeepSeek-R1" },
                         { "id": "meta/llama-5", "alias": "deepseek-r1" }
                     ]
-                } } }"#
+                } } }"#,
+                "Model together/meta/llama-5: alias \"deepseek-r1\" equals the ID (or a trailing \"/\" segment of the ID) of model together/deepseek-ai/DeepSeek-R1; an alias must not shadow a model ID.".to_string(),
             ),
-            "Model together/meta/llama-5: alias \"deepseek-r1\" equals the ID (or a trailing \"/\" segment of the ID) of model together/deepseek-ai/DeepSeek-R1; an alias must not shadow a model ID."
-        );
+        ];
+        for (document, expected) in cases {
+            let config = parse_models_config(document).unwrap();
+            assert_eq!(validate_config(&config, &|_| true), Err(expected));
+        }
         let config = parse_models_config(
             r#"{ "providers": { "openai": { "modelOverrides": {
                 "gpt-6.1-sol": { "alias": "sol" }, "gpt-6-luna": { "alias": "luna" }

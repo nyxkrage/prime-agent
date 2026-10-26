@@ -1,101 +1,56 @@
-//! The subagent-model policy at the RLM bridge: the `subagentModels`
-//! filter on `rlm.find_models`, alias resolution on spawns, and the policy
-//! counters.
+//! The subagent-model policy at the RLM bridge.
 use super::*;
 
-/// `subagentModels` (global settings, canonical selectors) narrows
-/// `rlm.find_models` to exactly the filtered set, the aliased model
-/// carrying its alias; an alias as a pattern matches nothing
-/// (patterns match canonical names only).
+/// `subagentModels` narrows `rlm.find_models` to exactly the filtered set;
+/// an alias as a pattern matches nothing; the query matches the display
+/// name and the alias; `enabledModels` never filters.
 #[tokio::test]
-async fn find_models_returns_only_the_subagent_filter() {
+async fn find_models_applies_the_subagent_filter() {
     let dir = tempfile::TempDir::new().unwrap();
     let wiring = wired(dir.path(), None);
-    std::fs::write(
-        dir.path().join("settings.json"),
-        r#"{ "subagentModels": ["test-provider/glm-5.3-turbo", "test-provider/glm-5.3"] }"#,
-    )
-    .unwrap();
-    let response = call(
-        &wiring,
-        "rlm.find_models",
-        json!({ "type": "rlm.find_models", "query": "" }),
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        response,
-        json!({ "models": [
-            {
-                "provider": "test-provider",
-                "id": "glm-5.3",
-                "name": "GLM 5.3",
-                "selector": "test-provider/glm-5.3",
-            },
-            {
-                "provider": "test-provider",
-                "id": "glm-5.3-turbo",
-                "name": "GLM Turbo",
-                "selector": "test-provider/glm-5.3-turbo",
-                "alias": "turbo",
-            },
-        ] })
-    );
-    std::fs::write(
-        dir.path().join("settings.json"),
-        r#"{ "subagentModels": ["*turbo"] }"#,
-    )
-    .unwrap();
-    let response = call(
-        &wiring,
-        "rlm.find_models",
-        json!({ "type": "rlm.find_models", "query": "glm" }),
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        response,
-        json!({ "models": [{
-            "provider": "test-provider",
-            "id": "glm-5.3-turbo",
-            "name": "GLM Turbo",
-            "selector": "test-provider/glm-5.3-turbo",
-            "alias": "turbo",
-        }] })
-    );
-    std::fs::write(
-        dir.path().join("settings.json"),
-        r#"{ "subagentModels": ["turbo"] }"#,
-    )
-    .unwrap();
-    let response = call(
-        &wiring,
-        "rlm.find_models",
-        json!({ "type": "rlm.find_models", "query": "" }),
-    )
-    .await
-    .unwrap();
-    assert_eq!(response, json!({ "models": [] }));
-}
-
-/// The display name stays searchable beside the alias and selector.
-#[tokio::test]
-async fn find_models_matches_the_display_name_and_the_alias() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let wiring = wired(dir.path(), None);
-    std::fs::write(
-        dir.path().join("settings.json"),
-        r#"{ "subagentModels": ["test-provider/*"] }"#,
-    )
-    .unwrap();
-    let turbo = json!({ "models": [{
+    let glm = json!({
+        "provider": "test-provider",
+        "id": "glm-5.3",
+        "name": "GLM 5.3",
+        "selector": "test-provider/glm-5.3",
+    });
+    let turbo = json!({
         "provider": "test-provider",
         "id": "glm-5.3-turbo",
         "name": "GLM Turbo",
         "selector": "test-provider/glm-5.3-turbo",
         "alias": "turbo",
-    }] });
-    for query in ["GLM Turbo", "turbo"] {
+    });
+    let cases = [
+        (
+            r#"{ "subagentModels": ["test-provider/glm-5.3-turbo", "test-provider/glm-5.3"] }"#,
+            "",
+            vec![glm.clone(), turbo.clone()],
+        ),
+        (
+            r#"{ "subagentModels": ["*turbo"] }"#,
+            "glm",
+            vec![turbo.clone()],
+        ),
+        (r#"{ "subagentModels": ["turbo"] }"#, "", Vec::new()),
+        (
+            r#"{ "subagentModels": ["test-provider/*"] }"#,
+            "GLM Turbo",
+            vec![turbo.clone()],
+        ),
+        (
+            r#"{ "subagentModels": ["test-provider/*"] }"#,
+            "turbo",
+            vec![turbo.clone()],
+        ),
+        (
+            r#"{ "enabledModels": ["test-provider/glm-5.3"] }"#,
+            "test-provider/",
+            vec![glm, turbo],
+        ),
+    ];
+    for (settings, query, expected) in cases {
+        std::fs::write(dir.path().join("settings.json"), settings).unwrap();
         let response = call(
             &wiring,
             "rlm.find_models",
@@ -103,13 +58,16 @@ async fn find_models_matches_the_display_name_and_the_alias() {
         )
         .await
         .unwrap();
-        assert_eq!(response, turbo, "query {query:?}");
+        assert_eq!(
+            response,
+            json!({ "models": expected }),
+            "{settings} {query:?}"
+        );
     }
 }
 
-/// The bridge's policy counters: a filtered `rlm.find_models`, a
-/// `subagentModels` refusal from the host, and an alias spawn the host
-/// admitted; an alias spawn the host refused counts as a refusal only.
+/// Counts filtered finds, refusals, and admitted alias spawns; a refused
+/// alias spawn counts as a refusal only.
 #[tokio::test]
 async fn the_bridge_counts_refusals_and_admitted_alias_spawns() {
     let dir = tempfile::TempDir::new().unwrap();
@@ -157,9 +115,7 @@ async fn the_bridge_counts_refusals_and_admitted_alias_spawns() {
     assert_eq!(telemetry.subagent_model_policy_counts(), [1, 2, 2]);
 }
 
-/// A malformed `subagentModels` (a string, not a list) fails closed:
-/// `rlm.find_models` errors naming the problem instead of listing every
-/// model as the lenient settings load would.
+/// The lenient settings load would list every model for a malformed value.
 #[tokio::test]
 async fn find_models_fails_closed_on_a_malformed_subagent_filter() {
     let dir = tempfile::TempDir::new().unwrap();
@@ -184,28 +140,7 @@ async fn find_models_fails_closed_on_a_malformed_subagent_filter() {
     );
 }
 
-/// `enabledModels` never filters subagents: with it set and
-/// `subagentModels` unset, `rlm.find_models` lists every searchable model.
-#[tokio::test]
-async fn enabled_models_never_filter_find_models() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let wiring = wired(dir.path(), None);
-    let query = json!({ "type": "rlm.find_models", "query": "test-provider/" });
-    let unfiltered = call(&wiring, "rlm.find_models", query.clone())
-        .await
-        .unwrap();
-    std::fs::write(
-        dir.path().join("settings.json"),
-        r#"{ "enabledModels": ["test-provider/glm-5.3"] }"#,
-    )
-    .unwrap();
-    let with_enabled = call(&wiring, "rlm.find_models", query).await.unwrap();
-    assert_eq!(with_enabled, unfiltered);
-    assert_eq!(with_enabled["models"].as_array().unwrap().len(), 2);
-}
-
-/// A models.json alias in `rlm.spawn(model=...)` and
-/// `rlm.create_session(model=...)` reaches the host as its selector.
+/// An alias in `rlm.spawn(model=...)` reaches the host as its selector.
 #[tokio::test]
 async fn spawn_resolves_a_model_alias_to_its_selector() {
     let dir = tempfile::TempDir::new().unwrap();

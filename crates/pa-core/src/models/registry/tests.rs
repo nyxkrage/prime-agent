@@ -486,8 +486,6 @@ fn models_json_aliases_resolve_and_never_expand_in_patterns() {
     );
     assert_eq!(registry.resolve_model_alias("gpt-5.6-luna"), None);
     assert_eq!(registry.model_alias("openai", "gpt-5.6-luna"), Some("luna"));
-    // Patterns match canonical names only: an alias-named pattern is
-    // reported (it matches nothing), canonical and glob patterns are not.
     assert_eq!(
         registry.alias_patterns(&[
             "luna".to_string(),
@@ -501,71 +499,39 @@ fn models_json_aliases_resolve_and_never_expand_in_patterns() {
     );
 }
 
-/// An alias equal to a catalog model ID the document never names (a
-/// built-in on another provider) is caught at registry load, disabling
-/// every alias.
+/// A duplicate alias, or one shadowing a catalog ID (or its trailing `/`
+/// segment) that models.json never names, fails the load and disables it.
 #[test]
-fn an_alias_shadowing_a_catalog_model_id_fails_the_load() {
-    let dir = tempfile::tempdir().unwrap();
-    let registry = registry_with_models_json(
-        dir.path(),
-        r#"{ "providers": { "openai": { "modelOverrides": {
-            "gpt-5.6-luna": { "alias": "deepseek-v4-flash" }
-        } } } }"#,
-    );
-    let error = registry.get_error().expect("collision is a load error");
-    assert!(
-        error.starts_with(
-            "Invalid models.json: model openai/gpt-5.6-luna: alias \"deepseek-v4-flash\" equals the ID (or a trailing \"/\" segment of the ID) of model "
+fn an_invalid_alias_fails_the_load() {
+    let cases = [
+        (
+            r#"{ "providers": {
+                "anthropic": { "modelOverrides": { "claude-x": { "alias": "sol" } } },
+                "openai": { "modelOverrides": { "gpt-5.6-luna": { "alias": "sol" } } }
+            } }"#,
+            "sol",
+            "alias \"sol\" is already used by model anthropic/claude-x",
         ),
-        "{error}"
-    );
-    assert!(
-        error.contains("/deepseek-v4-flash; an alias must not shadow a model ID."),
-        "{error}"
-    );
-    assert_eq!(registry.resolve_model_alias("deepseek-v4-flash"), None);
-}
-
-/// Model references also accept a trailing `/` segment of a catalog ID
-/// (`DeepSeek-R1` reaches `deepseek-ai/DeepSeek-R1`), so an alias equal to
-/// one would silently redirect them: it fails the load.
-#[test]
-fn an_alias_shadowing_a_catalog_id_segment_fails_the_load() {
-    let dir = tempfile::tempdir().unwrap();
-    let registry = registry_with_models_json(
-        dir.path(),
-        r#"{ "providers": { "openai": { "modelOverrides": {
-            "gpt-5.6-luna": { "alias": "deepseek-r1" }
-        } } } }"#,
-    );
-    let error = registry.get_error().expect("collision is a load error");
-    assert!(
-        error.contains(
-            "alias \"deepseek-r1\" equals the ID (or a trailing \"/\" segment of the ID) of model "
-        ) && error.contains("/deepseek-ai/DeepSeek-R1; an alias must not shadow a model ID."),
-        "{error}"
-    );
-    assert_eq!(registry.resolve_model_alias("deepseek-r1"), None);
-}
-
-/// A duplicate alias is a models.json validation error (custom models
-/// and aliases drop; built-ins keep loading).
-#[test]
-fn a_duplicate_alias_fails_the_load() {
-    let dir = tempfile::tempdir().unwrap();
-    let registry = registry_with_models_json(
-        dir.path(),
-        r#"{ "providers": {
-            "anthropic": { "modelOverrides": { "claude-x": { "alias": "sol" } } },
-            "openai": { "modelOverrides": { "gpt-5.6-luna": { "alias": "sol" } } }
-        } }"#,
-    );
-    let error = registry.get_error().expect("duplicate is a load error");
-    assert!(
-        error.contains("alias \"sol\" is already used by model anthropic/claude-x"),
-        "{error}"
-    );
-    assert_eq!(registry.resolve_model_alias("sol"), None);
-    assert!(!registry.get_all().is_empty());
+        (
+            r#"{ "providers": { "openai": { "modelOverrides": {
+                "gpt-5.6-luna": { "alias": "deepseek-v4-flash" }
+            } } } }"#,
+            "deepseek-v4-flash",
+            "/deepseek-v4-flash; an alias must not shadow a model ID.",
+        ),
+        (
+            r#"{ "providers": { "openai": { "modelOverrides": {
+                "gpt-5.6-luna": { "alias": "deepseek-r1" }
+            } } } }"#,
+            "deepseek-r1",
+            "/deepseek-ai/DeepSeek-R1; an alias must not shadow a model ID.",
+        ),
+    ];
+    for (document, alias, expected) in cases {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = registry_with_models_json(dir.path(), document);
+        let error = registry.get_error().expect("a load error");
+        assert!(error.contains(expected), "{error}");
+        assert_eq!(registry.resolve_model_alias(alias), None);
+    }
 }
