@@ -194,29 +194,20 @@ async def spawn(
     ``model`` selects a child with an exact ``provider/model`` selector.
     ``thinking`` sets the child reasoning level (e.g. 'off', 'low', 'medium', 'high');
     defaults to the parent level; levels invalid for the resolved model fail the spawn.
-    ``host`` runs the child's Python REPL (its ``bash``, files, and compute) on a
-    remote machine over SSH (``user@host``, a ``~/.ssh/config`` alias, or
-    ``host:port``); the agent loop and model calls stay local. Children of a
-    remote child default to the same host; ``host="local"`` spawns locally.
-    ``cwd`` sets the child's working directory (a remote path for a remote
-    child; defaults to the remote login directory or the parent's cwd).
-    ``env`` sets variables in the child's kernel environment (local or remote):
-    a ``str`` value is set as given; ``None`` copies the orchestrator's value
-    of that name, resolved by the host, so the value is never part of your
-    code or the spawn request (a variable the orchestrator lacks fails the
-    spawn). Names match ``[A-Z_][A-Z0-9_]*``; ``RLM_*``, ``PRIME_AGENT_*``,
-    ``PYTHON*``, ``PATH``, ``HOME``, and ``VIRTUAL_ENV`` are reserved. A child
-    never inherits its parent's ``env``: each spawn names its variables
-    again. A value sent to a host is trusted to that host (root there can
-    read it). Pass-through values of 8+ characters are masked as ``***`` in
-    the child's output (best effort). The global ``remoteEnvPassthrough``
-    setting can refuse ``None`` values for ``host=`` spawns.
+    ``host`` runs the child's Python REPL, files, and ``bash`` on a remote
+    machine over SSH (``user@host``, an ssh config alias, or ``host:port``);
+    its children default to the same host, ``host="local"`` spawns locally.
+    ``cwd`` sets the child's working directory (a remote path for a remote child).
+    ``env`` sets kernel variables: a ``str`` as given, ``None`` copies the
+    orchestrator's value without it entering your code (a missing variable
+    fails the spawn). ``RLM_*``, ``PRIME_AGENT_*``, ``PYTHON*``, ``PATH``,
+    ``HOME``, and ``VIRTUAL_ENV`` are reserved; ``env`` is never inherited.
+    Pass-through values of 8+ characters are masked as ``***`` in the child's
+    output (best effort).
     """
     if not isinstance(prompt, str):
         raise TypeError(f"prompt must be str, got {type(prompt).__name__}")
-    # The shape is checked early here; the host validates names, reserved
-    # names, and sizes authoritatively. A ``None`` value stays ``None`` (JSON
-    # null), so a pass-through never carries a value.
+    # An early shape check; the host validates authoritatively.
     if env is not None:
         if not isinstance(env, dict):
             raise TypeError(f"env must be a dict of str to str | None, got {type(env).__name__}")
@@ -576,8 +567,7 @@ class _HarnessProxy:
         try:
             return get_harness_state()
         except RemoteKernelRefusal:
-            # A remote kernel refuses the harness outright: degrading to an
-            # in-memory store would silently split state from the host's.
+            # Never degrade to an in-memory store: that would split state.
             raise
         except RuntimeError as exc:
             if "Local harness state requires" in str(exc):

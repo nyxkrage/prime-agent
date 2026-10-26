@@ -694,14 +694,9 @@ const AGENT_SESSION_ENDED: EventRule = EventRule {
         ("rlm_child_cache_read_tokens", optional(tokens())),
         ("rlm_child_cache_write_tokens", optional(tokens())),
         ("rlm_child_cost", optional(cost())),
-        // `rlm.spawn` adoption: every admitted spawn, and the ones placed
-        // on a remote SSH host (counts only, never the host).
+        // `rlm.spawn` adoption (counts only, never a host, name, or value).
         ("rlm_spawn_count", optional(count())),
         ("rlm_remote_spawn_count", optional(count())),
-        // `rlm.spawn(env=...)` adoption: keys set to a literal and keys
-        // passed through from the orchestrator, summed over admitted
-        // spawns, plus spawns refused over their env (counts only, never
-        // a name or a value).
         ("rlm_spawn_env_literal_key_count", optional(count())),
         ("rlm_spawn_env_passthrough_key_count", optional(count())),
         ("rlm_spawn_env_refused_count", optional(count())),

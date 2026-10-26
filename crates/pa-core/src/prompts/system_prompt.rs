@@ -96,9 +96,8 @@ pub struct BuildSystemPromptOptions<'a> {
     pub can_spawn: bool,
     /// Enabled user-configured generic MCP servers.
     pub generic_mcp_servers: Vec<String>,
-    /// The SSH host (and remote cwd) of a remote child's kernel
-    /// (`rlm.spawn(..., host=...)`): the environment then describes the
-    /// remote machine, not this one. `None` for a local kernel.
+    /// A remote child's kernel placement: the environment then describes
+    /// the remote machine.
     pub remote_kernel: Option<&'a crate::kernel::shared::RemoteKernelTarget>,
 }
 

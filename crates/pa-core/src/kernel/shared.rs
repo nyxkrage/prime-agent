@@ -340,27 +340,20 @@ pub struct KernelSnapshotConfig {
     pub debounce_ms: Option<u64>,
 }
 
-/// A kernel that runs on another machine over SSH (`rlm.spawn(..., host=...)`).
-/// Only the kernel runs remotely. The agent loop, model calls, and session
-/// persistence stay local. Built by [`Self::validated`] only.
+/// A kernel that runs on another machine over SSH (`rlm.spawn(..., host=...)`);
+/// the agent loop, model calls, and session persistence stay local. Built
+/// by [`Self::validated`] only, so host and cwd are always within policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteKernelTarget {
-    /// SSH destination as `ssh` understands it (`user@host`, a config
-    /// alias), or `[user@]host:port`.
     host: String,
-    /// The remote working directory. `None` means the remote login directory.
+    /// `None` means the remote login directory.
     cwd: Option<String>,
-    /// The session's model-visible skill dirs, uploaded with the install so
-    /// the remote child's skill inventory points at remote paths (set by
-    /// the session engine).
+    /// The session's model-visible skill dirs, uploaded with the install
+    /// (set by the session engine).
     skill_dirs: Vec<std::path::PathBuf>,
 }
 
 impl RemoteKernelTarget {
-    /// A target whose `host` passed the SSH destination allowlist and whose
-    /// `cwd` passed the remote path allowlist
-    /// (`crate::kernel::remote_policy`); the error names what was refused.
-    ///
     /// # Errors
     ///
     /// Returns an error when the host or the cwd is outside its allowlist.
@@ -376,13 +369,11 @@ impl RemoteKernelTarget {
         })
     }
 
-    /// The SSH destination.
     #[must_use]
     pub fn host(&self) -> &str {
         &self.host
     }
 
-    /// The remote working directory (`None`: the remote login directory).
     #[must_use]
     pub fn cwd(&self) -> Option<&str> {
         self.cwd.as_deref()
@@ -419,9 +410,7 @@ pub struct KernelManagerOptions {
     pub stderr_log_path: Option<std::path::PathBuf>,
     /// Run the kernel on a remote host over SSH instead of locally.
     pub remote: Option<RemoteKernelTarget>,
-    /// The spawn's `rlm.spawn(env=...)` overrides, resolved at each kernel
-    /// start: set in the local kernel's process env, or sent to a remote
-    /// kernel over its stdin (never on the ssh command line).
+    /// The spawn's `rlm.spawn(env=...)` overrides, resolved at each start.
     pub env_overrides: crate::kernel::env_overrides::KernelEnvOverrides,
 }
 

@@ -351,15 +351,13 @@ pub(crate) struct Inner {
     resolved_python: Mutex<Option<std::path::PathBuf>>,
     /// The provisioned remote environment of a remote kernel, reused across restarts.
     resolved_remote: Mutex<Option<crate::kernel::bootstrap::RemoteKernelInstall>>,
-    /// The pass-through values of this start's `rlm.spawn(env=...)`, masked
-    /// in the output streamed back to the model (best effort).
+    /// This start's pass-through values, masked in kernel output.
     redactions: Mutex<Arc<Vec<String>>>,
-    /// Per stream (cell id, stdout/stderr): a masked chunk's held tail that
-    /// may begin a pass-through value split across chunks (`events.rs`).
+    /// Per stream (cell id, stdout/stderr): a held tail that may begin a
+    /// pass-through value split across chunks.
     redaction_carries: Mutex<Vec<(Option<String>, StreamName, String)>>,
-    /// The `kernel_env` frame a remote kernel reads from stdin right after
-    /// the launcher's stdio sentinel, taken by the stdout reader when the
-    /// sentinel arrives (`remote.rs`).
+    /// The `kernel_env` frame, sent by the stdout reader once the remote
+    /// launcher's stdio sentinel arrives.
     remote_env_frame: Mutex<Option<Value>>,
     guarded: Mutex<Guarded>,
     child: Mutex<Option<ChildHandle>>,

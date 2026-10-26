@@ -1,16 +1,10 @@
 //! The kernel placement sidecar (`kernel-placement.json` in a child's
-//! session dir): an `rlm.spawn(..., host=..., env=...)` child records where
-//! its kernel runs and its `env=` overrides, so every later open of that
-//! session (a respawned worker, a resume or switch, a fork or new session in
-//! the same dir, the parent's ledger reseed, a print-mode reopen) runs the
-//! kernel on the same host with the same env. A session whose sidecar
-//! cannot be read refuses to open rather than silently running its kernel
-//! locally or without its env.
+//! session dir): a spawned child's remote host and `env=` overrides, so
+//! every later open of that session (respawn, resume, switch, fork, new
+//! session, ledger reseed, print-mode reopen) keeps both. An unreadable
+//! sidecar refuses the open rather than silently running locally.
 //!
-//! The env is stored as the spawn validated it: literal values and
-//! pass-through names (`null`), never a pass-through's value. Each kernel
-//! start resolves the pass-throughs again, and the session build re-checks
-//! the global `remoteEnvPassthrough` kill switch for a remote placement.
+//! Pass-throughs are stored by name (`null`), never by value.
 
 use std::path::Path;
 
@@ -21,13 +15,11 @@ use serde_json::{json, Value};
 /// The sidecar file name inside a child's session dir.
 pub(crate) const KERNEL_PLACEMENT_FILE: &str = "kernel-placement.json";
 
-/// A session's kernel placement: the remote host (`None` runs locally) and
-/// the spawn's `env=` overrides (empty when none were given).
+/// A session's kernel placement.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct KernelPlacement {
-    /// Where the kernel runs; `None` runs it locally.
+    /// `None` runs the kernel locally.
     pub remote: Option<RemoteKernelTarget>,
-    /// The spawn's `env=` overrides (literals and pass-through names).
     pub env: KernelEnvOverrides,
 }
 
@@ -63,9 +55,8 @@ pub(crate) fn write_kernel_placement(
         .with_context(|| format!("persist the kernel placement at {}", path.display()))
 }
 
-/// The placement recorded in `session_dir`: the default (local, no env)
-/// without a sidecar; an error for a sidecar that exists but is unreadable,
-/// names a host or cwd outside the remote policy, or carries an invalid env.
+/// The placement recorded in `session_dir` (the default without a sidecar);
+/// an error for a sidecar that is unreadable or outside the policy.
 pub(crate) fn read_kernel_placement(session_dir: &Path) -> Result<KernelPlacement> {
     let path = session_dir.join(KERNEL_PLACEMENT_FILE);
     let text = match std::fs::read_to_string(&path) {
@@ -97,8 +88,7 @@ pub(crate) fn read_kernel_placement(session_dir: &Path) -> Result<KernelPlacemen
     Ok(KernelPlacement { remote, env })
 }
 
-/// The placement of the session stored at `session_file` (its dir's
-/// sidecar), with an error that says the session will not open without it.
+/// The placement of the session stored at `session_file`.
 ///
 /// # Errors
 ///

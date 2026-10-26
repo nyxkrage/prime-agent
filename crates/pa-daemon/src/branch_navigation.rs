@@ -573,9 +573,8 @@ impl Worker {
             Ok(prepared) => prepared,
             Err(response) => return response,
         };
-        // The fork lands in the live session's dir: a spawned child's fork
-        // keeps its host and env (an unreadable placement refuses before
-        // teardown).
+        // The fork lands in the live session's dir and keeps its placement
+        // (an unreadable one refuses before teardown).
         let placement =
             match crate::rlm_children::kernel_placement::placement_for_session_file(&forked.path) {
                 Ok(placement) => placement,

@@ -380,11 +380,9 @@ impl SessionCounters {
         });
     }
 
-    /// One admitted `rlm.spawn`, split by explicit placement (the host
-    /// name never uploads). An inherited placement counts as local: only
-    /// depth-0 sessions report, and they have no remote placement to inherit.
-    /// `env` is the spawn's `env=`: its literal and pass-through keys
-    /// count, never a name or a value.
+    /// One admitted `rlm.spawn`: counts only, never a host, name, or value.
+    /// An inherited placement counts as local: only depth-0 sessions report,
+    /// and they have none to inherit.
     pub(crate) fn note_rlm_spawn(
         &self,
         host: Option<&super::rlm_host::RlmSpawnHost>,
@@ -403,8 +401,7 @@ impl SessionCounters {
         });
     }
 
-    /// One `rlm.spawn` refused over its `env=` (a bad name or value, a
-    /// missing pass-through, or the `remoteEnvPassthrough` kill switch).
+    /// One `rlm.spawn` refused over its `env=`.
     pub(crate) fn note_rlm_spawn_env_refused(&self) {
         self.with(|values| values.rlm_spawn_env_refused_count += 1);
     }

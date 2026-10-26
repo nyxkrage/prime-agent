@@ -189,13 +189,9 @@ impl Worker {
             .get("childScript")
             .and_then(Value::as_str)
             .map(str::to_string);
-        // A spawned child's kernel placement (remote host) and `env=`
-        // overrides (literals and pass-through names): the durable create
-        // replays them (validated again, as they come from disk), and an
-        // open of an existing session file without them reads the placement
-        // sidecar beside it, so a spawned child never reopens with a local
-        // kernel or without its env (an unreadable sidecar refuses the
-        // create). The session build re-checks the passthrough kill switch.
+        // A spawned child's placement and `env=`: from the durable create
+        // (validated again), else from the sidecar beside an existing
+        // session file (an unreadable sidecar refuses the create).
         let placement = if payload.get("remoteHost").is_some() || payload.get("kernelEnv").is_some()
         {
             payload

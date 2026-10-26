@@ -82,8 +82,7 @@ pub struct RlmSubagentEntry {
     pub last_activity_at: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub activity_stale_ms: Option<u64>,
-    /// The SSH destination a remote child's kernel runs on; absent for a
-    /// local child.
+    /// The SSH destination a remote child's kernel runs on.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
 }
@@ -151,15 +150,11 @@ pub struct RlmSpawnRequest {
     /// The parent's in-flight turn request the spawn anchors to (TS
     /// `spawnedByRequestId`): `None` for a spawn outside an active run.
     pub spawned_by_request_id: Option<String>,
-    /// Where the child's kernel runs. `None` inherits the parent's placement
-    /// (a child of a remote child stays on that host).
+    /// Where the child's kernel runs. `None` inherits the parent's placement.
     pub host: Option<RlmSpawnHost>,
-    /// The child's working directory: a remote path for a remote child, a
-    /// local one otherwise. `None` keeps the default (the remote login
-    /// directory, or the parent's cwd for a local child).
+    /// A remote path for a remote child, a local one otherwise.
     pub cwd: Option<String>,
-    /// The child kernel's `env=` overrides (validated; pass-throughs by
-    /// name only). Never inherited: a child's own spawns name theirs again.
+    /// The child kernel's validated `env=` overrides.
     pub env: crate::kernel::env_overrides::KernelEnvOverrides,
 }
 
@@ -171,9 +166,6 @@ pub enum RlmSpawnHost {
     /// An SSH destination, validated.
     Remote(String),
 }
-
-/// The `host="local"` keyword that escapes a remote parent's placement.
-pub(crate) const RLM_SPAWN_LOCAL_HOST: &str = "local";
 
 /// Validated `rlm.create_session` request handed to the host.
 #[derive(Debug, Clone)]
@@ -507,8 +499,7 @@ pub struct RlmHostBridge {
     /// The spawn anchor [`register_run`] reads the in-flight turn from
     /// (`None` until the engine built the session's agent).
     pub(crate) semantic_spawn: std::sync::OnceLock<SemanticSpawnAnchor>,
-    /// The session counters admitted spawns count into (local vs remote
-    /// placement only); unset for a telemetry-less session.
+    /// The session counters admitted spawns count into; unset without telemetry.
     pub(crate) spawn_counters: std::sync::OnceLock<Arc<super::telemetry::SessionCounters>>,
 }
 
@@ -640,8 +631,7 @@ fn register_run(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmHostBridge>)
                 let Some(prompt) = data.get("prompt").and_then(Value::as_str) else {
                     anyhow::bail!("rlm.spawn prompt must be a string");
                 };
-                // An `env=` refusal (here or in the host's placement-aware
-                // checks) counts, never by name or value.
+                // An `env=` refusal counts, never by name or value.
                 let note_env_refusal = |error: anyhow::Error| {
                     if error.downcast_ref::<KernelEnvRefusal>().is_some() {
                         if let Some(counters) = bridge.spawn_counters.get() {
@@ -706,26 +696,23 @@ fn spawn_request_from_payload(prompt: &str, data: &Value) -> anyhow::Result<RlmS
     let thinking = optional_string_kwarg(&kwargs, "thinking", OPERATION)?;
     let thinking =
         normalize_requested_rlm_subagent_thinking_level(thinking, OPERATION)?.map(String::from);
-    // Strict: the host is validated verbatim against the SSH destination
-    // allowlist (no trimming), so the value checked is the value used.
+    // Validated verbatim (no trimming): the value checked is the value used.
     let host = match optional_string_kwarg(&kwargs, "host", OPERATION)? {
         None => None,
-        Some(RLM_SPAWN_LOCAL_HOST) => Some(RlmSpawnHost::Local),
+        Some("local") => Some(RlmSpawnHost::Local),
         Some(host) => {
             crate::kernel::bootstrap::SshDestination::parse(host)?;
             Some(RlmSpawnHost::Remote(host.to_string()))
         }
     };
-    // The cwd's meaning (remote or local path) depends on the placement the
-    // host resolves (a child inherits a remote parent's host), so the host
-    // validates it once the placement is known.
+    // Remote or local depends on the placement the host resolves, so the
+    // host validates the cwd.
     let cwd = match optional_string_kwarg(&kwargs, "cwd", OPERATION)? {
         None => None,
         Some("") => anyhow::bail!("rlm.spawn cwd must be a non-empty string"),
         Some(cwd) => Some(cwd.to_string()),
     };
-    // Authoritative: the kernel wrapper's checks are a courtesy, and a
-    // pass-through arrives as `null`, never as a value.
+    // Authoritative: the kernel wrapper's checks are a courtesy.
     let env = crate::kernel::env_overrides::KernelEnvOverrides::from_json(
         kwargs.get("env").unwrap_or(&Value::Null),
     )?;

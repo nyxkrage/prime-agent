@@ -106,12 +106,9 @@ pub struct SessionEngineConfig {
     /// request ids on the wire).
     pub semantic_edges: Option<super::semantic_edges::SemanticEdgeIdentity>,
     pub on_late_sent_agent_message: Option<crate::tools::ipython::LateSentAgentMessageHandler>,
-    /// Run this session's Python kernel on a remote SSH host (an
-    /// `rlm.spawn(..., host=...)` child). `None` runs it locally.
+    /// Run this session's Python kernel on a remote SSH host. `None` runs it locally.
     pub remote_kernel: Option<crate::kernel::shared::RemoteKernelTarget>,
-    /// This session's `rlm.spawn(env=...)` overrides, applied to every
-    /// kernel start (local or remote). Empty for a session nobody spawned
-    /// with `env=`; a child never inherits its parent's.
+    /// This session's `rlm.spawn(env=...)` overrides, applied at every kernel start.
     pub kernel_env: crate::kernel::env_overrides::KernelEnvOverrides,
 }
 
@@ -229,11 +226,8 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         settings.settings().shell_path.as_deref(),
     )?
     .map(std::path::PathBuf::from);
-    // The global `remoteEnvPassthrough` kill switch holds at every session
-    // build, not only at the spawn: a respawned or passivated worker replays
-    // its durable create's `env=`, a reopened session reads it back from its
-    // placement, and each remote kernel start resolves the pass-throughs
-    // again. A switched-off (or unreadable) setting fails the build closed.
+    // The `remoteEnvPassthrough` kill switch holds at every build, not only
+    // at the spawn: respawned and reopened sessions replay their `env=`.
     if config.remote_kernel.is_some() {
         config
             .kernel_env
@@ -496,10 +490,9 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     let model_visible_skills =
         super::runtime_wiring::model_visible_skills(resources.skills.clone(), &handlers);
     let python_skills = super::runtime_wiring::kernel_python_skills(&model_visible_skills);
-    // A remote child's skills live on its kernel host: every readable skill
-    // dir is uploaded with the remote install, and the prompt's inventory
-    // names the remote paths, never this machine's (a skill dir that cannot
-    // be read drops out of the remote inventory and the upload).
+    // A remote child's skills are uploaded with its install, and the
+    // prompt's inventory names the remote paths (an unreadable skill dir
+    // drops out of both).
     let (prompt_skills, remote_kernel) = match config.remote_kernel.clone() {
         None => (model_visible_skills.clone(), None),
         Some(target) => {
@@ -636,8 +629,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             vision_capable: prompt_vision_capable,
             cwd: cwd.display().to_string(),
             messages_path: conversation_log.clone(),
-            // A remote child's project lives on its kernel host: this
-            // machine's AGENTS.md files describe a different tree.
+            // This machine's AGENTS.md files describe a different tree.
             context_files: if config.remote_kernel.is_some() {
                 Vec::new()
             } else {

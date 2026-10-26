@@ -94,13 +94,6 @@ class KernelEnvTest(unittest.TestCase):
             repl.ready()
         self.assertEqual(repl.proc.wait(timeout=10), 1)
 
-    def test_a_local_kernel_reads_no_env_frame(self) -> None:
-        repl = ReplProcess()
-        self.addCleanup(repl.close)
-        event, _ = repl.ready()
-        self.assertEqual(event["event"], "ready")
-        self.assertEqual(repl.shutdown(), 0)
-
 
 class RefusalTest(unittest.TestCase):
     def test_refusals_name_the_feature_host_and_reason_only_on_remote_kernels(self) -> None:

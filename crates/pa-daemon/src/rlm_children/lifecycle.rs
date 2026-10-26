@@ -107,14 +107,8 @@ impl SupervisorChildSessionsInner {
         if let Some(request_id) = spawned_by_request_id {
             config["spawnedByRequestId"] = json!(request_id);
         }
-        // A remote child's kernel placement and the spawn's `env=` (literal
-        // values and pass-through names as `null`, never a pass-through
-        // value) ride the durable create, so a respawned worker reconnects
-        // to the same host with the same env; the child worker resolves the
-        // pass-throughs from its own env, which is this worker's
-        // (`launch_env`), at every kernel start. The placement sidecar
-        // makes every later open of the session (resume, switch, fork, new
-        // session, the ledger reseed, a print-mode reopen) keep both.
+        // The placement and `env=` (pass-throughs by name only) ride the
+        // durable create for respawns, and the sidecar for every later open.
         super::kernel_placement::write_kernel_placement(
             session_dir,
             &super::kernel_placement::KernelPlacement {

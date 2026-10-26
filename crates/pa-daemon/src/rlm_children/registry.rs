@@ -563,8 +563,7 @@ fn ledger_child_records(
             .parent()
             .and_then(crate::rlm_ledger::read_rlm_subagent_display)
             .filter(|display| display.child_id == edge.child_id);
-        // A remote child's host comes back from its placement sidecar; a
-        // damaged sidecar reseeds the row without a host and says why.
+        // A damaged sidecar reseeds the row without a host and says why.
         let host = match child
             .parent()
             .map(super::kernel_placement::read_kernel_placement)

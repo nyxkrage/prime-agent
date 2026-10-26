@@ -121,12 +121,10 @@ impl RlmSubagentHost for SupervisorChildSessions {
                 assert_thinking_supported(&this.agent_dir, request.thinking.as_deref(), &model)?;
                 let thinking = request.thinking.as_deref().or(identity.thinking.as_deref());
                 let child_dir = this.child_session_dir(&child_id, &identity)?;
-                // The kernel placement: an explicit host wins, `host="local"`
-                // escapes, and no host inherits the parent's (a child of a
-                // remote child stays on that host; the SSH connection always
-                // originates here, never chained). A child on its parent's
-                // host also inherits the parent's remote cwd unless it names
-                // its own, like a local child inherits its parent's cwd.
+                // An explicit host wins, `host="local"` escapes, and no host
+                // inherits the parent's (SSH always originates here, never
+                // chained). On the parent's host, the parent's remote cwd is
+                // inherited too unless the spawn names its own.
                 let remote_host = match &request.host {
                     Some(RlmSpawnHost::Remote(host)) => Some(host.clone()),
                     Some(RlmSpawnHost::Local) => None,
@@ -147,11 +145,8 @@ impl RlmSubagentHost for SupervisorChildSessions {
                         pa_core::kernel::RemoteKernelTarget::validated(host, cwd)
                     })
                     .transpose()?;
-                // The `env=` checks that need the placement and this
-                // machine: the global kill switch refuses pass-throughs to a
-                // remote host (an inherited placement too), and a
-                // pass-through the orchestrator lacks fails the spawn here,
-                // naming it, instead of the child's first kernel start.
+                // Fail the spawn, not the child's first kernel start, on the
+                // kill switch or a pass-through the orchestrator lacks.
                 if remote.is_some() {
                     let passthrough_allowed = pa_core::settings::SettingsManager::create(
                         identity.cwd.as_deref().unwrap_or("/"),
@@ -163,10 +158,8 @@ impl RlmSubagentHost for SupervisorChildSessions {
                 request
                     .env
                     .check_resolvable(|key| std::env::var(key).ok())?;
-                // A local child's `cwd` moves its session (relative to the
-                // parent's cwd, like `rlm.create_session`, and it must
-                // exist); a remote child's names the remote kernel's
-                // directory and the local session keeps the parent's cwd.
+                // A local child's `cwd` (relative to the parent's) must exist;
+                // a remote child's local session keeps the parent's cwd.
                 let cwd = match (&remote, &request.cwd) {
                     (None, Some(requested)) => {
                         let resolved =

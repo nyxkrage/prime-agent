@@ -210,11 +210,9 @@ pub(crate) fn root_node(
     })
 }
 
-/// The kernel placement of a print-mode engine. A spawned inline child
-/// runs locally with its own `env=` (never inherited down the tree). A root
-/// (or RPC) session opened from a file honors that file's placement sidecar:
-/// a reopened remote child keeps its kernel host and its `env=`, never
-/// silently a local kernel; an unreadable sidecar refuses the open.
+/// The kernel placement of a print-mode engine: an inline child runs
+/// locally with its own `env=`; a root (or RPC) session opened from a file
+/// honors that file's placement sidecar (an unreadable one refuses).
 pub(crate) fn kernel_placement(
     embedding: &crate::print_runtime::HeadlessEmbedding,
     session_file: Option<&std::path::Path>,
@@ -662,8 +660,6 @@ impl RlmSubagentHost for InlineHost {
             if node.depth >= node.max_depth {
                 return Err(rlm_depth_limit_error(node.depth, node.max_depth));
             }
-            // Inline children share this process's kernel wiring: a remote
-            // kernel needs the daemon's per-child worker.
             if matches!(
                 request.host,
                 Some(pa_core::session_engine::rlm_host::RlmSpawnHost::Remote(_))
@@ -672,16 +668,13 @@ impl RlmSubagentHost for InlineHost {
                     "rlm.spawn host= requires a daemon-backed session; print mode runs subagents in-process on this machine"
                 );
             }
-            // Inline children share this process's working directory too.
             if request.cwd.is_some() {
                 anyhow::bail!(
                     "rlm.spawn cwd= requires a daemon-backed session; print mode runs subagents in-process in this session's working directory"
                 );
             }
-            // A root reopened on a remote host (its placement sidecar): a
-            // child without `host=` would inherit that host, which an
-            // in-process child cannot honor. Refuse rather than run it
-            // locally behind the model's back.
+            // A child of a root reopened on a remote host would inherit that
+            // host, which an in-process child cannot honor.
             if request.host.is_none() {
                 if let Some(file) = &node.session_file {
                     let placement = pa_daemon::rlm_children::placement_for_session_file(
@@ -695,8 +688,6 @@ impl RlmSubagentHost for InlineHost {
                     }
                 }
             }
-            // A pass-through the orchestrator lacks fails the spawn, naming
-            // it, instead of the child's first kernel start.
             request
                 .env
                 .check_resolvable(|key| std::env::var(key).ok())?;

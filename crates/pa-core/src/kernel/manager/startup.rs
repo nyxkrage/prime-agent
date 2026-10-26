@@ -140,10 +140,8 @@ impl Inner {
         // kernel that is still booting.
         live_kernels::add(self);
 
-        // The spawn's `env=` overrides resolve against the environment a
-        // local kernel gets (this process's env under the kernel env), at
-        // every start, so a pass-through value never leaves this process
-        // except to the kernel itself.
+        // Pass-throughs resolve at every start against the env a local
+        // kernel gets, so a value never leaves this process except to the kernel.
         let resolved_env = self
             .options
             .env_overrides
@@ -159,8 +157,6 @@ impl Inner {
             *lock(&self.redactions) = Arc::new(resolved.redactions().to_vec());
             lock(&self.redaction_carries).clear();
         }
-        // A remote kernel provisions its host and launches over ssh; a local
-        // kernel resolves its interpreter. Both then share the spawn path.
         let launch = match (&self.options.remote, resolved_env) {
             (_, Err(error)) => Err(error),
             (Some(target), Ok(resolved)) => {
@@ -179,8 +175,6 @@ impl Inner {
                 if let Some(cwd) = &self.options.cwd {
                     command.current_dir(cwd);
                 }
-                // Literal overrides win over the inherited env; a
-                // pass-through sets the value the kernel would inherit anyway.
                 command
                     .env_clear()
                     .envs(kernel_spawn_env(&self.options.env))
@@ -218,8 +212,6 @@ impl Inner {
                 // interpreter itself failed to launch, so the memoized runtime-ready result
                 // is stale.
                 crate::kernel::bootstrap::invalidate_runtime_probe_cache();
-                // Likewise a remote kernel's provisioned install: the next
-                // start probes (and repairs) the host again.
                 lock(&self.resolved_remote).take();
                 self.append_diagnostic(&format!("spawn error: {error}"));
                 {
@@ -252,8 +244,7 @@ impl Inner {
                     return Err(error);
                 }
                 // The child died or never reached ready, so the memoized runtime-ready
-                // result (and a remote kernel's provisioned install, which may
-                // have been removed or broken on the host) is stale: drop it
+                // result (and a remote kernel's cached install) is stale: drop it
                 // and let a startup retry re-probe.
                 crate::kernel::bootstrap::invalidate_runtime_probe_cache();
                 lock(&self.resolved_remote).take();
@@ -286,8 +277,7 @@ impl Inner {
             ));
         }
         // A remote kernel exits when the host goes silent (a partition sshd
-        // never notices), so this start generation sends it a heartbeat
-        // frame on an interval while it lives.
+        // never notices), so this generation heartbeats it while it lives.
         if self.options.remote.is_some() {
             let inner = Arc::downgrade(self);
             tokio::spawn(async move {
@@ -388,18 +378,15 @@ impl Inner {
                                 buffered[scan_from..].iter().position(|&b| b == b'\n')
                             {
                                 let end = scan_from + rel;
-                                // A remote kernel's login shell may print rc
-                                // output first: everything up to the launcher's
-                                // sentinel line is discarded unparsed.
+                                // Login-shell rc output before the launcher's
+                                // sentinel is discarded unparsed.
                                 if awaiting_sentinel {
                                     awaiting_sentinel = buffered[consumed..end].trim_ascii()
                                         != super::remote::REMOTE_KERNEL_STDIO_SENTINEL.as_bytes();
                                     consumed = end + 1;
                                     scan_from = consumed;
-                                    // The launcher reached its `exec`: only the
-                                    // kernel reads stdin from here on, so the
-                                    // env frame goes out now, before anything
-                                    // else is written (rc files never see it).
+                                    // Past the `exec` only the kernel reads stdin:
+                                    // the env frame goes first (rc files never see it).
                                     if !awaiting_sentinel {
                                         let Some(inner) = inner.upgrade() else {
                                             return;
@@ -480,9 +467,8 @@ impl Inner {
                             let Some(inner) = inner.upgrade() else {
                                 break;
                             };
-                            // Pass-through values stay out of the stderr
-                            // tail and the log too (best effort; a value
-                            // split across chunks is held until it is whole).
+                            // Pass-through values stay out of the stderr tail
+                            // and the log too.
                             let redactions = Arc::clone(&lock(&inner.redactions));
                             let masked;
                             let (text, bytes): (&str, &[u8]) = if redactions.is_empty() {
@@ -559,9 +545,8 @@ impl Inner {
                     exit.code.map_or("null".to_string(), |c| c.to_string()),
                     exit.signal.map_or("null".to_string(), |s| s.to_string()),
                 ));
-                // A remote kernel's exit is usually a dropped connection: the
-                // in-flight cell fails naming the host instead of the generic
-                // shutdown text.
+                // Usually a dropped connection: name the host, not the
+                // generic shutdown text.
                 if let Some(remote) = &inner.options.remote {
                     inner.reject_active_execution(&format!(
                         "Remote kernel on {} exited (code={}): the SSH connection closed or the remote Python died",
@@ -642,9 +627,8 @@ impl Inner {
     }
 }
 
-/// Append `bytes` to the kernel stderr log within its byte budget (what is
-/// written is what is counted); the first chunk over the budget writes the
-/// budget marker instead.
+/// Append `bytes` to the kernel stderr log within its byte budget; the
+/// first chunk over the budget writes the budget marker instead.
 fn write_stderr_log(log: &Mutex<StderrLog>, bytes: &[u8]) {
     let mut log = lock(log);
     if log.budget >= bytes.len() as u64 {
@@ -664,8 +648,8 @@ fn write_stderr_log(log: &Mutex<StderrLog>, bytes: &[u8]) {
 /// the provisioner's env, with UTF-8 mode forced on Windows (`CPython` must
 /// read UTF-8 regardless of the active legacy code page, overriding any
 /// provisioner-provided `PYTHONUTF8`) and the owner pid the runtime journals
-/// its process groups under. A remote launcher's markers never reach a local
-/// kernel: this process may run inside a remote kernel's `bash`.
+/// its process groups under. Remote launcher markers are dropped: this process
+/// may run inside a remote kernel's `bash`.
 fn kernel_spawn_env(options_env: &HashMap<String, String>) -> HashMap<String, String> {
     let mut env: HashMap<String, String> = std::env::vars().collect();
     for (key, value) in options_env {

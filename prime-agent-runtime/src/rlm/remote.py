@@ -1,34 +1,19 @@
 """Remote (SSH) kernel concerns on the runtime side.
 
-A kernel started by ``rlm.spawn(..., host=...)`` runs on another machine
-while its agent loop stays on the orchestrator's. The launcher marks it with
-``RLM_REMOTE_HOST`` (plus its install dir, skill ids, and heartbeat
-timeout); this module takes those markers out of ``os.environ`` before any
-user code runs, so no child process (a ``bash`` command, a ``prime-agent``
-started from it) inherits them and mistakes its own kernels for remote
-ones. It then:
+The launcher marks a remote kernel with ``RLM_REMOTE_*`` env markers; this
+module takes them out of ``os.environ`` before user code runs, so no child
+process (a ``prime-agent`` started from ``bash``) mistakes its own kernels
+for remote ones. It then:
 
 - refuses features whose state lives on the orchestrator's machine
-  (``rlm.harness``, ``bash(persistent=True)``) with a clear error, never a
-  silent split of state (``refuse_on_remote``);
-- exits when the host goes silent: the host sends a heartbeat frame every
-  few seconds, and a partitioned connection that sshd never notices would
-  otherwise leave the kernel and its process groups running forever;
-- journals its ``bash()`` process groups under the install root and reaps
-  the groups of kernels that died without cleaning up (SIGKILL, OOM) on
-  the next remote kernel start;
-- holds a shared lock on its install dir and on each of its skill dirs,
-  so the installer's garbage collection never removes what a running
-  kernel uses;
-- pins its Python skills: each skill version is installed under its own
-  content-hashed dir, which goes on ``sys.path`` ahead of the shared venv,
-  so a concurrent session installing another version of the same skill
-  never changes this kernel's code;
-- reads its ``rlm.spawn(env=...)`` values from one ``kernel_env`` frame,
-  the first line the host writes to its stdin, and applies them to
-  ``os.environ`` before any user code runs. The values never ride the ssh
-  command line or the launcher's ``exec env`` args, which the remote ``ps``
-  (and possibly sshd logs) show.
+  (``refuse_on_remote``) instead of silently splitting state;
+- exits when the host goes silent (a partition sshd never notices);
+- journals its ``bash()`` process groups and reaps those of remote kernels
+  that died without cleaning up;
+- holds shared locks on its install and skill dirs against the installer's
+  garbage collection, and puts its pinned skill sites on ``sys.path``;
+- applies its ``rlm.spawn(env=...)`` values from the first stdin frame, so
+  they never ride the ssh command line (visible in the remote ``ps``).
 """
 
 from __future__ import annotations
@@ -46,8 +31,7 @@ REMOTE_HOST_ENV = "RLM_REMOTE_HOST"
 INSTALL_DIR_ENV = "RLM_REMOTE_INSTALL_DIR"
 HEARTBEAT_TIMEOUT_ENV = "RLM_HOST_HEARTBEAT_TIMEOUT_MS"
 SKILLS_ENV = "RLM_REMOTE_SKILLS"
-# The launcher's wiring for this runtime only: taken out of os.environ by
-# begin(), never inherited by a child process.
+# Taken out of os.environ by begin(), never inherited by a child process.
 _MARKER_ENV = (REMOTE_HOST_ENV, INSTALL_DIR_ENV, HEARTBEAT_TIMEOUT_ENV, SKILLS_ENV)
 # How long the watchdog lets the reader thread catch up on pending stdin
 # before it treats a stale heartbeat as a lost host.
@@ -246,11 +230,9 @@ def configure(stdin_fd: int, on_silence: Callable[[], None]) -> None:
     install_dir = (_markers.get(INSTALL_DIR_ENV) or "").strip()
     if install_dir:
         _hold(install_dir)
-        # The skill pins: ``<root>/skills/<id>/`` holds a skill's files (the
-        # prompt's SKILL.md location) and ``<install>/skill-sites/<id>/`` the
-        # Python skill built from them. An id is the skill dir's name plus
-        # its content hash, so another session's version of a skill is
-        # another dir; the sites go on sys.path ahead of the shared venv.
+        # ``<root>/skills/<id>/`` holds a skill's files and
+        # ``<install>/skill-sites/<id>/`` its built Python package; ids are
+        # content-hashed, so the sites pin this kernel's skill versions.
         root = os.path.dirname(install_dir.rstrip("/"))
         sites = []
         for skill_id in (_markers.get(SKILLS_ENV) or "").split():

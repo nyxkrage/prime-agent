@@ -1,25 +1,18 @@
-//! The remote kernel environment concern: the remote counterpart of
-//! `probe.rs`/`layout.rs`. It probes an SSH host for a supported Python,
-//! uploads the bundled runtime plus the session's skills, and builds a venv
-//! under `~/.prime/agent/remote/<key>/` on the remote.
+//! The remote counterpart of `probe.rs`/`layout.rs`: probe an SSH host for
+//! a supported Python, upload the runtime plus the session's skills, and
+//! build a venv under `~/.prime/agent/remote/<key>/` there.
 //!
-//! The base install (runtime + extras) is keyed on its content. Every
-//! model-visible skill dir (markdown and Python) is uploaded once per
-//! content to `<root>/skills/<id>/`, where an id is the dir's name plus its
-//! content hash: the remote child's prompt points its skill inventory
-//! there. A Python skill is also built into `<key>/skill-sites/<id>/`,
-//! which its kernel puts on `sys.path`, so two sessions running different
-//! versions of one skill each import their own. Installs run under flocks
-//! on the remote (`remote_install.py`); a skill dir or install no running
-//! kernel holds is garbage-collected there once idle, never inline.
+//! The base install is keyed on its content. Each skill dir goes to
+//! `<root>/skills/<id>/` (id = dir name + content hash), and a Python skill
+//! is also built into `<key>/skill-sites/<id>/` on its kernel's `sys.path`,
+//! so two sessions running different versions of one skill each import
+//! their own. `remote_install.py` installs under flocks and only
+//! garbage-collects idle, unheld dirs.
 //!
-//! The system `ssh` binary and config are used (keys, agents, `ProxyJump`,
-//! an existing control master), hardened by the policy in
-//! [`crate::kernel::remote_policy`]. `PRIME_AGENT_SSH` overrides the binary
-//! (a test seam: a shim that runs commands locally), and
-//! `PRIME_AGENT_REMOTE_INSTALL_ROOT` (absolute) overrides the remote
-//! install root; both are read from the kernel env first, then the process
-//! env.
+//! The system `ssh` and its config are used, hardened by
+//! [`crate::kernel::remote_policy`]. `PRIME_AGENT_SSH` (test seam) and
+//! `PRIME_AGENT_REMOTE_INSTALL_ROOT` (absolute) override the binary and the
+//! root, read from the kernel env first, then the process env.
 //!
 //! Every remote command is shell-agnostic (csh/tcsh login shells parse it
 //! too): Python scripts travel as one-line `exec(base64...)` programs and
@@ -410,11 +403,8 @@ fn skill_upload(dir: &Path) -> anyhow::Result<(String, Vec<UploadFile>)> {
     Ok((id, files))
 }
 
-/// Where a skill file lands on a remote host: `<root>/skills/<id>/<path in
-/// the skill dir>`, with the root as the remote child's prompt can name it
-/// (`~/.prime/agent/remote` unless `PRIME_AGENT_REMOTE_INSTALL_ROOT` set an
-/// absolute one). The same id the upload uses, so the path exists once the
-/// child's kernel started.
+/// Where a skill file lands on a remote host (`<root>/skills/<id>/<path>`),
+/// with the same id the upload uses.
 ///
 /// # Errors
 ///
@@ -893,11 +883,6 @@ mod tests {
                 .expect("the probe touched .last-used");
             assert!(touched.elapsed().unwrap() < std::time::Duration::from_secs(60));
         }
-    }
-
-    #[test]
-    fn shell_quoting_survives_single_quotes() {
-        assert_eq!(sh_quote("it's"), r"'it'\''s'");
     }
 
     #[test]

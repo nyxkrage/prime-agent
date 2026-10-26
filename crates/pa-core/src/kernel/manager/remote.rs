@@ -1,30 +1,19 @@
 //! Remote kernel launch: the SSH transport for the existing process + stdio
 //! protocol. The kernel process is `ssh <host> <remote-venv>/bin/python -m
-//! rlm.repl`, so requests, events, and host requests ride the SSH channel
-//! unchanged, and the local `ssh` process stands in for the kernel pid.
+//! rlm.repl`, and the local `ssh` process stands in for the kernel pid.
 //!
-//! What crosses to the remote is governed by
-//! [`crate::kernel::remote_policy`]: the forwarded env, the validated
-//! `cwd`, and (in `host_requests.rs`) the host requests the remote kernel
-//! may send back.
-//!
-//! The launcher's own env (`exec env K=V ...`) is visible in the remote
-//! `ps` and may land in sshd logs, so it carries only non-secret wiring:
-//! the scratch agent dir, the host label, the install dir, the heartbeat
-//! timeout, and the session id. The spawn's `env=` overrides never touch
-//! the command line: the host sends them as one `kernel_env` frame on the
-//! kernel's stdin right after the stdio sentinel and before `ready`, and
-//! the runtime applies them to `os.environ` before any user code runs.
+//! The launcher's `exec env K=V ...` is visible in the remote `ps` and may
+//! land in sshd logs, so it carries only non-secret wiring. The spawn's
+//! `env=` values go as one `kernel_env` frame on the kernel's stdin, right
+//! after the stdio sentinel and before `ready`.
 
 use std::fmt::Write as _;
 use std::time::Duration;
 
 use super::{json, lock, Arc, Inner, KernelStartOptions};
-use crate::kernel::bootstrap::{
-    ensure_remote_kernel_python, sh_quote, RemoteHost, RemoteKernelInstall,
-};
+use crate::kernel::bootstrap::{ensure_remote_kernel_python, sh_quote, RemoteHost};
 use crate::kernel::env_overrides::ResolvedKernelEnv;
-use crate::kernel::remote_policy::{validate_remote_path, REMOTE_KERNEL_FORWARDED_ENV};
+use crate::kernel::remote_policy::REMOTE_KERNEL_FORWARDED_ENV;
 use crate::kernel::shared::RemoteKernelTarget;
 
 /// The line the remote launcher prints right before `exec`ing the kernel:
@@ -49,14 +38,11 @@ impl Inner {
         resolved_env: &ResolvedKernelEnv,
     ) -> anyhow::Result<(tokio::process::Command, String)> {
         let remote = RemoteHost::new(target.host(), &self.options.env)?;
-        if let Some(cwd) = target.cwd() {
-            validate_remote_path(cwd, "rlm.spawn cwd")?;
-        }
         // Reused across restarts; a start that fails before `ready` drops it
         // (`startup.rs`), so a vanished or broken install is provisioned
         // again instead of relaunched forever.
         let cached = lock(&self.resolved_remote).clone();
-        let install: RemoteKernelInstall = if let Some(install) = cached {
+        let install = if let Some(install) = cached {
             install
         } else {
             let install = ensure_remote_kernel_python(
@@ -69,8 +55,6 @@ impl Inner {
             *lock(&self.resolved_remote) = Some(install.clone());
             install
         };
-        // The remote kernel env: the forwarded allowlist plus the
-        // launcher's own keys (see `REMOTE_KERNEL_FORWARDED_ENV`).
         let mut env: Vec<(String, String)> = vec![
             (
                 "PRIME_AGENT_CODING_AGENT_DIR".to_string(),
@@ -89,9 +73,8 @@ impl Inner {
                 env.push(((*key).to_string(), value.clone()));
             }
         }
-        // A POSIX script run by `/bin/sh` whatever the login shell is: it
-        // changes into the cwd, prints the stdio sentinel, and execs the
-        // kernel (so the kernel's parent is the remote sshd session).
+        // Run by `/bin/sh` whatever the login shell is; the `exec` makes the
+        // remote sshd session the kernel's parent.
         let mut script = String::new();
         if let Some(cwd) = target.cwd() {
             let cwd = match cwd.strip_prefix("~/") {
@@ -119,9 +102,8 @@ impl Inner {
             .map(|(key, value)| (key.clone(), serde_json::Value::String(value.clone())))
             .collect();
         *lock(&self.remote_env_frame) = Some(json!({ "type": "kernel_env", "env": env_frame }));
-        // The kernel's teardown signals the ssh process; the remote runtime
-        // sees stdin EOF (or its sshd parent exit, or the heartbeat stop)
-        // and shuts down.
+        // Teardown signals the ssh process; the remote runtime exits on stdin
+        // EOF, its sshd parent's exit, or a missed heartbeat.
         command.kill_on_drop(false);
         Ok((command, format!("{} on {}", install.python, remote.label())))
     }

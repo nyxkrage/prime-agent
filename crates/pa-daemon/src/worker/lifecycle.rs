@@ -287,10 +287,6 @@ impl Worker {
         match self
             .engine
             .configure_rlm_identity(crate::engine::RlmSessionIdentity {
-                // The moved-to session's placement sidecar (read in the
-                // prepare phase): a spawned child keeps its kernel host and
-                // its `env=` (pass-throughs resolve again at kernel start;
-                // the session build re-checks the kill switch).
                 remote_kernel: placement.remote,
                 kernel_env: placement.env,
                 rlm_depth,

@@ -13,14 +13,10 @@ use crate::kernel::env_overrides::{redact, redact_json, redact_stream_chunk};
 
 impl Inner {
     pub(crate) fn handle_event(self: &Arc<Self>, event: Event) {
-        // Mask this start's pass-through values (`rlm.spawn(env={K: None})`)
-        // in everything the model and the transcript read back: streams,
-        // results, errors, display payloads (diffs are persisted as tool
-        // details), and `agent_message.send` text. A stream holds back a
-        // tail that could begin a value until the next chunk shows whether
-        // it does; any other event first releases the held tails. Best
-        // effort hygiene that keeps a printed secret out of the transcript,
-        // not a boundary.
+        // Mask this start's pass-through values in everything the model and
+        // the transcript read back. A stream holds back a tail that could
+        // begin a value until the next chunk; any other event first releases
+        // the held tails. Best-effort hygiene, not a boundary.
         let redactions = Arc::clone(&lock(&self.redactions));
         let event = if redactions.is_empty() {
             event
@@ -94,8 +90,7 @@ impl Inner {
                     traceback: traceback.into_iter().map(mask).collect(),
                 },
                 Event::Display { id, mut data } => {
-                    // An attachment's base64 is left alone: masking cannot
-                    // match inside an encoding, and it is large.
+                    // Masking cannot match inside an attachment's base64.
                     if let Some(bundle) = data.as_object_mut() {
                         for (mime, payload) in bundle.iter_mut() {
                             if mime != ATTACHMENT_DISPLAY_MIME {

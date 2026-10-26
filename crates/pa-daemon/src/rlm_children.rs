@@ -100,9 +100,8 @@ pub struct ParentIdentity {
     pub thinking: Option<String>,
     /// Verification seam: create children with a scripted engine file.
     pub child_script: Option<String>,
-    /// Where this session's kernel runs (a remote child: its host and
-    /// remote cwd); its own children inherit both unless they spawn with
-    /// `host="local"`, another host, or their own `cwd=`.
+    /// Where this session's kernel runs; its children inherit the host and
+    /// remote cwd unless they pass their own `host=` or `cwd=`.
     pub remote_kernel: Option<pa_core::kernel::RemoteKernelTarget>,
 }
 
@@ -161,8 +160,7 @@ struct ChildRecord {
     session_dir: String,
     model: String,
     label: String,
-    /// The SSH host the child's kernel runs on; `None` for a local child
-    /// (and for a row reseeded from the ledger, which does not record it).
+    /// The SSH host the child's kernel runs on.
     host: Option<String>,
     started_at_ms: u64,
     /// Terminal state (`done` | `error` | `cancelled`); running while absent.
@@ -330,7 +328,6 @@ struct DeletedChild {
     /// The envelope's error: the child's own terminal error when one was
     /// recorded, else the delete reason.
     error: String,
-    /// The SSH host a remote child's kernel ran on.
     host: Option<String>,
 }
 
@@ -1109,8 +1106,7 @@ mod host;
 pub(crate) mod kernel_placement;
 mod lifecycle;
 mod registry;
-// Print mode (pa-cli) opens session files without a worker: it must honor a
-// spawned child's placement the same way.
+// Print mode (pa-cli) opens session files without a worker.
 pub use kernel_placement::{placement_for_session_file, KernelPlacement};
 mod usage;
 

@@ -17,8 +17,7 @@ use crate::worker::{SessionCore, Worker};
 pub(crate) struct PreparedReplacement {
     pub(crate) file: SessionFile,
     pub(crate) cwd: Option<String>,
-    /// The moved-to session's kernel placement (its dir's sidecar): a
-    /// spawned child's session keeps its kernel host and `env=`.
+    /// The moved-to session's kernel placement sidecar.
     pub(crate) placement: crate::rlm_children::kernel_placement::KernelPlacement,
     // A successful fresh write owes scheduling only after publication.
     trace_persisted: bool,
@@ -281,8 +280,7 @@ impl SessionNavigation {
         let mut file = SessionFile::open(std::path::Path::new(path))
             .map_err(|error| response_failure(None, command, &error.to_string(), None))?;
         file.lease = lease;
-        // A spawned child's session reopens on its host with its env; an
-        // unreadable placement refuses here, before the teardown.
+        // An unreadable placement refuses here, before the teardown.
         let placement = crate::rlm_children::kernel_placement::placement_for_session_file(
             std::path::Path::new(path),
         )

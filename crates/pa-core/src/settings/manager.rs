@@ -606,11 +606,9 @@ impl SettingsManager {
     }
 
     /// Whether `rlm.spawn(host=..., env={K: None})` may pass orchestrator
-    /// env values to a remote host (settings `remoteEnvPassthrough`).
-    /// Rust-only kill switch, read from global scope only so a project
-    /// cannot turn it back on; unset (or `null`) is `true`. It fails
-    /// closed: a value that is not a bool, or a global settings document
-    /// that could not be loaded, refuses pass-through.
+    /// env values to a remote host (`remoteEnvPassthrough`, Rust-only).
+    /// Global scope only, so a project cannot turn it back on; unset is
+    /// `true`. Fails closed on a non-bool value or an unloadable document.
     #[must_use]
     pub fn remote_env_passthrough_allowed(&self) -> bool {
         if self

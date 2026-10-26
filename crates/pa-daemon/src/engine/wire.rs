@@ -272,12 +272,9 @@ pub struct RlmSessionIdentity {
     /// file is a top-level runtime and spawns no edge, and a replacement
     /// runtime has none.
     pub semantic_spawn: Option<SemanticSpawnOrigin>,
-    /// The remote SSH kernel placement of a `rlm.spawn(host=...)` child
-    /// (or one that inherited its parent's host). `None` runs locally.
+    /// A spawned child's kernel placement and `env=` overrides; reset when
+    /// the worker moves to another session.
     pub remote_kernel: Option<pa_core::kernel::RemoteKernelTarget>,
-    /// The `rlm.spawn(env=...)` overrides of a spawned child's kernel
-    /// (from its create's `kernelEnv`); empty otherwise, and reset when the
-    /// worker moves to another session.
     pub kernel_env: pa_core::kernel::KernelEnvOverrides,
 }
 

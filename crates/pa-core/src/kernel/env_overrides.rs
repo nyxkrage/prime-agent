@@ -1,25 +1,17 @@
 //! `rlm.spawn(..., env={...})`: the per-child kernel env overrides.
 //!
-//! A spawn names each variable it wants in the child's kernel: a `str`
-//! value is set as given (a literal), `None` copies the orchestrator's
-//! value (a pass-through). The request carries only the names of
-//! pass-throughs; their values are read here, host-side, from the same
-//! environment a local kernel gets (the session worker's env overlaid with
-//! the kernel env), so they never appear in the model's code, the host
-//! request, the transcript, provider requests, or logs.
-//!
-//! A child never inherits its parent's overrides: each spawn names its
-//! variables again. The name rules, reserved names, and size caps live in
+//! A `str` value is set as given (a literal); `None` copies the
+//! orchestrator's value (a pass-through). The request carries only the
+//! names of pass-throughs; their values are resolved host-side from the
+//! environment a local kernel gets, so they never appear in the model's
+//! code, the host request, or the transcript. A child never inherits its
+//! parent's overrides. Name rules and caps live in
 //! [`crate::kernel::remote_policy`].
 //!
-//! Threat model: a value passed to a host is trusted to that host (root
-//! there can read the kernel's environment), and the model can reach the
-//! orchestrator's environment anyway (a local kernel inherits it).
-//! Pass-through exists to keep values out of the model's code and the spawn
-//! request, and [`redact`] masks pass-through values the kernel sends back
-//! (streams, results, errors, display payloads such as diffs, and
-//! `agent_message.send` text) as best effort hygiene, not as a security
-//! boundary: a value the kernel transforms (reversed, encoded) passes.
+//! Threat model: a value passed to a host is trusted to that host, and the
+//! model can reach the orchestrator's environment anyway. [`redact`] masks
+//! pass-through values in kernel output as best-effort hygiene, not a
+//! security boundary: a transformed value (reversed, encoded) passes.
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -35,10 +27,9 @@ pub(crate) const REMOTE_ENV_PASSTHROUGH_SETTING: &str = "remoteEnvPassthrough";
 
 /// Pass-through values shorter than this are not redacted from kernel
 /// output: masking every `"1"` or `"true"` would mangle unrelated text.
-pub(crate) const REDACTION_MIN_CHARS: usize = 8;
+const REDACTION_MIN_CHARS: usize = 8;
 
-/// The mask that replaces a pass-through value in kernel output.
-pub(crate) const REDACTION_MASK: &str = "***";
+const REDACTION_MASK: &str = "***";
 
 /// One `env=` entry.
 #[derive(Clone, PartialEq, Eq)]
@@ -49,20 +40,10 @@ pub(crate) enum KernelEnvValue {
     Passthrough,
 }
 
-/// A refused `env=`: an invalid name or value, a payload over the caps, a
-/// pass-through variable the orchestrator does not have, or a pass-through
-/// to a remote host the `remoteEnvPassthrough` setting turns off. Typed so
-/// the spawn seam counts refusals.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A refused `env=`. Typed so the spawn seam counts refusals.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{0}")]
 pub struct KernelEnvRefusal(pub(crate) String);
-
-impl std::fmt::Display for KernelEnvRefusal {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for KernelEnvRefusal {}
 
 /// The validated `env=` of one spawn: literal values and pass-through
 /// names. It never holds a pass-through value, so it may be persisted (the
@@ -166,18 +147,14 @@ impl KernelEnvOverrides {
         self.entries.is_empty()
     }
 
-    /// How many variables are set to a literal value.
-    #[must_use]
-    pub fn literal_count(&self) -> usize {
+    pub(crate) fn literal_count(&self) -> usize {
         self.entries
             .values()
             .filter(|value| matches!(value, KernelEnvValue::Literal(_)))
             .count()
     }
 
-    /// How many variables pass the orchestrator's value through.
-    #[must_use]
-    pub fn passthrough_count(&self) -> usize {
+    pub(crate) fn passthrough_count(&self) -> usize {
         self.entries.len() - self.literal_count()
     }
 
@@ -282,15 +259,11 @@ impl std::fmt::Debug for ResolvedKernelEnv {
 }
 
 impl ResolvedKernelEnv {
-    /// The variables to set, by name.
-    #[must_use]
     pub(crate) fn values(&self) -> &[(String, String)] {
         &self.values
     }
 
-    /// The pass-through values long enough to mask in kernel output
-    /// ([`REDACTION_MIN_CHARS`]), longest first.
-    #[must_use]
+    /// The pass-through values long enough to mask, longest first.
     pub(crate) fn redactions(&self) -> &[String] {
         &self.redactions
     }
@@ -399,17 +372,26 @@ mod tests {
 
     #[test]
     fn reserved_and_malformed_names_bad_values_and_oversize_payloads_are_refused() {
+        let reserved = |name: &str| {
+            format!("rlm.spawn env name {name} is reserved: the kernel launcher owns RLM_*, PRIME_AGENT_*, PYTHON*, PATH, HOME, and VIRTUAL_ENV")
+        };
+        let invalid = |name: &str| {
+            format!("rlm.spawn env name {name:?} is invalid: names must match [A-Z_][A-Z0-9_]*")
+        };
         for (name, expected) in [
-            ("PATH", "rlm.spawn env name PATH is reserved: the kernel launcher owns RLM_*, PRIME_AGENT_*, PYTHON*, PATH, HOME, and VIRTUAL_ENV"),
-            ("HOME", "rlm.spawn env name HOME is reserved: the kernel launcher owns RLM_*, PRIME_AGENT_*, PYTHON*, PATH, HOME, and VIRTUAL_ENV"),
-            ("VIRTUAL_ENV", "rlm.spawn env name VIRTUAL_ENV is reserved: the kernel launcher owns RLM_*, PRIME_AGENT_*, PYTHON*, PATH, HOME, and VIRTUAL_ENV"),
-            ("RLM_REMOTE_HOST", "rlm.spawn env name RLM_REMOTE_HOST is reserved: the kernel launcher owns RLM_*, PRIME_AGENT_*, PYTHON*, PATH, HOME, and VIRTUAL_ENV"),
-            ("PRIME_AGENT_KERNEL_OWNER_PID", "rlm.spawn env name PRIME_AGENT_KERNEL_OWNER_PID is reserved: the kernel launcher owns RLM_*, PRIME_AGENT_*, PYTHON*, PATH, HOME, and VIRTUAL_ENV"),
-            ("PYTHONPATH", "rlm.spawn env name PYTHONPATH is reserved: the kernel launcher owns RLM_*, PRIME_AGENT_*, PYTHON*, PATH, HOME, and VIRTUAL_ENV"),
-            ("lower", "rlm.spawn env name \"lower\" is invalid: names must match [A-Z_][A-Z0-9_]*"),
-            ("1ABC", "rlm.spawn env name \"1ABC\" is invalid: names must match [A-Z_][A-Z0-9_]*"),
-            ("A-B", "rlm.spawn env name \"A-B\" is invalid: names must match [A-Z_][A-Z0-9_]*"),
-            ("", "rlm.spawn env name \"\" is invalid: names must match [A-Z_][A-Z0-9_]*"),
+            ("PATH", reserved("PATH")),
+            ("HOME", reserved("HOME")),
+            ("VIRTUAL_ENV", reserved("VIRTUAL_ENV")),
+            ("RLM_REMOTE_HOST", reserved("RLM_REMOTE_HOST")),
+            (
+                "PRIME_AGENT_KERNEL_OWNER_PID",
+                reserved("PRIME_AGENT_KERNEL_OWNER_PID"),
+            ),
+            ("PYTHONPATH", reserved("PYTHONPATH")),
+            ("lower", invalid("lower")),
+            ("1ABC", invalid("1ABC")),
+            ("A-B", invalid("A-B")),
+            ("", invalid("")),
         ] {
             // Reserved names are refused for a literal and a pass-through alike.
             assert_eq!(refusal(&json!({ name: "x" })), expected);

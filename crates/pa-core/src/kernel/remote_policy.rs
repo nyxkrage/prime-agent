@@ -1,10 +1,8 @@
 //! Remote (SSH) kernel policy: every allowlist that governs what a remote
 //! kernel (`rlm.spawn(..., host=...)`) may reach, in one place.
 //!
-//! The rule is strict by default: anything not listed here is refused
-//! with an error that names what was refused and why. Widening a policy
-//! is a one-line change to the table plus a test (`tests/remote_kernel.rs`
-//! and the unit tests below pin every table).
+//! Anything not listed here is refused with an error naming what and why.
+//! Widening a policy is a one-line table change plus a test.
 //!
 //! | Policy | Table |
 //! | --- | --- |
@@ -71,19 +69,15 @@ pub(crate) const REMOTE_PATH_CHARS: &str =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._/+-";
 
 /// Local kernel env keys forwarded to the remote kernel. Everything else
-/// in the local kernel env (agent and session dirs, the shell, the bash
-/// command prefix, credentials such as `SERPER_API_KEY`, the worker's own
-/// env) stays local. The remote launcher adds only its own generated keys:
-/// `PRIME_AGENT_CODING_AGENT_DIR` (a remote scratch dir),
-/// `PRIME_AGENT_KERNEL_OWNER_PID` (the remote sshd session), the remote
-/// orphan journal, and the [`REMOTE_KERNEL_MARKER_ENV`] markers.
+/// (local dirs, the shell, credentials such as `SERPER_API_KEY`, the
+/// worker's env) stays local; the launcher adds only its own generated keys
+/// and the [`REMOTE_KERNEL_MARKER_ENV`] markers.
 pub(crate) const REMOTE_KERNEL_FORWARDED_ENV: &[&str] = &["RLM_SESSION_ID"];
 
-/// The remote launcher's markers: the remote runtime reads them and takes
-/// them out of its `os.environ` (`rlm/remote.py`), and a local kernel's
-/// spawn env drops them (`kernel_spawn_env`), so a `prime-agent` started
-/// from a remote kernel's `bash` never mistakes its own kernels for remote
-/// ones.
+/// The remote launcher's markers. The remote runtime takes them out of its
+/// `os.environ` and a local kernel's spawn env drops them, so a
+/// `prime-agent` started from a remote kernel's `bash` never mistakes its
+/// own kernels for remote ones.
 pub(crate) const REMOTE_KERNEL_MARKER_ENV: &[&str] = &[
     "RLM_REMOTE_HOST",
     "RLM_REMOTE_INSTALL_DIR",
@@ -100,16 +94,11 @@ pub(crate) enum ReservedEnvName {
     Exact(&'static str),
 }
 
-/// Env var names an `rlm.spawn(env=...)` override may never set, as a
-/// literal or as a pass-through (`None`), on a local or a remote kernel.
-/// The kernel launchers own these: `RLM_*` and `PRIME_AGENT_*` carry the
-/// kernel's identity and wiring (session id and dirs, the owner pid, the
-/// orphan journal, the remote host, install dir, and heartbeat timeout, the
-/// bash shell and command prefix), `PYTHON*` steers the interpreter
-/// (`PYTHONPATH`, `PYTHONUTF8`, `PYTHONHOME`), and `PATH`, `HOME`, and
-/// `VIRTUAL_ENV` locate the venv and the user. Every key either launcher
-/// sets (`kernel_spawn_env`, `remote_kernel_command`, `rlm/remote.py`)
-/// falls under one of these rules.
+/// Env var names an `rlm.spawn(env=...)` override may never set (literal or
+/// pass-through, local or remote). Every key either kernel launcher sets
+/// falls under one of these: `RLM_*`/`PRIME_AGENT_*` carry the kernel's
+/// identity and wiring, `PYTHON*` steers the interpreter, and `PATH`,
+/// `HOME`, and `VIRTUAL_ENV` locate the venv and the user.
 pub(crate) const KERNEL_ENV_RESERVED: &[ReservedEnvName] = &[
     ReservedEnvName::Prefix("RLM_"),
     ReservedEnvName::Prefix("PRIME_AGENT_"),
@@ -124,8 +113,7 @@ pub(crate) const KERNEL_ENV_MAX_NAME_BYTES: usize = 128;
 /// The most variables one spawn may set.
 pub(crate) const KERNEL_ENV_MAX_ENTRIES: usize = 64;
 /// The most bytes (names plus values) one spawn's overrides may carry,
-/// checked for the literal values in the request and again for the
-/// resolved values once the pass-throughs are filled in.
+/// checked for the request and again once pass-throughs are resolved.
 pub(crate) const KERNEL_ENV_MAX_TOTAL_BYTES: usize = 64 * 1024;
 
 /// Why an `rlm.spawn(env=...)` name is refused, or `None` when it may be

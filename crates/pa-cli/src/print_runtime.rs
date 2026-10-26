@@ -507,7 +507,6 @@ pub(crate) struct ChildEngineOverrides {
     pub thinking: pa_types::ai::ModelThinkingLevel,
     pub semantic_parent_session_id: Option<String>,
     pub spawned_by_request_id: Option<String>,
-    /// The spawn's `rlm.spawn(env=...)` overrides for the child's kernel.
     pub kernel_env: pa_core::kernel::KernelEnvOverrides,
 }
 
