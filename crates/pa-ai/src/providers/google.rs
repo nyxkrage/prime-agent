@@ -205,8 +205,8 @@ fn build_params(model: &Model, context: &Context, options: &GoogleOptions) -> Va
     Value::Object(body)
 }
 
-/// The request headers (TS `createClient`): the model's headers, the caller's on top
-/// (case-insensitive replace), the opencode routing headers, then the API key.
+/// The request headers (TS `createClient`): the model's, the caller's on top
+/// (case-insensitive replace), the opencode headers, then the API key.
 fn build_headers(model: &Model, api_key: &str, options: &GoogleOptions) -> Vec<(String, String)> {
     let mut headers: Vec<(String, String)> = Vec::new();
     for (name, value) in model.headers.iter().flatten() {
@@ -461,9 +461,7 @@ impl Provider for GoogleGenerativeAiProvider {
 mod tests {
     use super::*;
 
-    /// TS `withOpenCodeHeaders`: an opencode Gemini model routes under the caller's session
-    /// through `x-opencode-session` and identifies as `prime-agent`, with no stray
-    /// `session_id` header.
+    /// TS `withOpenCodeHeaders`: `x-opencode-session` and `prime-agent`, no stray `session_id`.
     #[test]
     fn opencode_requests_carry_only_the_opencode_routing_headers() {
         let model = crate::models_generated::get_model("opencode", "gemini-3-flash")

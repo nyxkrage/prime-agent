@@ -392,8 +392,7 @@ mod tests {
         );
     }
 
-    /// `opencode-go` rejects a request without a routing session (`MissingSessionID`); with caching
-    /// off there is no cache session, but the routing header still ships.
+    /// With caching off there is no cache session, but the opencode routing header still ships.
     #[test]
     fn opencode_keeps_its_routing_session_with_caching_off() {
         let model = models_generated::get_model("opencode-go", "deepseek-v4-flash")

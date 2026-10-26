@@ -516,19 +516,17 @@ pub async fn release_connection(
         return;
     };
     if !keep {
-        // Only the cache entry's own connection evicts it (TS: `websocketSessionCache.get(sessionId)
-        // === entry`). An overflow connection opened while the entry was busy (a side question
-        // beside the main turn) closes alone, leaving the main turn's socket cached.
-        let evicted = match session_state().lock() {
-            Ok(mut state) => match state.connections.get(&session_id) {
-                Some(entry) if entry.connection_id == connection.connection_id => {
-                    state.connections.remove(&session_id)
-                }
-                Some(_) | None => None,
-            },
-            Err(_) => None,
-        };
-        drop(evicted);
+        // Only the entry's own connection evicts it (TS `websocketSessionCache.get(sessionId) ===
+        // entry`): an overflow connection (a side question beside a busy main turn) closes alone.
+        if let Ok(mut state) = session_state().lock() {
+            if state
+                .connections
+                .get(&session_id)
+                .is_some_and(|entry| entry.connection_id == connection.connection_id)
+            {
+                state.connections.remove(&session_id);
+            }
+        }
         connection.close().await;
         return;
     }
@@ -662,8 +660,7 @@ mod tests {
         matches!(worker.try_recv(), Ok(WorkerCommand::Close))
     }
 
-    /// A side question beside a busy main turn runs on an overflow connection; its failed or
-    /// aborted release (`keep == false`) closes only that connection, never the main entry.
+    /// A failed overflow release (`keep == false`) closes only its connection, never the main entry.
     #[tokio::test]
     async fn an_overflow_release_keeps_the_main_entry() {
         let session_id = format!("overflow-release-{}", next_connection_id());

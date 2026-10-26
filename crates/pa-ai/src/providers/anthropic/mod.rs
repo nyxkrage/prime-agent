@@ -604,9 +604,7 @@ mod subscription_identity_tests {
         }
     }
 
-    /// TS `withOpenCodeHeaders`: an opencode model routes under the caller's
-    /// session through `x-opencode-session` and identifies as `prime-agent`, with no stray
-    /// `session_id` header.
+    /// TS `withOpenCodeHeaders`: `x-opencode-session` and `prime-agent`, no stray `session_id`.
     #[test]
     fn opencode_requests_carry_the_session_routing_header() {
         let model = Model {
