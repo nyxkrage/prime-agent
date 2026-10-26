@@ -569,13 +569,10 @@ mod tests {
         );
     }
 
-    /// Golden replay of a captured `opencode-go/gpt-5.6-luna` Responses stream with one
-    /// `custom_tool_call` (freeform `python_repl`): the recorded tool call carries the canonical
-    /// `{"code": input}` arguments under the `call_id|ctc_item_id` id, and the follow-up request
-    /// replays it as the same `custom_tool_call` item with a `custom_tool_call_output`.
+    /// Golden replay of a captured Responses stream with one `custom_tool_call`: it records the
+    /// canonical `{"code": input}` call, and the follow-up request replays it unchanged.
     #[test]
-    // Long by design: the golden capture, the recorded row, and the replayed request are pinned
-    // as whole objects in one place.
+    // Long by design: capture, recorded row, and replayed request pinned as whole objects.
     #[allow(clippy::too_many_lines)]
     fn captured_custom_tool_call_stream_records_and_replays() {
         let model: Model = serde_json::from_value(json!({

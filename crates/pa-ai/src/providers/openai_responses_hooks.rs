@@ -32,13 +32,11 @@ pub type ResolveServiceTierFn =
 pub type ApplyServiceTierPricingFn = Box<dyn Fn(&mut Usage, Option<String>) + Send>;
 
 /// The request's freeform (Responses `custom`) tools: tool name -> the argument its raw text
-/// input maps onto (`python_repl` -> `code`). Built from the request's tool list, so the wire
-/// shape follows whichever tools the caller marked for this request.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// input maps onto (`python_repl` -> `code`).
+#[derive(Default)]
 pub(crate) struct FreeformToolArguments(HashMap<String, String>);
 
 impl FreeformToolArguments {
-    /// Collect the tools that carry a free-text argument.
     pub fn from_tools(tools: Option<&[Tool]>) -> Self {
         Self(
             tools
@@ -53,9 +51,8 @@ impl FreeformToolArguments {
         )
     }
 
-    /// The argument object a streamed `custom_tool_call` input becomes: `{<argument>: input}`.
-    /// A tool the request did not declare as freeform keys the input under the wire field name
-    /// `input`, so the call still reaches the tool layer (which reports the bad arguments).
+    /// The argument object a `custom_tool_call` input becomes: `{<argument>: input}`. An
+    /// undeclared tool keys it under `input`, so the tool layer still reports the bad call.
     pub fn arguments_from_input(&self, tool_name: &str, input: &str) -> Map<String, Value> {
         Map::from_iter([(
             self.argument_name(tool_name).to_string(),
@@ -63,17 +60,13 @@ impl FreeformToolArguments {
         )])
     }
 
-    /// The argument key a `custom_tool_call` input for `tool_name` maps onto (see
-    /// [`Self::arguments_from_input`]).
     pub fn argument_name(&self, tool_name: &str) -> &str {
-        // Exact-name lookup only: a call under a tool alias falls back to `input`. That is
-        // accepted because the API constrains custom tool call names to the declared tools.
+        // Exact name only (no aliases): the API constrains custom call names to declared tools.
         self.0.get(tool_name).map_or("input", String::as_str)
     }
 
-    /// The raw input a recorded tool call replays as, when it can go out as a `custom_tool_call`:
-    /// the tool is freeform in this request and the call's arguments are exactly its one string
-    /// argument. Anything else (structured history, extra keys) replays as a `function_call`.
+    /// The raw input a recorded call replays as a `custom_tool_call`: only when the tool is
+    /// freeform in this request and the arguments are exactly its one string argument.
     pub fn custom_input<'a>(&self, tool_call: &'a ToolCall) -> Option<&'a str> {
         let argument = self.0.get(&tool_call.name)?;
         if tool_call.arguments.len() != 1 {
@@ -84,7 +77,7 @@ impl FreeformToolArguments {
 }
 
 /// Service-tier hooks mirroring the TS `OpenAIResponsesStreamOptions`, plus the request's
-/// freeform tools so `custom_tool_call` items map back onto their argument object.
+/// freeform tools.
 #[derive(Default)]
 pub struct ResponsesStreamHooks {
     pub request_service_tier: Option<crate::types::ServiceTier>,

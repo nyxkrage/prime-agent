@@ -122,9 +122,7 @@ pub fn convert_responses_messages(
     use crate::types::{Message, UserMessageContent, UserOrToolContent};
     let mut messages: Vec<Value> = Vec::new();
 
-    // The wire shape of every recorded tool call follows this request's tools, never the shape it
-    // was recorded in: a call to a freeform tool replays as `custom_tool_call`, anything else as
-    // `function_call`.
+    // Recorded calls replay in this request's tool shape, never the shape they were recorded in.
     let freeform_tools = FreeformToolArguments::from_tools(context.tools.as_deref());
 
     let normalize_tool_call_id = |id: &str, source: &AssistantMessage| -> String {
@@ -153,7 +151,7 @@ pub fn convert_responses_messages(
         transform_messages_with_normalizer(&context.messages, model, &|id, _model, source| {
             Some(normalize_tool_call_id(id, source))
         });
-    // Calls emitted as `custom_tool_call` (by their transformed id): their results go back as
+    // Transformed ids of calls sent as `custom_tool_call`: their results go back as
     // `custom_tool_call_output`.
     let mut custom_call_ids: HashSet<String> = HashSet::new();
 
@@ -282,49 +280,33 @@ pub fn convert_responses_messages(
                                 }
                                 None => (tool_call.id.as_str(), None),
                             };
-                            let mut entry = Map::new();
-                            if let Some(input) = freeform_tools.custom_input(tool_call) {
-                                entry.insert("type".into(), json!("custom_tool_call"));
-                                // The item id replays only to the model that produced it, where it
-                                // keeps the call after its reasoning item: an item id dropped while
-                                // its `rs_` reasoning item is still sent is rejected ("reasoning
-                                // item provided without its required following item"). A stored
-                                // `fc_` id (a call recorded as a function call) goes out as
-                                // `ctc_<id>`, mirroring the `function_call` rule below; any other
-                                // id passes through unchanged (gateways may issue their own item
-                                // ids). Another model's item id is omitted. History keeps the
-                                // stored id.
-                                if let Some(item_id) = item_id.filter(|_| is_same_model) {
-                                    let item_id = if item_id.starts_with("fc_") {
-                                        normalize_id_part(&format!("ctc_{item_id}"))
-                                    } else {
-                                        item_id.to_string()
-                                    };
-                                    entry.insert("id".into(), json!(item_id));
+                            let custom_input = freeform_tools.custom_input(tool_call);
+                            // Each item type accepts only its own id prefix ("Expected an ID that
+                            // begins with 'fc'"). A stored id of the other shape (the freeform
+                            // setting changed since it was recorded) is prefixed rather than
+                            // dropped, so the call still follows its `rs_` reasoning item; an
+                            // id-less call after a sent reasoning item is rejected. Gateways' own
+                            // ids pass through. History keeps the stored id.
+                            let (item_type, item_prefix, other_prefix) = if custom_input.is_some() {
+                                ("custom_tool_call", "ctc_", "fc_")
+                            } else {
+                                ("function_call", "fc_", "ctc_")
+                            };
+                            // Another model's item id would pair-validate against reasoning items
+                            // it no longer has: a custom call sends its id to the same model only,
+                            // a function call omits another same-provider model's `fc_` id.
+                            let keep_item_id = match custom_input {
+                                Some(_) => is_same_model,
+                                None => {
+                                    !(is_different_model
+                                        && item_id.is_some_and(|id| id.starts_with("fc_")))
                                 }
-                                entry.insert("call_id".into(), json!(call_id));
-                                entry.insert("name".into(), json!(tool_call.name));
-                                entry.insert("input".into(), json!(sanitize_surrogates(input)));
-                                custom_call_ids.insert(tool_call.id.clone());
-                                output.push(Value::Object(entry));
-                                continue;
-                            }
-                            entry.insert("type".into(), json!("function_call"));
-                            // For different-model messages, omit the id to avoid pairing validation
-                            // against rs_ reasoning items tracked by the provider.
-                            let omit_id = item_id.is_none()
-                                || (is_different_model
-                                    && item_id.is_some_and(|id| id.starts_with("fc_")));
-                            // A `ctc_` custom-tool-call id (a freeform call replayed with
-                            // freeform tools off) is rejected as a `function_call` item id
-                            // ("Expected an ID that begins with 'fc'"), so it goes out as
-                            // `fc_<id>` on every Responses provider: prefixed rather than dropped,
-                            // so the item still follows its reasoning item. Any other id passes
-                            // through unchanged (gateways may issue their own item ids). History
-                            // keeps the stored id.
-                            if let Some(item_id) = item_id.filter(|_| !omit_id) {
-                                let item_id = if item_id.starts_with("ctc_") {
-                                    normalize_id_part(&format!("fc_{item_id}"))
+                            };
+                            let mut entry = Map::new();
+                            entry.insert("type".into(), json!(item_type));
+                            if let Some(item_id) = item_id.filter(|_| keep_item_id) {
+                                let item_id = if item_id.starts_with(other_prefix) {
+                                    normalize_id_part(&format!("{item_prefix}{item_id}"))
                                 } else {
                                     item_id.to_string()
                                 };
@@ -332,10 +314,20 @@ pub fn convert_responses_messages(
                             }
                             entry.insert("call_id".into(), json!(call_id));
                             entry.insert("name".into(), json!(tool_call.name));
-                            entry.insert(
-                                "arguments".into(),
-                                json!(Value::Object(tool_call.arguments.clone()).to_string()),
-                            );
+                            match custom_input {
+                                Some(input) => {
+                                    entry.insert("input".into(), json!(sanitize_surrogates(input)));
+                                    custom_call_ids.insert(tool_call.id.clone());
+                                }
+                                None => {
+                                    entry.insert(
+                                        "arguments".into(),
+                                        json!(
+                                            Value::Object(tool_call.arguments.clone()).to_string()
+                                        ),
+                                    );
+                                }
+                            }
                             output.push(Value::Object(entry));
                         }
                     }
@@ -416,8 +408,8 @@ pub struct ConvertResponsesToolsOptions {
     pub strict: Option<bool>,
 }
 
-/// Convert tool definitions to Responses API tools. A tool with a free-text argument goes out as
-/// a raw-text `custom` tool; every other tool stays a JSON-schema `function` tool.
+/// Convert tool definitions to Responses API tools: a tool with a free-text argument becomes a
+/// raw-text `custom` tool, every other tool a JSON-schema `function` tool.
 pub fn convert_responses_tools(
     tools: &[Tool],
     options: ConvertResponsesToolsOptions,
@@ -426,8 +418,7 @@ pub fn convert_responses_tools(
     tools
         .iter()
         .map(|tool| match &tool.freeform_argument {
-            // A custom tool has no parameter schema, so the free-text argument's description
-            // (what the raw input is, e.g. Python source, and how to write it) joins the tool's.
+            // A custom tool has no parameter schema, so the argument's description joins the tool's.
             Some(argument) => {
                 let argument_description = tool
                     .parameters
@@ -497,19 +488,6 @@ mod tests {
             base_url: "https://api.openai.com/v1".into(),
             ..codex_model()
         }
-    }
-
-    /// `messages` as recorded by `model`: every assistant turn carries its api, provider and id,
-    /// so the conversion treats them as same-model history.
-    fn recorded_by(model: &Model, mut messages: Vec<Message>) -> Vec<Message> {
-        for message in &mut messages {
-            if let Message::Assistant(assistant) = message {
-                assistant.api.clone_from(&model.api);
-                assistant.provider.clone_from(&model.provider);
-                assistant.model.clone_from(&model.id);
-            }
-        }
-        messages
     }
 
     fn user(text: &str) -> Message {
@@ -729,50 +707,6 @@ mod tests {
         assert_eq!(function_call.get("call_id"), Some(&json!("call_x")));
     }
 
-    /// A same-model `function_call` item id the API would reject (a `ctc_` custom-tool-call id)
-    /// goes out `fc_`-prefixed and capped at 64 characters, for a provider on the piped-id list
-    /// and for a gateway off it. Any other id, such as a gateway's own non-`fc` item id, is sent
-    /// unchanged.
-    #[test]
-    fn same_model_non_fc_item_id_gets_fc_prefix() {
-        let long_ctc = format!("ctc_{}", "a".repeat(70));
-        let cases = [
-            ("call_x|ctc_y", "fc_ctc_y".to_string()),
-            ("call_x|gw_item_1", "gw_item_1".to_string()),
-            (
-                &*format!("call_x|{long_ctc}"),
-                format!("fc_{long_ctc}").chars().take(64).collect(),
-            ),
-        ];
-        for provider in ["openai-codex", "opencode-go"] {
-            for (tool_call_id, expected_id) in &cases {
-                let model = Model {
-                    provider: provider.into(),
-                    ..codex_model()
-                };
-                let mut call = assistant(vec![tool_call(tool_call_id)], "gpt-5.1-codex");
-                if let Message::Assistant(assistant) = &mut call {
-                    assistant.provider = provider.into();
-                }
-                let items = convert(&model, vec![user("hi"), call, tool_result(tool_call_id)]);
-                let function_call = items
-                    .iter()
-                    .find(|item| item.get("type").and_then(Value::as_str) == Some("function_call"));
-                assert_eq!(
-                    function_call,
-                    Some(&json!({
-                        "type": "function_call",
-                        "id": expected_id,
-                        "call_id": "call_x",
-                        "name": "bash",
-                        "arguments": "{\"cmd\":\"ls\"}",
-                    })),
-                    "provider {provider}, id {tool_call_id}"
-                );
-            }
-        }
-    }
-
     /// Assistant text without a signature id falls back to its converted history index instead of
     /// an empty message id (TS: `msg_${msgIndex}`).
     #[test]
@@ -836,20 +770,65 @@ mod tests {
         })
     }
 
-    /// The history a freeform session records: the canonical tool call (`{"code": ...}`) under the
-    /// Responses `call_id|ctc_item_id` encoding, then its result.
-    fn freeform_history(model_id: &str) -> Vec<Message> {
-        vec![
-            user("hi"),
-            assistant(vec![python_call("call_x|ctc_y", "print(1)")], model_id),
-            tool_result("call_x|ctc_y"),
+    fn reasoning_item() -> Value {
+        json!({ "type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": "enc" })
+    }
+
+    /// A turn recorded by `model`: a reasoning item, then a `python_repl` call under `id`, then
+    /// its result.
+    fn reasoning_call_history(model: &Model, id: &str) -> Vec<Message> {
+        let reasoning = AssistantContent::Thinking(ThinkingContent {
+            thinking: String::new(),
+            thinking_signature: Some(reasoning_item().to_string()),
+            redacted: None,
+            rest: Map::default(),
+        });
+        let mut turn = assistant(vec![reasoning, python_call(id, "print(1)")], &model.id);
+        if let Message::Assistant(turn) = &mut turn {
+            turn.api.clone_from(&model.api);
+            turn.provider.clone_from(&model.provider);
+        }
+        vec![user("hi"), turn, tool_result(id)]
+    }
+
+    /// The replayed call item and its output in the shape `freeform` gives them.
+    fn replayed_call(freeform: bool, item_id: Option<&str>) -> [Value; 2] {
+        let (mut call, output_type) = if freeform {
+            (
+                json!({ "type": "custom_tool_call", "input": "print(1)" }),
+                "custom_tool_call_output",
+            )
+        } else {
+            (
+                json!({ "type": "function_call", "arguments": "{\"code\":\"print(1)\"}" }),
+                "function_call_output",
+            )
+        };
+        if let Some(item_id) = item_id {
+            call["id"] = json!(item_id);
+        }
+        call["call_id"] = json!("call_x");
+        call["name"] = json!("python_repl");
+        [
+            call,
+            json!({ "type": output_type, "call_id": "call_x", "output": "ok" }),
         ]
     }
 
-    /// A tool with a free-text argument goes out as a raw-text custom tool; structured tools keep
-    /// the JSON-schema function form.
+    /// A tool with a free-text argument goes out as a raw-text custom tool whose description
+    /// carries the argument's (it has no parameter schema); structured tools stay functions.
     #[test]
     fn freeform_tool_converts_to_custom_tool() {
+        let described = Tool {
+            name: "described".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "code": { "type": "string", "description": "Python code to execute." },
+                },
+            }),
+            ..python_tool(Some("code"))
+        };
         let bash = Tool {
             name: "bash".into(),
             description: "Run bash.".into(),
@@ -858,7 +837,7 @@ mod tests {
         };
         assert_eq!(
             convert_responses_tools(
-                &[python_tool(Some("code")), bash],
+                &[python_tool(Some("code")), described, bash],
                 ConvertResponsesToolsOptions { strict: None },
             ),
             vec![
@@ -866,6 +845,13 @@ mod tests {
                     "type": "custom",
                     "name": "python_repl",
                     "description": "Run Python.",
+                    "format": { "type": "text" },
+                }),
+                json!({
+                    "type": "custom",
+                    "name": "described",
+                    "description": "Run Python.\n\nInput: the raw `code` text, not JSON. \
+                        Python code to execute.",
                     "format": { "type": "text" },
                 }),
                 json!({
@@ -879,258 +865,87 @@ mod tests {
         );
     }
 
-    /// Regression: a custom tool has no parameter schema, so the free-text argument's schema
-    /// description must reach the model through the tool description.
+    /// Regression: a same-model call replays in the request's shape with an item id of that
+    /// shape, so it still follows its reasoning item. Each shape rewrites only the other shape's
+    /// prefix (`fc_` -> `ctc_fc_`, `ctc_` -> `fc_ctc_`, capped at 64 characters); its own ids and
+    /// a gateway's ids pass through.
     #[test]
-    fn custom_tool_description_carries_the_argument_description() {
-        let tool = Tool {
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "code": { "type": "string", "description": "Python code to execute." },
-                },
-                "required": ["code"],
-            }),
-            ..python_tool(Some("code"))
+    fn same_model_replay_rewrites_only_the_other_shapes_item_id() {
+        let long_ctc = format!("ctc_{}", "a".repeat(70));
+        let long_fc: String = format!("fc_{long_ctc}").chars().take(64).collect();
+        let cases = [
+            (true, "fc_y", "ctc_fc_y"),
+            (true, "ctc_y", "ctc_y"),
+            (true, "gw_item_1", "gw_item_1"),
+            (false, "ctc_y", "fc_ctc_y"),
+            (false, "fc_y", "fc_y"),
+            (false, "gw_item_1", "gw_item_1"),
+            (false, &long_ctc, &long_fc),
+        ];
+        let opencode_model = Model {
+            provider: "opencode-go".into(),
+            ..openai_model()
         };
-        assert_eq!(
-            convert_responses_tools(&[tool], ConvertResponsesToolsOptions { strict: None }),
-            vec![json!({
-                "type": "custom",
-                "name": "python_repl",
-                "description": "Run Python.\n\nInput: the raw `code` text, not JSON. \
-                    Python code to execute.",
-                "format": { "type": "text" },
-            })]
-        );
+        for model in [codex_model(), openai_model(), opencode_model] {
+            for (freeform, stored_id, expected_id) in cases {
+                let tool_call_id = format!("call_x|{stored_id}");
+                let items = convert_with_tools(
+                    &model,
+                    reasoning_call_history(&model, &tool_call_id),
+                    vec![python_tool(freeform.then_some("code"))],
+                );
+                let [call, output] = replayed_call(freeform, Some(expected_id));
+                assert_eq!(
+                    items[1..],
+                    [reasoning_item(), call, output],
+                    "provider {}, freeform {freeform}, id {stored_id}",
+                    model.provider
+                );
+            }
+        }
     }
 
-    /// With freeform tools on, a recorded custom call replays to the same model as
-    /// `custom_tool_call` with its `ctc_` item id intact, and its result as
-    /// `custom_tool_call_output`.
+    /// Another model of the same provider gets no item id in either shape (on the function
+    /// side, the normalizer's `fc_ctc_y` is omitted like any other-model `fc_` id).
     #[test]
-    fn freeform_call_replays_as_custom_tool_call_with_ctc_id() {
-        let items = convert_with_tools(
-            &codex_model(),
-            freeform_history("gpt-5.1-codex"),
-            vec![python_tool(Some("code"))],
-        );
-        assert_eq!(
-            items,
-            vec![
-                json!({
-                    "role": "user",
-                    "content": [{ "type": "input_text", "text": "hi" }],
-                }),
-                json!({
-                    "type": "custom_tool_call",
-                    "id": "ctc_y",
-                    "call_id": "call_x",
-                    "name": "python_repl",
-                    "input": "print(1)",
-                }),
-                json!({
-                    "type": "custom_tool_call_output",
-                    "call_id": "call_x",
-                    "output": "ok",
-                }),
-            ]
-        );
-    }
-
-    /// A different model of the same provider keeps the custom form but drops the `ctc_` item id
-    /// (the id pairs with that model's reasoning items), and the normalizer must not rewrite it to
-    /// an `fc_` id on the way.
-    #[test]
-    fn freeform_call_from_another_model_omits_its_item_id() {
-        let items = convert_with_tools(
-            &codex_model(),
-            freeform_history("gpt-5"),
-            vec![python_tool(Some("code"))],
-        );
-        assert_eq!(
-            items[1..],
-            [
-                json!({
-                    "type": "custom_tool_call",
-                    "call_id": "call_x",
-                    "name": "python_repl",
-                    "input": "print(1)",
-                }),
-                json!({
-                    "type": "custom_tool_call_output",
-                    "call_id": "call_x",
-                    "output": "ok",
-                }),
-            ]
-        );
-    }
-
-    /// Function-call history (recorded with freeform tools off) replays to the same model as
-    /// custom tool calls once they are on; its `fc_` item id goes out `ctc_`-prefixed.
-    #[test]
-    fn function_call_history_replays_as_custom_tool_call_when_enabled() {
-        let items = convert_with_tools(
-            &codex_model(),
-            vec![
-                user("hi"),
-                assistant(
-                    vec![python_call("call_x|fc_y", "print(1)")],
-                    "gpt-5.1-codex",
+    fn other_model_replay_omits_the_item_id() {
+        for freeform in [true, false] {
+            let items = convert_with_tools(
+                &codex_model(),
+                reasoning_call_history(
+                    &Model {
+                        id: "gpt-5".into(),
+                        ..codex_model()
+                    },
+                    "call_x|ctc_y",
                 ),
-                tool_result("call_x|fc_y"),
-            ],
-            vec![python_tool(Some("code"))],
-        );
-        assert_eq!(
-            items[1..],
-            [
-                json!({
-                    "type": "custom_tool_call",
-                    "id": "ctc_fc_y",
-                    "call_id": "call_x",
-                    "name": "python_repl",
-                    "input": "print(1)",
-                }),
-                json!({
-                    "type": "custom_tool_call_output",
-                    "call_id": "call_x",
-                    "output": "ok",
-                }),
-            ]
-        );
+                vec![python_tool(freeform.then_some("code"))],
+            );
+            assert_eq!(
+                items[1..],
+                replayed_call(freeform, None),
+                "freeform {freeform}"
+            );
+        }
     }
 
-    /// Regression: a session recorded with freeform tools replays with the flag off. The call
-    /// goes out as a `function_call` carrying the JSON arguments; from another model of the same
-    /// provider the normalized `fc_ctc_y` id is omitted like any other-model `fc_` id.
-    #[test]
-    fn freeform_history_replays_as_function_call_when_disabled() {
-        let items = convert_with_tools(
-            &codex_model(),
-            freeform_history("gpt-5"),
-            vec![python_tool(None)],
-        );
-        assert_eq!(
-            items[1..],
-            [
-                json!({
-                    "type": "function_call",
-                    "call_id": "call_x",
-                    "name": "python_repl",
-                    "arguments": "{\"code\":\"print(1)\"}",
-                }),
-                json!({
-                    "type": "function_call_output",
-                    "call_id": "call_x",
-                    "output": "ok",
-                }),
-            ]
-        );
-    }
-
-    /// The same-model half of the flag-off replay: the `ctc_` item id must reach the wire as
-    /// `fc_ctc_y`.
-    #[test]
-    fn freeform_history_replays_to_the_same_model_as_function_call_when_disabled() {
-        let items = convert_with_tools(
-            &codex_model(),
-            freeform_history("gpt-5.1-codex"),
-            vec![python_tool(None)],
-        );
-        assert_eq!(
-            items[1..],
-            [
-                json!({
-                    "type": "function_call",
-                    "id": "fc_ctc_y",
-                    "call_id": "call_x",
-                    "name": "python_repl",
-                    "arguments": "{\"code\":\"print(1)\"}",
-                }),
-                json!({
-                    "type": "function_call_output",
-                    "call_id": "call_x",
-                    "output": "ok",
-                }),
-            ]
-        );
-    }
-
-    /// Toggling freeform tools on -> off -> on changes only the wire shape of each request: the
-    /// history keeps its recorded ids, so the third request replays both the call recorded with
-    /// freeform on (`ctc_y`) and the one recorded with it off (`fc_w`, sent as `ctc_fc_w`) as
-    /// custom tool calls again.
+    /// Toggling freeform tools on -> off -> on changes only each request's wire shape: the
+    /// third request replays exactly like the first.
     #[test]
     fn freeform_toggle_on_off_on_replays_custom_calls_again() {
-        let mut history = freeform_history("gpt-5.1-codex");
-        history.extend([
-            user("again"),
-            assistant(
-                vec![python_call("call_z|fc_w", "print(2)")],
-                "gpt-5.1-codex",
-            ),
-            tool_result("call_z|fc_w"),
-        ]);
+        let history = reasoning_call_history(&codex_model(), "call_x|ctc_y");
         let on = || vec![python_tool(Some("code"))];
         let first = convert_with_tools(&codex_model(), history.clone(), on());
         let off = convert_with_tools(&codex_model(), history.clone(), vec![python_tool(None)]);
         let again = convert_with_tools(&codex_model(), history, on());
 
+        assert_eq!(off[2..], replayed_call(false, Some("fc_ctc_y")));
         assert_eq!(first, again);
-        let calls = |items: &[Value]| -> Vec<Value> {
-            items
-                .iter()
-                .filter(|item| item.get("call_id").is_some())
-                .cloned()
-                .collect()
-        };
-        assert_eq!(
-            calls(&again),
-            vec![
-                json!({
-                    "type": "custom_tool_call",
-                    "id": "ctc_y",
-                    "call_id": "call_x",
-                    "name": "python_repl",
-                    "input": "print(1)",
-                }),
-                json!({ "type": "custom_tool_call_output", "call_id": "call_x", "output": "ok" }),
-                json!({
-                    "type": "custom_tool_call",
-                    "id": "ctc_fc_w",
-                    "call_id": "call_z",
-                    "name": "python_repl",
-                    "input": "print(2)",
-                }),
-                json!({ "type": "custom_tool_call_output", "call_id": "call_z", "output": "ok" }),
-            ]
-        );
-        assert_eq!(
-            calls(&off),
-            vec![
-                json!({
-                    "type": "function_call",
-                    "id": "fc_ctc_y",
-                    "call_id": "call_x",
-                    "name": "python_repl",
-                    "arguments": "{\"code\":\"print(1)\"}",
-                }),
-                json!({ "type": "function_call_output", "call_id": "call_x", "output": "ok" }),
-                json!({
-                    "type": "function_call",
-                    "id": "fc_w",
-                    "call_id": "call_z",
-                    "name": "python_repl",
-                    "arguments": "{\"code\":\"print(2)\"}",
-                }),
-                json!({ "type": "function_call_output", "call_id": "call_z", "output": "ok" }),
-            ]
-        );
+        assert_eq!(again[2..], replayed_call(true, Some("ctc_y")));
     }
 
-    /// Structured arguments that are not exactly the free-text argument cannot become raw input:
-    /// such a call stays a `function_call` even with freeform tools on.
+    /// Arguments that are not exactly the free-text argument cannot become raw input: such a
+    /// call stays a `function_call` even with freeform tools on.
     #[test]
     fn structured_arguments_stay_a_function_call() {
         let call = AssistantContent::ToolCall(ToolCall {
@@ -1164,129 +979,8 @@ mod tests {
                     "name": "python_repl",
                     "arguments": "{\"code\":\"print(1)\",\"timeout\":5}",
                 }),
-                json!({
-                    "type": "function_call_output",
-                    "call_id": "call_x",
-                    "output": "ok",
-                }),
+                json!({ "type": "function_call_output", "call_id": "call_x", "output": "ok" }),
             ]
         );
-    }
-
-    /// A same-model turn whose reasoning item precedes the call: a reasoning item recorded with
-    /// the turn, then the call under `id`, then its result.
-    fn reasoning_call_history(id: &str) -> Vec<Message> {
-        let reasoning = AssistantContent::Thinking(ThinkingContent {
-            thinking: String::new(),
-            thinking_signature: Some(
-                json!({ "type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": "enc" })
-                    .to_string(),
-            ),
-            redacted: None,
-            rest: Map::default(),
-        });
-        vec![
-            user("hi"),
-            assistant(
-                vec![reasoning, python_call(id, "print(1)")],
-                "gpt-5.1-codex",
-            ),
-            tool_result(id),
-        ]
-    }
-
-    /// Regression: toggling freeform tools in either direction replays a same-model call in the
-    /// other shape with an item id of that shape, so the call still follows its reasoning item
-    /// (an id-less call after a sent `rs_` item is rejected by the API).
-    #[test]
-    fn shape_change_keeps_the_item_id_after_its_reasoning_item() {
-        let reasoning =
-            json!({ "type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": "enc" });
-        // Both a Codex model and an `openai` model on the `openai-responses` API.
-        for model in [codex_model(), openai_model()] {
-            // off -> on: a function call recorded with freeform tools off replays as a custom
-            // call.
-            let off_to_on = convert_with_tools(
-                &model,
-                recorded_by(&model, reasoning_call_history("call_x|fc_y")),
-                vec![python_tool(Some("code"))],
-            );
-            assert_eq!(
-                off_to_on[1..],
-                [
-                    reasoning.clone(),
-                    json!({
-                        "type": "custom_tool_call",
-                        "id": "ctc_fc_y",
-                        "call_id": "call_x",
-                        "name": "python_repl",
-                        "input": "print(1)",
-                    }),
-                    json!({ "type": "custom_tool_call_output", "call_id": "call_x", "output": "ok" }),
-                ],
-                "{}",
-                model.api
-            );
-            // on -> off: a custom call recorded with freeform tools on replays as a function
-            // call.
-            let on_to_off = convert_with_tools(
-                &model,
-                recorded_by(&model, reasoning_call_history("call_x|ctc_y")),
-                vec![python_tool(None)],
-            );
-            assert_eq!(
-                on_to_off[1..],
-                [
-                    reasoning.clone(),
-                    json!({
-                        "type": "function_call",
-                        "id": "fc_ctc_y",
-                        "call_id": "call_x",
-                        "name": "python_repl",
-                        "arguments": "{\"code\":\"print(1)\"}",
-                    }),
-                    json!({ "type": "function_call_output", "call_id": "call_x", "output": "ok" }),
-                ],
-                "{}",
-                model.api
-            );
-        }
-    }
-
-    /// Regression: replaying a same-model call as a `custom_tool_call` rewrites only a stored
-    /// `fc_` item id (to `ctc_<id>`), mirroring the `function_call` side, which rewrites only
-    /// `ctc_`. A `ctc_` id and a gateway's own item id pass through unchanged.
-    #[test]
-    fn custom_tool_call_rewrites_only_fc_item_ids() {
-        let cases = [
-            ("call_x|fc_y", "ctc_fc_y"),
-            ("call_x|ctc_y", "ctc_y"),
-            ("call_x|gw_item_1", "gw_item_1"),
-        ];
-        let opencode_model = Model {
-            provider: "opencode-go".into(),
-            ..openai_model()
-        };
-        for model in [codex_model(), openai_model(), opencode_model] {
-            for (tool_call_id, expected_id) in cases {
-                let items = convert_with_tools(
-                    &model,
-                    recorded_by(&model, reasoning_call_history(tool_call_id)),
-                    vec![python_tool(Some("code"))],
-                );
-                assert_eq!(
-                    items.get(2),
-                    Some(&json!({
-                        "type": "custom_tool_call",
-                        "id": expected_id,
-                        "call_id": "call_x",
-                        "name": "python_repl",
-                        "input": "print(1)",
-                    })),
-                    "provider {}, id {tool_call_id}",
-                    model.provider
-                );
-            }
-        }
     }
 }

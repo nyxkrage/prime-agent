@@ -499,9 +499,9 @@ async fn run_websocket_attempt(
             {
                 keep_connection = false;
             } else if use_cached_context && connection.cached && output.response_id.is_some() {
-                // Convert with this request's tools: the next request replays the turn in the shape
-                // those tools call for (a freeform call as `custom_tool_call`), and the
-                // continuation delta needs an exact prefix match against it.
+                // Convert with this request's tools: the continuation delta needs an exact prefix
+                // match against the next request, which replays a freeform call as
+                // `custom_tool_call`.
                 let response_items = convert_responses_messages(
                     model,
                     &Context {
@@ -1550,61 +1550,31 @@ mod tests {
         );
     }
 
-    /// The events of a turn that calls the freeform `python_repl` tool as a `custom_tool_call`.
-    fn codex_custom_tool_call_events(response_id: &str) -> Vec<Value> {
-        let item = |status: &str, input: &str| {
-            json!({
-                "type": "custom_tool_call",
-                "id": "ctc_1",
-                "status": status,
-                "name": "python_repl",
-                "call_id": "call_1",
-                "input": input,
-            })
-        };
-        vec![
-            json!({ "type": "response.created", "response": { "id": response_id } }),
-            json!({
-                "type": "response.output_item.added",
-                "output_index": 0,
-                "item": item("in_progress", ""),
-            }),
-            json!({
-                "type": "response.custom_tool_call_input.delta",
-                "output_index": 0,
-                "item_id": "ctc_1",
-                "delta": "print(1)",
-            }),
-            json!({
-                "type": "response.custom_tool_call_input.done",
-                "output_index": 0,
-                "item_id": "ctc_1",
-                "input": "print(1)",
-            }),
-            json!({
-                "type": "response.output_item.done",
-                "output_index": 0,
-                "item": item("completed", "print(1)"),
-            }),
-            json!({
-                "type": "response.completed",
-                "response": {
-                    "id": response_id,
-                    "status": "completed",
-                    "usage": { "input_tokens": 5, "output_tokens": 3, "total_tokens": 8 },
-                },
-            }),
-        ]
-    }
-
-    /// Regression: after a turn that called a freeform tool, the follow-up continues the cached
-    /// websocket chain (a `previous_response_id` delta carrying only the tool result) instead of
-    /// resending the full body. The continuation baseline must replay the call in the shape the
-    /// request's tools give it (`custom_tool_call`, `ctc_` id), not as a `function_call`.
+    /// Regression: after a freeform tool turn, the follow-up continues the cached websocket
+    /// chain (a `previous_response_id` delta with only the tool result) instead of resending the
+    /// full body.
     #[tokio::test]
     async fn freeform_tool_turn_continues_the_cached_chain() {
+        let item = |status: &str, input: &str| {
+            json!({ "type": "custom_tool_call", "id": "ctc_1", "status": status,
+                "name": "python_repl", "call_id": "call_1", "input": input })
+        };
+        let custom_turn = vec![
+            json!({ "type": "response.created", "response": { "id": "resp_1" } }),
+            json!({ "type": "response.output_item.added", "output_index": 0,
+                "item": item("in_progress", "") }),
+            json!({ "type": "response.custom_tool_call_input.delta", "output_index": 0,
+                "item_id": "ctc_1", "delta": "print(1)" }),
+            json!({ "type": "response.custom_tool_call_input.done", "output_index": 0,
+                "item_id": "ctc_1", "input": "print(1)" }),
+            json!({ "type": "response.output_item.done", "output_index": 0,
+                "item": item("completed", "print(1)") }),
+            json!({ "type": "response.completed", "response": { "id": "resp_1",
+                "status": "completed",
+                "usage": { "input_tokens": 5, "output_tokens": 3, "total_tokens": 8 } } }),
+        ];
         let server = spawn_scripted_codex_server(vec![vec![
-            codex_custom_tool_call_events("resp_1"),
+            custom_turn,
             codex_response_events("resp_2", "msg_2", "Done"),
         ]])
         .await;
