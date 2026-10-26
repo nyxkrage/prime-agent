@@ -464,9 +464,11 @@ await attempt("bash(persistent=True)", persistent)
         .expect("shutdown");
 }
 
+/// Also behind a noisy login shell: rc output (even a line that parses as
+/// a protocol frame) before the launcher's sentinel is ignored.
 #[tokio::test]
-async fn an_interrupt_reaches_the_remote_kernel() {
-    let manager = remote_manager("interrupt@box", None);
+async fn an_interrupt_reaches_the_remote_kernel_behind_login_shell_noise() {
+    let manager = remote_manager("noisy@box", None);
     start(&manager).await;
     let running = Arc::new(tokio::sync::Notify::new());
     let on_stream = {
@@ -506,17 +508,6 @@ async fn an_interrupt_reaches_the_remote_kernel() {
         run(&manager, "print('still alive')").await.trim(),
         "still alive"
     );
-    manager
-        .shutdown(KernelShutdownOptions::default())
-        .await
-        .expect("shutdown");
-}
-
-#[tokio::test]
-async fn login_shell_output_before_the_kernel_is_ignored() {
-    let manager = remote_manager("noisy@box", None);
-    start(&manager).await;
-    assert_eq!(run(&manager, "print(6 * 7)").await.trim(), "42");
     manager
         .shutdown(KernelShutdownOptions::default())
         .await
