@@ -177,7 +177,7 @@ window; it does not change every model's global compaction percentage.
 ### Freeform tools setting
 
 On the OpenAI Responses API, `python_repl` can go out as a raw-text custom tool, so
-the model writes cells without JSON string escaping. `freeformTools` controls this:
+the model writes cells without JSON string escaping:
 
 ```json
 {
@@ -188,13 +188,6 @@ the model writes cells without JSON string escaping. `freeformTools` controls th
 }
 ```
 
-For each provider, its `providers` entry wins, then `enabled`, then the built-in
-default (on for `openai` and `openai-codex`, off elsewhere). Unlike most settings,
-`freeformTools` is not merged key by key across scopes: if the project settings set
-`freeformTools` at all, they decide on their own and the global value is ignored.
-A project `{"freeformTools": {"enabled": false}}` therefore turns freeform tools off
-for every provider, even when the global settings enable a provider by name.
-
-The setting is read once when a session starts: changes apply to new sessions, not
-to sessions that are already running. A session recorded with freeform tools on
-replays correctly with them off, and the reverse.
+A provider's `providers` entry wins, then `enabled`, then the default (on for
+`openai` and `openai-codex` only). `freeformTools` is not merged across scopes: if
+project settings set it, the global value is ignored. Changes apply to new sessions.
