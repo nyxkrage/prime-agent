@@ -223,39 +223,36 @@ mod tests {
         assert_eq!(run_prompt_command(&["--help".to_string()]), 0);
     }
 
-    /// GPT-5.1 gets the `apply_patch` guidance and skill; `gpt-5-codex`, a
-    /// non-OpenAI model, and GPT-5.1 under `"applyPatch": "off"` get today's
-    /// prompt byte for byte; a models.json `editFormat` flips the default.
+    /// GPT-5.1 gets the `apply_patch` guidance and skill listing; a
+    /// models.json `editFormat` flips the default in both directions.
     #[test]
     fn the_edit_guidance_follows_the_resolved_edit_format() {
         let dir = tempfile::tempdir().unwrap();
         let agent_dir = dir.path().join("agent");
         std::fs::create_dir_all(&agent_dir).unwrap();
         let prompt = |model: &str| {
-            let (breakdown, _errors) = assemble_breakdown(dir.path(), &agent_dir, Some(model))
-                .expect("the prompt assembles");
-            breakdown
+            assemble_breakdown(dir.path(), &agent_dir, Some(model))
+                .expect("the prompt assembles")
+                .0
         };
-        let today = prompt("anthropic/claude-fable-5");
-        assert!(today.segments[0].text.contains("- `edit.run("));
-        let gpt_5_1 = prompt("openai-codex/gpt-5.1");
-        assert!(gpt_5_1.segments[0]
-            .text
-            .contains("- `apply_patch(patch: str)"));
+        let claude = prompt("anthropic/claude-fable-5");
+        let gpt = prompt("openai-codex/gpt-5.1");
+        let facts = |breakdown: &pa_core::prompts::SystemPromptBreakdown| {
+            (
+                breakdown.segments[0].source,
+                breakdown.segments[0]
+                    .text
+                    .contains("- `apply_patch(patch: str)"),
+                breakdown.assembled.contains("<name>apply-patch</name>"),
+            )
+        };
         assert_eq!(
-            gpt_5_1.segments[0].source,
-            "prompts/layers/core.md + apply-patch-core.md"
+            (facts(&claude), facts(&gpt)),
+            (
+                ("prompts/layers/core.md", false, false),
+                ("prompts/layers/core.md + apply-patch-core.md", true, true),
+            )
         );
-        // The skills inventory follows the same decision as the guidance.
-        assert!(gpt_5_1.assembled[gpt_5_1.cached_prefix_len..].contains("<name>apply-patch</name>"));
-        assert!(!today.assembled.contains("<name>apply-patch</name>"));
-        // (`openai-codex/gpt-5` would fuzzy-resolve to the cataloged gpt-5.1,
-        // exactly as `--model` does for a session.)
-        assert_eq!(
-            prompt("openai-codex/gpt-5-codex").assembled[..today.cached_prefix_len],
-            today.assembled[..today.cached_prefix_len]
-        );
-
         std::fs::write(
             agent_dir.join("models.json"),
             r#"{ "providers": {
@@ -265,33 +262,17 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            prompt("openai-codex/gpt-5.1").assembled[..today.cached_prefix_len],
-            today.assembled[..today.cached_prefix_len]
-        );
-        assert_eq!(
-            prompt("anthropic/claude-fable-5").segments[0].text,
-            gpt_5_1.segments[0].text
-        );
-
-        std::fs::remove_file(agent_dir.join("models.json")).unwrap();
-        std::fs::write(
-            agent_dir.join("settings.json"),
-            r#"{ "applyPatch": "off" }"#,
-        )
-        .unwrap();
-        let off = prompt("openai-codex/gpt-5.1");
-        assert_eq!(off.cached_prefix_len, today.cached_prefix_len);
-        assert_eq!(
-            off.assembled[..off.cached_prefix_len],
-            today.assembled[..today.cached_prefix_len]
+            (
+                facts(&prompt("anthropic/claude-fable-5")),
+                facts(&prompt("openai-codex/gpt-5.1"))
+            ),
+            (facts(&gpt), facts(&claude))
         );
     }
 
-    /// Parity evidence for the sanctioned divergence: a non-GPT model, and a
-    /// GPT-5.1 model under `"applyPatch": "off"`, get main's whole assembled
-    /// prompt byte for byte. Main's prompt is the same builder over the
-    /// unmodified layer files (the `edit` variant, `EditFormat::default()`) and
-    /// the bundled skills without `apply-patch`, which main does not ship.
+    /// Parity: a non-GPT model, and GPT-5.1 under `"applyPatch": "off"`, get
+    /// main's whole prompt byte for byte (the unmodified layers and the
+    /// bundled skills without `apply-patch`).
     #[test]
     fn the_edit_variant_is_mains_whole_prompt_byte_for_byte() {
         let dir = tempfile::tempdir().unwrap();

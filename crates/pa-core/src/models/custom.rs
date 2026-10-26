@@ -116,7 +116,6 @@ pub struct ModelDefinition {
     pub max_tokens: Option<u64>,
     pub headers: Option<BTreeMap<String, String>>,
     pub compat: Option<serde_json::Value>,
-    /// `editFormat`: how the model edits files from the REPL.
     pub edit_format: Option<pa_types::ai::EditFormat>,
 }
 
@@ -132,7 +131,6 @@ pub struct ModelOverride {
     pub max_tokens: Option<u64>,
     pub headers: Option<BTreeMap<String, String>>,
     pub compat: Option<serde_json::Value>,
-    /// `editFormat`: how the model edits files from the REPL.
     pub edit_format: Option<pa_types::ai::EditFormat>,
 }
 

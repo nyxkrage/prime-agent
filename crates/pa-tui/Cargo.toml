@@ -25,9 +25,8 @@ clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "net", "process"] }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 uuid = { version = "1", features = ["v4"] }
-# Error-tolerant Python parsing for the apply_patch literal colouring in
-# python_repl cells (tool_card/patch_literal); detection only, scope
-# colouring stays with the highlight.js port in tool_card/highlight.rs.
+# Error-tolerant Python parsing to detect apply_patch literals
+# (tool_card/patch_literal); colouring stays with tool_card/highlight.rs.
 tree-sitter = "0.27"
 tree-sitter-python = "0.25"
 

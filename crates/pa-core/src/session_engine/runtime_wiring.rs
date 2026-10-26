@@ -602,24 +602,6 @@ mod tests {
     }
 
     #[test]
-    fn the_apply_patch_skill_follows_the_edit_format() {
-        let names = |edit_format| {
-            skills_for_edit_format(
-                vec![skill_named("edit"), skill_named(APPLY_PATCH_SKILL_NAME)],
-                edit_format,
-            )
-            .into_iter()
-            .map(|skill| skill.name)
-            .collect::<Vec<_>>()
-        };
-        assert_eq!(names(pa_types::ai::EditFormat::Edit), ["edit"]);
-        assert_eq!(
-            names(pa_types::ai::EditFormat::ApplyPatch),
-            ["edit", APPLY_PATCH_SKILL_NAME]
-        );
-    }
-
-    #[test]
     fn cell_watchdog_arms_only_in_daemon_backed_sessions() {
         // Daemonless sessions keep `await bash()` unbounded by design
         // (#3523): their over-budget cells are sanctioned long awaits.

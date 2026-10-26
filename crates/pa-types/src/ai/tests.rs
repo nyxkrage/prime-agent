@@ -189,8 +189,7 @@ fn user_content_text_helper() {
     assert_eq!(content.text(), "a b c");
 }
 
-/// An unset `editFormat` stays off the wire, so catalog JSON carrying `Model`
-/// is byte-identical to before the field existed; a set one round-trips.
+/// An unset `editFormat` stays off the wire; a set one round-trips.
 #[test]
 fn edit_format_serializes_only_when_set() {
     let model = tier_model("openai", "openai-responses", "gpt-5.1");

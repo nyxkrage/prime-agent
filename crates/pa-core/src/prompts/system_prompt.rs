@@ -69,8 +69,7 @@ pub struct BuildSystemPromptOptions<'a> {
     /// still applies.
     pub custom_prompt: Option<String>,
     pub model_prompt_extras: Option<&'a str>,
-    /// The model's resolved edit format (`crate::models::resolve_edit_format`);
-    /// selects the static layers' edit guidance, so it is a static input.
+    /// Selects the static layers' edit guidance (a static input).
     pub edit_format: pa_types::ai::EditFormat,
     /// Whether the resolved model accepts image input, when known.
     pub vision_capable: Option<bool>,
@@ -122,8 +121,6 @@ pub fn system_prompt_breakdown(options: &BuildSystemPromptOptions) -> SystemProm
             ));
         }
         _ => {
-            // `prime-agent prompt` shows the chosen edit-guidance variant in
-            // the core/usage provenance.
             let (core_source, usage_source) = match options.edit_format {
                 pa_types::ai::EditFormat::Edit => (
                     layers::layer_source("core").unwrap_or_default(),
@@ -551,9 +548,7 @@ mod tests {
         assert!(!build_system_prompt(&bare).contains("completions do not wake you"));
     }
 
-    /// The `apply_patch` edit format swaps the core/usage edit guidance in the
-    /// static prefix and names the variant in the provenance; everything else
-    /// (the opinionated layer, the whole dynamic tail) is unchanged.
+    /// The `apply_patch` edit format changes only the core/usage segments.
     #[test]
     fn the_apply_patch_edit_format_swaps_only_the_edit_guidance() {
         let edit = system_prompt_breakdown(&base_options());

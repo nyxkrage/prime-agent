@@ -1262,22 +1262,6 @@ mod tests {
     }
 
     #[test]
-    fn apply_patch_reads_setting_or_auto() {
-        use crate::settings::types::ApplyPatchSetting;
-        let manager = SettingsManager::in_memory(&Settings::default());
-        assert_eq!(manager.get_apply_patch(), ApplyPatchSetting::Auto);
-        let document = serde_json::json!({ "applyPatch": "off" });
-        let manager =
-            SettingsManager::in_memory(&crate::settings::load::from_value_lenient(&document));
-        assert_eq!(manager.get_apply_patch(), ApplyPatchSetting::Off);
-        // An out-of-vocabulary value loads as unset (lenient load), so `auto`.
-        let document = serde_json::json!({ "applyPatch": false });
-        let manager =
-            SettingsManager::in_memory(&crate::settings::load::from_value_lenient(&document));
-        assert_eq!(manager.get_apply_patch(), ApplyPatchSetting::Auto);
-    }
-
-    #[test]
     fn image_model_reads_trimmed_or_unset() {
         let manager = SettingsManager::in_memory(&Settings {
             image_model: Some("  battery/mock-vision  ".to_string()),

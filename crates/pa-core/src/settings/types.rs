@@ -352,8 +352,7 @@ pub struct Settings {
     /// (default [`DEFAULT_PYTHON_CELL_TIMEOUT_MS`]; `0` disables). Daemonless
     /// sessions never arm it.
     pub python_cell_timeout_ms: Option<u64>,
-    /// `"auto" | "off"` (default `"auto"`): `"off"` makes every model edit
-    /// with `edit` regardless of its `editFormat` (Rust-only setting).
+    /// `"off"` makes every model edit with `edit` (Rust-only setting).
     pub apply_patch: Option<ApplyPatchSetting>,
     pub autonomous: Option<AutonomousSettings>,
     /// Custom shell that runs every kernel `bash()` and user-bash command as

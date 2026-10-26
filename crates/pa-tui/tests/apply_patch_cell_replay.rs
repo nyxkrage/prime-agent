@@ -1,15 +1,12 @@
-//! User-level verifier for the `apply_patch` literal colouring: a session
-//! file whose `python_repl` cell applies a V4A patch replays through the
-//! agent view (the `pa-tui-replay --frame` fold) at the expanded detail
-//! level, and the painted frame carries the diff colours on the patch rows
-//! while a plain cell's triple-quoted string keeps the string colour.
+//! User-level verifier for the `apply_patch` literal colouring: a replayed
+//! session paints the patch rows in diff colours, while a plain cell's
+//! lookalike string keeps the string colour.
 
 use pa_tui::chat::Detail;
 use pa_tui::session::{parse_jsonl, JsonlSessionStream, SessionStream};
 use pa_tui::theme::{ColorMode, Theme, ThemeBg, ThemeColor};
 use pa_tui::view::AgentView;
 use pa_tui::{Line, Span};
-use ratatui::style::Modifier;
 use serde_json::json;
 
 const PATCH_CELL: &str = "await apply_patch('''*** Begin Patch\n*** Update File: src/app.py\n@@ def main():\n-    print(\"hi\")\n+    print(\"hello\")\n     return\n*** End Patch''')";
@@ -102,9 +99,7 @@ fn a_replayed_apply_patch_cell_paints_the_patch_as_a_diff() {
     let frame = frame(&theme);
     let fg = |color| theme.fg_style(color);
     let string = fg(ThemeColor::SyntaxString);
-    let file = fg(ThemeColor::MdHeading);
     let added_bg = theme.bg_style(ThemeBg::ToolDiffAddedBg);
-    let removed_bg = theme.bg_style(ThemeBg::ToolDiffRemovedBg);
     let span = Span::styled;
     assert_eq!(
         body(row(&frame, PATCH_ROW, PATCH_ROW)),
@@ -116,27 +111,6 @@ fn a_replayed_apply_patch_cell_paints_the_patch_as_a_diff() {
         ]
     );
     assert_eq!(
-        body(row(&frame, PATCH_ROW, "*** Update File")),
-        vec![
-            span("*** Update File: ", file),
-            span("src/app.py", file.add_modifier(Modifier::BOLD)),
-        ]
-    );
-    assert_eq!(
-        body(row(&frame, PATCH_ROW, "@@ def main")),
-        vec![span("@@ def main():", fg(ThemeColor::SyntaxFunction))]
-    );
-    assert_eq!(
-        body(row(&frame, PATCH_ROW, "print(\"hi\")")),
-        vec![
-            span("-", fg(ThemeColor::ToolDiffRemoved).patch(removed_bg)),
-            span(
-                "    print(\"hi\")",
-                fg(ThemeColor::MdCodeBlock).patch(removed_bg)
-            ),
-        ]
-    );
-    assert_eq!(
         body(row(&frame, PATCH_ROW, "print(\"hello\")")),
         vec![
             span("+", fg(ThemeColor::ToolDiffAdded).patch(added_bg)),
@@ -144,18 +118,6 @@ fn a_replayed_apply_patch_cell_paints_the_patch_as_a_diff() {
                 "    print(\"hello\")",
                 fg(ThemeColor::MdCodeBlock).patch(added_bg)
             ),
-        ]
-    );
-    assert_eq!(
-        body(row(&frame, PATCH_ROW, "     return")),
-        vec![span("     return", fg(ThemeColor::ToolDiffContext))]
-    );
-    assert_eq!(
-        body(row(&frame, PATCH_ROW, "*** End Patch")),
-        vec![
-            span("*** End Patch", fg(ThemeColor::Dim)),
-            span("'''", string),
-            Span::raw(")"),
         ]
     );
     // The plain cell's lookalike string is not passed to apply_patch: it

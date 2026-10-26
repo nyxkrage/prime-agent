@@ -37,9 +37,8 @@ impl HiddenPythonSkills {
         }
     }
 
-    /// The current hidden set.
-    #[must_use]
-    pub fn names(&self) -> Vec<String> {
+    #[cfg(test)]
+    pub(crate) fn names(&self) -> Vec<String> {
         self.state().names.clone()
     }
 

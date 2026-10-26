@@ -671,17 +671,13 @@ pub enum ModelInput {
 }
 
 /// How a model edits files from the Python REPL (`models.json` `editFormat`).
-/// Unset on [`Model::edit_format`] means "use the built-in ID default".
-/// [`EditFormat::default`] is `Edit`, the behavior every model had before
-/// the field existed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EditFormat {
     /// Exact old/new string replacement through the `edit` skill.
     #[default]
     Edit,
-    /// `OpenAI` V4A patches through the `apply_patch` skill (`edit` stays
-    /// available beside it).
+    /// `OpenAI` V4A patches through the `apply_patch` skill.
     ApplyPatch,
 }
 mod compat;
@@ -737,8 +733,8 @@ pub struct Model {
     /// Compatibility overrides; auto-detected from `baseUrl` when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compat: Option<ModelCompat>,
-    /// Configured file-edit format (`models.json` `editFormat`); `None` keeps the
-    /// built-in default and the field off the wire, so catalog JSON is unchanged.
+    /// Configured `editFormat`; `None` uses the ID default and stays off the
+    /// wire, so catalog JSON is unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edit_format: Option<EditFormat>,
 }

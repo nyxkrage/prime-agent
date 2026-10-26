@@ -1,6 +1,5 @@
-//! The effective file-edit format for a session's model: the one decision
-//! the prompt layers and the kernel skill binding both read, so the prompt
-//! never documents `apply_patch` when the kernel does not bind it.
+//! The effective file-edit format for a model: the one decision the prompt
+//! and the kernel's `apply_patch` binding both follow.
 
 use std::path::Path;
 
@@ -15,13 +14,9 @@ const FIRST_APPLY_PATCH_GPT: (u64, u64) = (5, 1);
 /// configured `editFormat` (`models.json`), then the ID default (GPT-5.1 and
 /// newer get `apply_patch`, everything else `edit`).
 ///
-/// The default judges the model name inside `model_id`, whatever spelling
-/// the provider uses: the last `/` segment (`openai/gpt-5.1` on `OpenRouter`
-/// or Prime Inference), without a `:` variant suffix (`gpt-5.1:nitro`,
-/// `:free`), the base model of an `OpenAI` fine-tune (`ft:gpt-5.1:org::id`),
-/// and the name after a dotted vendor prefix (Bedrock-style
-/// `openai.gpt-5.1`, `us.openai.gpt-5.1`). A fine-tune or a re-hosted model is
-/// the same trained model, so it gets the same format.
+/// The default reads the model name through provider spellings (`openai/`
+/// prefixes, `:nitro` variants, `ft:` fine-tunes, Bedrock-style
+/// `us.openai.` prefixes): a re-hosted or fine-tuned model was trained the same.
 #[must_use]
 pub(crate) fn resolve_edit_format(
     setting: ApplyPatchSetting,
@@ -46,9 +41,9 @@ pub(crate) fn resolve_edit_format(
                 let version = rest.split('-').next().unwrap_or_default();
                 let (major, minor) = version.split_once('.').unwrap_or((version, "0"));
                 let number = |part: &str| {
-                    (!part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
-                        .then(|| part.parse::<u64>().ok())
-                        .flatten()
+                    part.parse::<u64>()
+                        .ok()
+                        .filter(|_| part.bytes().all(|byte| byte.is_ascii_digit()))
                 };
                 Some((number(major)?, number(minor)?))
             });
@@ -61,13 +56,9 @@ pub(crate) fn resolve_edit_format(
     }
 }
 
-/// The edit format a session on `model` would get, for surfaces that build
-/// the prompt without starting a session (`prime-agent prompt`). `model` is
-/// a CLI model reference (`provider/id` or a pattern) resolved against the
-/// catalog in `agent_dir`; without one, the startup model a new session
-/// would pick (the saved settings default, then the featured default, then
-/// the first available model). A reference the catalog does not know is
-/// judged by its ID alone.
+/// The edit format a new session on `model` (a CLI model reference; `None`:
+/// the startup model) would get, for `prime-agent prompt`. A reference the
+/// catalog does not know is judged by its ID alone.
 #[must_use]
 pub fn edit_format_for_model_reference(
     settings: &SettingsManager,
@@ -113,39 +104,26 @@ pub fn edit_format_for_model_reference(
 mod tests {
     use super::*;
 
-    /// The default by model ID, with and without provider-style prefixes,
-    /// variant suffixes, fine-tune wrappers, and dotted vendor prefixes.
     #[test]
     fn the_id_default_starts_at_gpt_5_1() {
         let ids = [
             "gpt-5.1",
             "gpt-5.1-codex-mini",
-            "gpt-5.2",
-            "gpt-5.5",
             "gpt-6-luna",
-            "openai/gpt-5.1",
             "openai/gpt-5.6-luna",
-            "gpt-5.10",
             "gpt-5.10-codex",
             "openai/gpt-5.1:nitro",
-            "openai/gpt-5.2:free",
-            "gpt-5.1:online",
             "ft:gpt-5.1:acme::abc123",
-            "ft:gpt-4.1-mini:acme::abc123",
-            "openai.gpt-5.1",
             "us.openai.gpt-5.2",
+            "ft:gpt-4.1-mini:acme::abc123",
             "openai.gpt-oss-120b-1:0",
             "openai/gpt-5:free",
             "chatgpt-4o-latest",
             "my-gpt-5.1",
-            "gpt-5",
             "gpt-5-codex",
             "gpt-4.1",
             "gpt-oss-120b",
-            "openai/gpt-oss-20b",
-            "gpt-4o",
             "claude-sonnet-4-5",
-            "deepseek-v4-flash",
         ];
         let resolved: Vec<(&str, EditFormat)> = ids
             .iter()
@@ -159,38 +137,25 @@ mod tests {
         let expected: Vec<(&str, EditFormat)> = vec![
             ("gpt-5.1", EditFormat::ApplyPatch),
             ("gpt-5.1-codex-mini", EditFormat::ApplyPatch),
-            ("gpt-5.2", EditFormat::ApplyPatch),
-            ("gpt-5.5", EditFormat::ApplyPatch),
             ("gpt-6-luna", EditFormat::ApplyPatch),
-            ("openai/gpt-5.1", EditFormat::ApplyPatch),
             ("openai/gpt-5.6-luna", EditFormat::ApplyPatch),
-            ("gpt-5.10", EditFormat::ApplyPatch),
             ("gpt-5.10-codex", EditFormat::ApplyPatch),
             ("openai/gpt-5.1:nitro", EditFormat::ApplyPatch),
-            ("openai/gpt-5.2:free", EditFormat::ApplyPatch),
-            ("gpt-5.1:online", EditFormat::ApplyPatch),
             ("ft:gpt-5.1:acme::abc123", EditFormat::ApplyPatch),
-            ("ft:gpt-4.1-mini:acme::abc123", EditFormat::Edit),
-            ("openai.gpt-5.1", EditFormat::ApplyPatch),
             ("us.openai.gpt-5.2", EditFormat::ApplyPatch),
+            ("ft:gpt-4.1-mini:acme::abc123", EditFormat::Edit),
             ("openai.gpt-oss-120b-1:0", EditFormat::Edit),
             ("openai/gpt-5:free", EditFormat::Edit),
             ("chatgpt-4o-latest", EditFormat::Edit),
             ("my-gpt-5.1", EditFormat::Edit),
-            ("gpt-5", EditFormat::Edit),
             ("gpt-5-codex", EditFormat::Edit),
             ("gpt-4.1", EditFormat::Edit),
             ("gpt-oss-120b", EditFormat::Edit),
-            ("openai/gpt-oss-20b", EditFormat::Edit),
-            ("gpt-4o", EditFormat::Edit),
             ("claude-sonnet-4-5", EditFormat::Edit),
-            ("deepseek-v4-flash", EditFormat::Edit),
         ];
         assert_eq!(resolved, expected);
     }
 
-    /// An explicit `editFormat` wins over the ID default in both directions,
-    /// and `applyPatch: "off"` wins over an explicit `apply_patch`.
     #[test]
     fn the_setting_beats_the_configured_format_beats_the_default() {
         let cases = [

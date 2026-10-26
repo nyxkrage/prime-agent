@@ -331,8 +331,7 @@ struct CounterValues {
     rlm_child_cost: f64,
     /// `feature_<name>_<outcome>_count` over the fixed feature vocabulary.
     feature_outcomes: std::collections::BTreeMap<String, u64>,
-    /// `apply_patch_*_count` adoption counters; empty (and so absent from
-    /// the event) until the session's kernel reports an `apply_patch` call.
+    /// `apply_patch_*_count` adoption counters (absent until a call reports).
     apply_patch_counts: std::collections::BTreeMap<String, u64>,
 }
 
@@ -378,10 +377,8 @@ impl SessionCounters {
         });
     }
 
-    /// One `apply_patch` call, as the skill reports it over
-    /// [`crate::session_engine::runtime_wiring::APPLY_PATCH_REPORT_REQUEST`]:
-    /// `{"files": n, "hunks": n, "failure": reason | null}`. Counts only;
-    /// the report carries no paths or content.
+    /// One `apply_patch` call report: `{"files", "hunks", "failure"}` (no
+    /// paths or content).
     pub(crate) fn note_apply_patch(&self, report: &Value) {
         let files = report["files"].as_u64().unwrap_or(0);
         let hunks = report["hunks"].as_u64().unwrap_or(0);

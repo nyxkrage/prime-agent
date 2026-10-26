@@ -540,8 +540,8 @@ async fn session_counters_ride_session_ended() {
     assert!(ended.keys().all(|key| !key.starts_with("apply_patch_")));
 }
 
-/// `apply_patch` reports fold into `agent session ended`: successful calls
-/// with their file/hunk totals, failures by reason, unknown reasons dropped.
+/// `apply_patch` reports fold into `agent session ended`; unknown failure
+/// reasons count nothing.
 #[tokio::test]
 async fn apply_patch_reports_ride_session_ended() {
     let fixture = fixture();

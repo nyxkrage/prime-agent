@@ -1,20 +1,13 @@
 //! `apply_patch` literals in `python_repl` cells render as the patch they
-//! carry: the V4A text inside the string literal passed to the kernel's
-//! `apply_patch` skill gets diff colouring (envelope, file and hunk headers,
-//! added/removed/context lines) over the cell's ordinary highlighting.
+//! carry: diff colouring over the cell's ordinary highlighting.
 //!
 //! Detection parses the cell with tree-sitter's Python grammar and accepts
-//! only these call shapes (with or without `await`):
-//! `apply_patch(<lit>)`, `apply_patch(patch=<lit>)`, `apply_patch.run(<lit>)`,
-//! `apply_patch.run(patch=<lit>)`, where `<lit>` is a string literal, an
-//! implicit concatenation of literals, either one parenthesized, or a name
-//! bound exactly once earlier in the cell by `NAME = <lit>`. f-strings, byte
-//! strings, and anything computed fall back to the plain string colour.
-//!
-//! Scope colouring stays with [`super::highlight`]; this module only
-//! restyles the bytes between a detected literal's quotes, line by line,
-//! classified by each source line's first characters (escapes are not
-//! decoded: what is displayed is what is classified).
+//! `apply_patch(<lit>)` and `apply_patch.run(<lit>)` (positional or
+//! `patch=`), where `<lit>` is a string literal, an implicit concatenation
+//! (optionally parenthesized), or a name bound once earlier in the cell by
+//! `NAME = <lit>`. f-strings, bytes, and computed values keep the string
+//! colour. Each source line inside a literal is classified by its first
+//! characters, undecoded: what is displayed is what is classified.
 
 use std::cell::RefCell;
 use std::ops::Range;
@@ -30,25 +23,20 @@ use crate::{Line, Span};
 /// The kernel binding the literal colouring follows (`skills/apply-patch`).
 const APPLY_PATCH: &str = "apply_patch";
 
-/// Distinct cell sources whose detected literals stay cached: a few cards
-/// may stream or run at once, and each repaints its unchanged code every
-/// frame.
+/// Cells cached at once: a few cards may stream at once, and each repaints
+/// its unchanged code every frame.
 const CACHED_CELLS: usize = 4;
 
-/// One parsed cell, kept so the same cell repaints without parsing and a
-/// streaming cell (the previous source plus appended text) updates from it
-/// at a cost proportional to the appended text.
+/// One parsed cell: the same cell repaints without parsing, and a streaming
+/// cell (the previous source plus appended text) reparses incrementally.
 struct ParsedCell {
     code: String,
-    /// The text closing the cell while it ends inside an unclosed
-    /// triple-quoted string: the delimiter, then the open brackets.
+    /// What closes an unclosed triple-quoted tail: delimiter, open brackets.
     closing: Option<String>,
-    /// The text `tree` was parsed from: the cell as it was at the last parse
-    /// (`parsed[..parsed_code_len]`, a prefix of `code`), then its closing
-    /// text.
+    /// The text `tree` was parsed from: `parsed[..parsed_code_len]` (a prefix
+    /// of `code`), then its closing text.
     parsed: String,
     parsed_code_len: usize,
-    /// Where `parsed`'s cell part ends.
     parsed_code_end: Point,
     tree: Option<Tree>,
     bodies: Rc<[Range<usize>]>,
@@ -59,9 +47,8 @@ thread_local! {
     static CACHE: RefCell<Vec<ParsedCell>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Restyle the `apply_patch` literal bodies inside `lines`, the
-/// highlighted rows of `code` (one row per `\n`-separated source line).
-/// Cells without an `apply_patch` call are left untouched.
+/// Restyle the `apply_patch` literal bodies inside `lines`, the highlighted
+/// rows of `code` (one row per source line).
 pub(crate) fn overlay_patch_literals(code: &str, lines: &mut [Line], theme: &Theme) {
     if !code.contains(APPLY_PATCH) {
         return;
@@ -96,8 +83,7 @@ pub(crate) fn overlay_patch_literals(code: &str, lines: &mut [Line], theme: &The
     let mut line_start = 0usize;
     let mut scanned = 0usize;
     for body in bodies.iter() {
-        // Advance the line bookkeeping to the body's first line (bodies are
-        // sorted and disjoint, so the scan is linear in the cell).
+        // Bodies are sorted and disjoint: the scan is linear in the cell.
         for (offset, byte) in code.as_bytes()[scanned..body.start].iter().enumerate() {
             if *byte == b'\n' {
                 line_index += 1;
@@ -128,30 +114,20 @@ pub(crate) fn overlay_patch_literals(code: &str, lines: &mut [Line], theme: &The
 /// `apply_patch` in `code` (sorted, disjoint, clipped to `code`), updating
 /// from `previous`, a cell `code` extends, when there is one.
 fn parse_cell(code: &str, previous: Option<ParsedCell>) -> ParsedCell {
-    // A cell still streaming in usually ends inside the patch literal.
-    // tree-sitter's recovery leaves an unclosed triple-quoted string as a
-    // bare `string_start` in an ERROR node with no call around it, and
-    // recovering through a long patch body parsed as code is slow. So a
-    // cell whose tail is an unclosed triple-quoted string (as the
-    // highlighter scans it) parses with that tail closed instead: the
-    // string's delimiter and the brackets open around it appended. Body
-    // ranges past the real end are clipped below.
-    //
-    // While it streams, the cell is not rescanned for that tail: when the
-    // previous cell ended inside an unclosed triple-quoted string and the
-    // appended text (with the two bytes before it) holds no closing
-    // delimiter, the cell still ends inside that string, so the tail is the
-    // same.
+    // A streaming cell usually ends inside the patch literal, which
+    // tree-sitter recovers as a bare `string_start` in an ERROR node (no
+    // call), slowly. So an unclosed triple-quoted tail parses closed: its
+    // delimiter and the open brackets appended; bodies are clipped below.
+    // While no closing delimiter arrives (checking the two bytes before the
+    // appended text too), the tail stays the same and is not rescanned.
     let still_open = previous.as_ref().and_then(|previous| {
         let closing = previous.closing.as_ref()?;
         let delimiter = closing.as_bytes().get(..3)?;
         let window = &code.as_bytes()[previous.code.len().saturating_sub(2)..];
         (!window.windows(3).any(|bytes| bytes == delimiter)).then(|| closing.clone())
     });
-    // Text appended inside the open literal changes nothing but its
-    // length: when it is a patch literal (its body runs to the end of the
-    // previous cell), that body now runs to the new end, and no parse is
-    // needed (tree-sitter would relex the whole literal, one token).
+    // Text appended inside an open patch literal only extends its body: no
+    // parse needed (tree-sitter would relex the whole literal, one token).
     let extends_open_body = still_open.is_some()
         && previous.as_ref().is_some_and(|previous| {
             previous
@@ -185,8 +161,7 @@ fn parse_cell(code: &str, previous: Option<ParsedCell>) -> ParsedCell {
         }
         source.push_str(closing);
     }
-    // Reparse incrementally: the text after the last parse's cell part
-    // replaces that parse's closing tail.
+    // Incremental reparse: the new text replaces the last parse's closing tail.
     let (code_end, old_tree) = match previous {
         Some(previous) => {
             let start = previous.parsed_code_len;
@@ -223,10 +198,9 @@ fn parse_cell(code: &str, previous: Option<ParsedCell>) -> ParsedCell {
                 .literal_strings()
                 .into_iter()
                 .filter_map(|string| {
-                    // The bytes between the quotes. A string whose closing
-                    // delimiter is missing, or reaches into the appended tail
-                    // (the cell may end in one or two of its quotes, which
-                    // are body text so far), runs to the end of the cell.
+                    // The bytes between the quotes; without a real closing
+                    // delimiter in the cell (the cell may end in one or two
+                    // of its quotes), the body runs to the end of the cell.
                     let open = string.child(0)?;
                     let last = string.child_count().checked_sub(1)?;
                     let end = string
@@ -482,10 +456,8 @@ impl<'tree> Detector<'tree> {
     }
 }
 
-/// The styles the patch line kinds render with: the edit-diff look the
-/// refinement diff rows use (`+`/`-` markers in the diff colours on the
-/// diff backgrounds, the text in the code-block colour on them; plain diff
-/// colours without a background below truecolor).
+/// The patch line styles: the edit-diff look (diff backgrounds in
+/// truecolor, plain diff colours below).
 #[derive(Debug, Clone, Copy)]
 struct PatchPalette {
     envelope: Style,
@@ -582,9 +554,8 @@ fn line_segments(piece: &str, at: usize, palette: &PatchPalette) -> Vec<(Range<u
     }
 }
 
-/// Re-split `line`'s spans at the segment boundaries and give the bytes
-/// inside each segment its style. `segments` are sorted, disjoint, and in
-/// the line's byte coordinates.
+/// Re-split `line`'s spans at the segment boundaries and style each segment
+/// (sorted, disjoint, in the line's byte coordinates).
 fn restyle(line: &mut Line, segments: &[(Range<usize>, Style)]) {
     if segments.is_empty() {
         return;
