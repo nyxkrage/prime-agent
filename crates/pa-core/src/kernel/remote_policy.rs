@@ -160,108 +160,81 @@ pub(crate) enum RemoteHostRequest {
 /// The audited host request kinds. A kind missing from this table is
 /// refused too (deny by default), so a new handler stays local-only until
 /// someone audits it here.
-pub(crate) const REMOTE_KERNEL_HOST_REQUESTS: &[(&str, RemoteHostRequest)] = {
+pub(crate) const REMOTE_KERNEL_HOST_REQUESTS: &[(&[&str], RemoteHostRequest)] = {
     use RemoteHostRequest::{Allowed, Refused};
     &[
-        // The basic RLM surface: spawn (children inherit the host),
-        // collect, progress, the roster, model lookup, and renames carry
-        // no local paths or secrets.
-        ("rlm.run", Allowed),
-        ("rlm.collect", Allowed),
-        ("rlm.progress.note", Allowed),
-        ("rlm.list_subagents", Allowed),
-        ("rlm.delete_subagent", Allowed),
-        ("rlm.find_models", Allowed),
-        ("rlm.rename", Allowed),
-        // The child's reply channel to its parent (the prompt mandates it).
-        ("agent_message.send", Allowed),
-        ("agent_message.list_agents", Allowed),
-        // `bash()` completion notices wake the local agent loop.
-        ("bash.completed", Allowed),
-        ("bash.consumed", Allowed),
-        // Model facts (`attach_image` checks vision support).
-        ("model.info", Allowed),
-        // Compaction acts on the local transcript only.
-        ("compact.status", Allowed),
-        ("compact.run", Allowed),
+        // The basic RLM surface carries no local paths or secrets
+        // (spawned children inherit the host).
         (
-            "rlm.create_session",
+            &[
+                "rlm.run",
+                "rlm.collect",
+                "rlm.progress.note",
+                "rlm.list_subagents",
+                "rlm.delete_subagent",
+                "rlm.find_models",
+                "rlm.rename",
+            ],
+            Allowed,
+        ),
+        // The child's reply channel to its parent (the prompt mandates it).
+        (
+            &["agent_message.send", "agent_message.list_agents"],
+            Allowed,
+        ),
+        // `bash()` completion notices wake the local agent loop.
+        (&["bash.completed", "bash.consumed"], Allowed),
+        // Model facts (`attach_image` checks vision support).
+        (&["model.info"], Allowed),
+        // Compaction acts on the local transcript only.
+        (&["compact.status", "compact.run"], Allowed),
+        (
+            &["rlm.create_session"],
             Refused("it creates a local top-level session from a kernel-supplied cwd"),
         ),
         (
-            "mcp.config",
+            &["mcp.config", "mcp.refresh"],
             Refused("MCP server configs carry local credentials (env, headers, OAuth)"),
         ),
         (
-            "mcp.refresh",
-            Refused("MCP server configs carry local credentials (env, headers, OAuth)"),
-        ),
-        (
-            "mcp.begin_login",
+            &["mcp.begin_login"],
             Refused("MCP logins store credentials on this machine"),
         ),
         (
-            "mcp.list_plugins",
+            &[
+                "mcp.list_plugins",
+                "mcp.search_plugins",
+                "mcp.list_connections",
+            ],
             Refused("the MCP inventory describes this machine's servers"),
         ),
         (
-            "mcp.search_plugins",
-            Refused("the MCP inventory describes this machine's servers"),
-        ),
-        (
-            "mcp.list_connections",
-            Refused("the MCP inventory describes this machine's servers"),
-        ),
-        (
-            "refine.status",
+            &["refine.status", "refine.run"],
             Refused("harness refinement state lives on this machine"),
         ),
         (
-            "refine.run",
-            Refused("harness refinement state lives on this machine"),
-        ),
-        (
-            "goal.get",
+            &["goal.get", "goal.create", "goal.complete"],
             Refused("goal state is not audited for remote kernels"),
         ),
         (
-            "goal.create",
-            Refused("goal state is not audited for remote kernels"),
-        ),
-        (
-            "goal.complete",
-            Refused("goal state is not audited for remote kernels"),
-        ),
-        (
-            "rlm_heartbeat.list",
+            &[
+                "rlm_heartbeat.list",
+                "rlm_heartbeat.create",
+                "rlm_heartbeat.update",
+                "rlm_heartbeat.delete",
+            ],
             Refused("heartbeat jobs schedule wake-ups on this machine"),
         ),
         (
-            "rlm_heartbeat.create",
-            Refused("heartbeat jobs schedule wake-ups on this machine"),
-        ),
-        (
-            "rlm_heartbeat.update",
-            Refused("heartbeat jobs schedule wake-ups on this machine"),
-        ),
-        (
-            "rlm_heartbeat.delete",
-            Refused("heartbeat jobs schedule wake-ups on this machine"),
-        ),
-        (
-            "agent_observe.list",
+            &[
+                "agent_observe.list",
+                "agent_observe.get",
+                "agent_observe.recent",
+            ],
             Refused("it reads other agents' local transcripts"),
         ),
         (
-            "agent_observe.get",
-            Refused("it reads other agents' local transcripts"),
-        ),
-        (
-            "agent_observe.recent",
-            Refused("it reads other agents' local transcripts"),
-        ),
-        (
-            "factory.progress",
+            &["factory.progress"],
             Refused("factories run on harness state, which lives on this machine"),
         ),
     ]
@@ -272,7 +245,7 @@ pub(crate) const REMOTE_KERNEL_HOST_REQUESTS: &[(&str, RemoteHostRequest)] = {
 pub(crate) fn remote_host_request_refusal(request_type: &str, host: &str) -> Option<String> {
     let reason = match REMOTE_KERNEL_HOST_REQUESTS
         .iter()
-        .find(|(kind, _)| *kind == request_type)
+        .find(|(kinds, _)| kinds.contains(&request_type))
     {
         Some((_, RemoteHostRequest::Allowed)) => return None,
         Some((_, RemoteHostRequest::Refused(reason))) => reason,

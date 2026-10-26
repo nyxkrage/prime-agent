@@ -86,8 +86,8 @@ parent-side registry serves `rlm.list_subagents`/`rlm.collect`/
 and thinking-level validation live in `rlm_child_model.rs`; the create
 command carries the RLM recursion identity (`rlmDepth`/`rlmMaxDepth`/
 `parentSessionPath`/`thinking`) so respawned children keep their depth. A
-spawned child's remote placement and `env=` (`remoteHost`/`remoteCwd`/
-`kernelEnv`, pass-throughs by name only) ride the create and a
+spawned child's remote placement and `env=` (`kernelPlacement`,
+pass-throughs by name only) ride the create and a
 `kernel-placement.json` sidecar in its session dir
 (`rlm_children/kernel_placement.rs`), so every reopen path keeps them; an
 unreadable sidecar refuses the open. Per-session model binding: the

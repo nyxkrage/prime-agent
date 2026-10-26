@@ -158,20 +158,13 @@ impl KernelEnvOverrides {
         self.entries.len() - self.literal_count()
     }
 
-    /// Refuse pass-throughs to a remote host when the global
-    /// `remoteEnvPassthrough` setting turns them off; literal values stay
-    /// allowed.
+    /// Refuse any pass-through: called for a remote host when the global
+    /// `remoteEnvPassthrough` setting is off. Literal values stay allowed.
     ///
     /// # Errors
     ///
     /// Returns a refusal naming the first pass-through and the setting.
-    pub fn check_remote_passthrough(
-        &self,
-        passthrough_allowed: bool,
-    ) -> Result<(), KernelEnvRefusal> {
-        if passthrough_allowed {
-            return Ok(());
-        }
+    pub fn refuse_passthroughs(&self) -> Result<(), KernelEnvRefusal> {
         match self
             .entries
             .iter()
@@ -478,12 +471,11 @@ mod tests {
     #[test]
     fn the_kill_switch_refuses_passthroughs_but_not_literals() {
         let literal = KernelEnvOverrides::from_json(&json!({ "EPOCHS": "3" })).unwrap();
-        assert_eq!(literal.check_remote_passthrough(false), Ok(()));
+        assert_eq!(literal.refuse_passthroughs(), Ok(()));
         let passthrough =
             KernelEnvOverrides::from_json(&json!({ "EPOCHS": "3", "HF_TOKEN": null })).unwrap();
-        assert_eq!(passthrough.check_remote_passthrough(true), Ok(()));
         assert_eq!(
-            passthrough.check_remote_passthrough(false).unwrap_err().0,
+            passthrough.refuse_passthroughs().unwrap_err().0,
             "rlm.spawn env HF_TOKEN=None would pass the orchestrator's value to a remote host, and the global remoteEnvPassthrough setting is off (or unreadable); pass a literal value, or set remoteEnvPassthrough to true in the global settings"
         );
     }

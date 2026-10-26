@@ -192,37 +192,18 @@ impl Worker {
         // A spawned child's placement and `env=`: from the durable create
         // (validated again), else from the sidecar beside an existing
         // session file (an unreadable sidecar refuses the create).
-        let placement = if payload.get("remoteHost").is_some() || payload.get("kernelEnv").is_some()
-        {
-            payload
-                .get("remoteHost")
-                .map(|host| {
-                    let host =
-                        anyhow::Context::context(host.as_str(), "remoteHost must be a string")?;
-                    pa_core::kernel::RemoteKernelTarget::validated(
-                        host.to_string(),
-                        payload
-                            .get("remoteCwd")
-                            .and_then(Value::as_str)
-                            .map(str::to_string),
-                    )
-                })
-                .transpose()
-                .and_then(|remote| {
-                    let env = pa_core::kernel::KernelEnvOverrides::from_json(
-                        payload.get("kernelEnv").unwrap_or(&Value::Null),
-                    )?;
-                    Ok(crate::rlm_children::kernel_placement::KernelPlacement { remote, env })
-                })
-        } else {
-            match &session_path {
+        let placement = match payload.get("kernelPlacement") {
+            Some(record) => {
+                crate::rlm_children::kernel_placement::KernelPlacement::from_record(record)
+            }
+            None => match &session_path {
                 Some(path) if path.exists() => {
                     crate::rlm_children::kernel_placement::placement_for_session_file(path)
                 }
                 Some(_) | None => {
                     Ok(crate::rlm_children::kernel_placement::KernelPlacement::default())
                 }
-            }
+            },
         };
         let crate::rlm_children::kernel_placement::KernelPlacement {
             remote: remote_kernel,

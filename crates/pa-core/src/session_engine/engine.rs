@@ -228,13 +228,10 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     .map(std::path::PathBuf::from);
     // The `remoteEnvPassthrough` kill switch holds at every build, not only
     // at the spawn: respawned and reopened sessions replay their `env=`.
-    if config.remote_kernel.is_some() {
-        config
-            .kernel_env
-            .check_remote_passthrough(settings.remote_env_passthrough_allowed())
-            .map_err(|refusal| {
-                anyhow::anyhow!("this session's remote kernel cannot start: {refusal}")
-            })?;
+    if config.remote_kernel.is_some() && !settings.remote_env_passthrough_allowed() {
+        config.kernel_env.refuse_passthroughs().map_err(|refusal| {
+            anyhow::anyhow!("this session's remote kernel cannot start: {refusal}")
+        })?;
     }
     // TS injects the prefix only when truthy (an empty string stays unset).
     let kernel_command_prefix = settings

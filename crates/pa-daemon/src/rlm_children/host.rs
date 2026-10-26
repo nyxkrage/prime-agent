@@ -147,13 +147,14 @@ impl RlmSubagentHost for SupervisorChildSessions {
                     .transpose()?;
                 // Fail the spawn, not the child's first kernel start, on the
                 // kill switch or a pass-through the orchestrator lacks.
-                if remote.is_some() {
-                    let passthrough_allowed = pa_core::settings::SettingsManager::create(
+                if remote.is_some()
+                    && !pa_core::settings::SettingsManager::create(
                         identity.cwd.as_deref().unwrap_or("/"),
                         &this.agent_dir,
                     )
-                    .remote_env_passthrough_allowed();
-                    request.env.check_remote_passthrough(passthrough_allowed)?;
+                    .remote_env_passthrough_allowed()
+                {
+                    request.env.refuse_passthroughs()?;
                 }
                 request
                     .env
@@ -175,6 +176,10 @@ impl RlmSubagentHost for SupervisorChildSessions {
                     (None, None) | (Some(_), _) => {
                         identity.cwd.clone().unwrap_or_else(|| "/".to_string())
                     }
+                };
+                let placement = super::kernel_placement::KernelPlacement {
+                    remote,
+                    env: request.env.clone(),
                 };
                 let runtime_metadata = json!({
                     "kind": "subagent",
@@ -202,8 +207,7 @@ impl RlmSubagentHost for SupervisorChildSessions {
                         // process, so the spawn forwards the parent
                         // worker's env (filtered) instead.
                         Some(pa_types::daemon::launch_env::collect_process_launch_env()),
-                        remote.as_ref(),
-                        &request.env,
+                        &placement,
                     )
                     .await?;
                 let record = ChildRecord {
@@ -214,7 +218,7 @@ impl RlmSubagentHost for SupervisorChildSessions {
                     session_dir: created.session_dir.clone(),
                     model: model.clone(),
                     label: rlm_child_label(&request.prompt),
-                    host: remote.as_ref().map(|remote| remote.host().to_string()),
+                    host: placement.remote.map(|remote| remote.host().to_string()),
                     started_at_ms: now_ms(),
                     settled_status: None,
                     settled: false,

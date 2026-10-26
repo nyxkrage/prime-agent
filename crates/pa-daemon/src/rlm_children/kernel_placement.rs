@@ -23,27 +23,55 @@ pub struct KernelPlacement {
     pub env: KernelEnvOverrides,
 }
 
+impl KernelPlacement {
+    /// The JSON record (the sidecar line and the durable create's
+    /// `kernelPlacement`); `None` for a local placement without env.
+    pub(crate) fn to_record(&self) -> Option<Value> {
+        if self.remote.is_none() && self.env.is_empty() {
+            return None;
+        }
+        let mut record = json!({ "type": "kernel_placement" });
+        if let Some(remote) = &self.remote {
+            record["host"] = json!(remote.host());
+            if let Some(cwd) = remote.cwd() {
+                record["cwd"] = json!(cwd);
+            }
+        }
+        if !self.env.is_empty() {
+            record["env"] = self.env.to_json();
+        }
+        Some(record)
+    }
+
+    /// Parse [`Self::to_record`]'s form, validating host, cwd, and env again.
+    pub(crate) fn from_record(record: &Value) -> Result<Self> {
+        let remote = record
+            .get("host")
+            .map(|host| {
+                let host = host.as_str().context("its host is not a string")?;
+                let cwd = record
+                    .get("cwd")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                RemoteKernelTarget::validated(host.to_string(), cwd)
+            })
+            .transpose()?;
+        let env = KernelEnvOverrides::from_json(record.get("env").unwrap_or(&Value::Null))?;
+        Ok(Self { remote, env })
+    }
+}
+
 /// Record `placement` for the session(s) in `session_dir`. A local
 /// placement without env writes nothing.
 pub(crate) fn write_kernel_placement(
     session_dir: &Path,
     placement: &KernelPlacement,
 ) -> Result<()> {
-    if placement.remote.is_none() && placement.env.is_empty() {
+    let Some(record) = placement.to_record() else {
         return Ok(());
-    }
+    };
     std::fs::create_dir_all(session_dir)
         .with_context(|| format!("create session dir {}", session_dir.display()))?;
-    let mut record = json!({ "type": "kernel_placement" });
-    if let Some(remote) = &placement.remote {
-        record["host"] = json!(remote.host());
-        if let Some(cwd) = remote.cwd() {
-            record["cwd"] = json!(cwd);
-        }
-    }
-    if !placement.env.is_empty() {
-        record["env"] = placement.env.to_json();
-    }
     let path = session_dir.join(KERNEL_PLACEMENT_FILE);
     let temp = session_dir.join(format!(
         "{KERNEL_PLACEMENT_FILE}.{}.tmp",
@@ -71,21 +99,8 @@ pub(crate) fn read_kernel_placement(session_dir: &Path) -> Result<KernelPlacemen
     };
     let record: Value = serde_json::from_str(text.trim())
         .with_context(|| format!("parse the kernel placement {}", path.display()))?;
-    let remote = record
-        .get("host")
-        .map(|host| {
-            let host = host.as_str().context("its host is not a string")?;
-            let cwd = record
-                .get("cwd")
-                .and_then(Value::as_str)
-                .map(str::to_string);
-            RemoteKernelTarget::validated(host.to_string(), cwd)
-        })
-        .transpose()
-        .with_context(|| format!("the kernel placement {}", path.display()))?;
-    let env = KernelEnvOverrides::from_json(record.get("env").unwrap_or(&Value::Null))
-        .with_context(|| format!("the kernel placement {}", path.display()))?;
-    Ok(KernelPlacement { remote, env })
+    KernelPlacement::from_record(&record)
+        .with_context(|| format!("the kernel placement {}", path.display()))
 }
 
 /// The placement of the session stored at `session_file`.

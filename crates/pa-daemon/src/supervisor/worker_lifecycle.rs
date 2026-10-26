@@ -278,9 +278,7 @@ impl Supervisor {
             "spawnedByRequestId",
             // A spawned child's kernel placement and `env=` (names only for
             // pass-throughs): a respawned worker keeps both.
-            "remoteHost",
-            "remoteCwd",
-            "kernelEnv",
+            "kernelPlacement",
             "systemPrompt",
             "appendSystemPrompt",
             "skills",
