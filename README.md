@@ -92,15 +92,13 @@ Each transport reads the variable once when its first client is initialized. The
 
 `rlm.spawn(prompt, name=..., host="user@box", cwd="~/work")` runs a subagent's
 Python REPL, files, and `bash` on another machine over your system `ssh`; the
-agent loop and model calls stay local. Its own subagents stay on that host
-(and in its remote `cwd`) unless they pass `host="local"`, another host, or
-their own `cwd`. The session's skills (markdown and Python) are uploaded with
-the runtime under `~/.prime/agent/remote/` on the host, and the subagent's
-skill list points there. MCP servers and other features whose state lives on
-your machine are refused on remote kernels. Reopening a remote subagent's
-session (resume, fork, print mode) keeps its host and `env`.
+agent loop and model calls stay local. Its subagents stay on that host unless
+they pass `host="local"`. The session's skills are uploaded with the runtime
+under `~/.prime/agent/remote/` on the host. MCP servers and other features
+whose state lives on your machine are refused on remote kernels. Reopening a
+remote subagent's session (resume, fork, print mode) keeps its host and `env`.
 
-Pass environment variables to a subagent's kernel (local or remote) with `env`:
+`env` sets variables in a subagent's kernel (local or remote):
 
 ```python
 await rlm.spawn("train the model", name="train", host="gpu1",
@@ -108,16 +106,14 @@ await rlm.spawn("train the model", name="train", host="gpu1",
                      "HF_TOKEN": None})      # copy this machine's value
 ```
 
-A `None` value is resolved by Prime Agent from its own environment (again at
-every kernel start), so the value is never part of the model's code or the
-spawn request, and for a remote host it travels over the kernel's stdin, never
-on the ssh command line. A
-missing variable fails the spawn by name. Children never inherit their parent's
-`env`. `RLM_*`, `PRIME_AGENT_*`, `PYTHON*`, `PATH`, `HOME`, and `VIRTUAL_ENV`
-are reserved. Pass-through values of 8 or more characters are masked as `***`
-in the subagent's output (streams, results, errors, diffs, and
-`agent_message.send` text), as best-effort hygiene: a value the subagent
-transforms (reversed, encoded) is not masked.
+A `None` value is resolved by Prime Agent at every kernel start, so it never
+appears in the model's code or the spawn request; for a remote host it travels
+over the kernel's stdin, never the ssh command line. A missing variable fails
+the spawn. Children never inherit `env`. `RLM_*`, `PRIME_AGENT_*`, `PYTHON*`,
+`PATH`, `HOME`, and `VIRTUAL_ENV` are reserved. Pass-through values of 8+
+characters are masked as `***` in the subagent's output as best-effort
+hygiene (a transformed value is not masked). A value sent to a host is trusted
+to that host, and the model can reach this machine's environment anyway.
 
 Known limitations of remote subagents:
 
@@ -130,14 +126,6 @@ Known limitations of remote subagents:
   ends its remote jobs.
 - Verification uses a fake `ssh` that runs the "remote" side locally, plus an
   opt-in live test against a real host; there is no throwaway-`sshd` test.
-
-Threat model: a value sent to a host is trusted to that host (root there can
-read it), and the model can reach this machine's environment anyway; `None`
-exists to keep values out of transcripts and logs, not to hide them from the
-model. Set `"remoteEnvPassthrough": false` in the global
-`~/.prime/agent/settings.json` to refuse `None` values for `host=` spawns
-(literal values stay allowed); project settings cannot turn it back on, and a
-malformed value refuses pass-through.
 
 ## Getting Started
 
@@ -227,9 +215,7 @@ window; it does not change every model's global compaction percentage.
 
 ### Remote environment pass-through setting
 
-`remoteEnvPassthrough` (global settings only, default `true`) controls whether
-`rlm.spawn(..., host=..., env={"NAME": None})` may copy this machine's value of
-`NAME` to a remote kernel. With `false`, such a spawn fails with an error naming
-the setting; literal `env` values and local spawns are unaffected. A project
-`.prime/agent/settings.json` cannot change it, and a value that is not a boolean
-(or an unreadable global settings file) refuses pass-through.
+`remoteEnvPassthrough` (global `~/.prime/agent/settings.json` only, default
+`true`): with `false`, `rlm.spawn(..., host=..., env={"NAME": None})` fails;
+literal values and local spawns are unaffected. A non-boolean value (or an
+unreadable global settings file) refuses pass-through.

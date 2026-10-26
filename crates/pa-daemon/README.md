@@ -86,18 +86,11 @@ parent-side registry serves `rlm.list_subagents`/`rlm.collect`/
 and thinking-level validation live in `rlm_child_model.rs`; the create
 command carries the RLM recursion identity (`rlmDepth`/`rlmMaxDepth`/
 `parentSessionPath`/`thinking`) so respawned children keep their depth. A
-`rlm.spawn(env=...)` child's create also carries `kernelEnv` (literal values
-and pass-through names as `null`): the spawn checks the global
-`remoteEnvPassthrough` kill switch for remote placements and that every
-pass-through exists, and the child worker re-resolves the names from its own
-env (the parent worker's) at each kernel start. The child's session dir keeps
-a `kernel-placement.json` sidecar (`rlm_children/kernel_placement.rs`: remote
-host and cwd, and the same `env=` with pass-throughs by name only), so every
-reopen path (respawn, resume, switch, fork, new session, ledger reseed, and
-pa-cli's print mode through the narrow `rlm_children::{placement_for_session_file,
-KernelPlacement}` export) keeps the host and env; an unreadable sidecar refuses
-the open. A child spawned without `host=` inherits its parent's host and remote
-cwd. Per-session model binding: the
+spawned child's remote placement and `env=` (`remoteHost`/`remoteCwd`/
+`kernelEnv`, pass-throughs by name only) ride the create and a
+`kernel-placement.json` sidecar in its session dir
+(`rlm_children/kernel_placement.rs`), so every reopen path keeps them; an
+unreadable sidecar refuses the open. Per-session model binding: the
 create-config `provider`/`model`/`apiKey` are authoritative for worker model
 resolution (explicit CLI flags reach the worker; env remains the no-flag
 fallback). Worker session files carry the TS creation prefix
@@ -259,7 +252,7 @@ attached UIs daemon-wide).
 No agent behavior inside workers beyond hosting a pa-core engine; no UI.
 
 ## Public API
-Supervisor entrypoint, worker entrypoint, `mcp_login::{WorkerMcpLoginUi, wire_worker_mcp_login}` (the worker's browser+callback login behind `mcp.begin_login`; wired by the agent engine before sessions register host handlers), client connection API for pa-tui/pa-cli, `acp::daemon::{run_daemon_attached_acp_mode, DaemonAcpOptions}` (pa-cli dispatches `--mode acp` through it), `agent_messaging::LinkAgentMessageController` + `rlm_children::{SupervisorChildSessions, ParentIdentity, RlmChildIdentity}` (e2e verifiers construct the worker-side family controller and the children registry; the engine wires the same types), `rlm_children::{placement_for_session_file, KernelPlacement}` (a spawned child's kernel placement sidecar reader: pa-cli's print mode reopens session files without a worker and must keep the child's host and `env=` the same way), `agent_engine::AgentSessionEngine::dispose_kernel` (the session-end kernel teardown the worker invokes at kill/shutdown/orphan exit — the engine outlives the session, so the pa-core engine-drop teardown cannot run there), the worker's `get_mcp_connections` command (`mcp_connections.rs`: the `/mcp` view's roster from the session's MCP manager overlaid with the session kernel's per-server tool listing, plus the api-key credential rows the same response serves — Rust-native session-plane extension; the TS daemon has no counterpart). Supervision internals `pub(crate)`.
+Supervisor entrypoint, worker entrypoint, `mcp_login::{WorkerMcpLoginUi, wire_worker_mcp_login}` (the worker's browser+callback login behind `mcp.begin_login`; wired by the agent engine before sessions register host handlers), client connection API for pa-tui/pa-cli, `acp::daemon::{run_daemon_attached_acp_mode, DaemonAcpOptions}` (pa-cli dispatches `--mode acp` through it), `agent_messaging::LinkAgentMessageController` + `rlm_children::{SupervisorChildSessions, ParentIdentity, RlmChildIdentity}` (e2e verifiers construct the worker-side family controller and the children registry; the engine wires the same types), `rlm_children::{placement_for_session_file, KernelPlacement}` (the placement sidecar reader for pa-cli's print mode, which reopens session files without a worker), `agent_engine::AgentSessionEngine::dispose_kernel` (the session-end kernel teardown the worker invokes at kill/shutdown/orphan exit — the engine outlives the session, so the pa-core engine-drop teardown cannot run there), the worker's `get_mcp_connections` command (`mcp_connections.rs`: the `/mcp` view's roster from the session's MCP manager overlaid with the session kernel's per-server tool listing, plus the api-key credential rows the same response serves — Rust-native session-plane extension; the TS daemon has no counterpart). Supervision internals `pub(crate)`.
 
 
 ## Depends on
