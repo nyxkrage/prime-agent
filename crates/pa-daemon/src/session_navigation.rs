@@ -306,16 +306,11 @@ impl SessionNavigation {
     }
 }
 
-/// Bind the engine onto the session a replacement just swapped into the core
-/// (the same helper `branch_navigation` runs for forks), before the swap's
-/// first await: the session file and the RLM identity (the durable session
-/// id every model call routes under) move together. Worker commands run
-/// concurrently and several read seams build the engine lazily without the
-/// replacement gate, so a build during the swap's later awaits (the model
-/// restore's readiness wait) must already see the new session. A build that
-/// slipped in between the replacement's teardown and the swap captured the
-/// previous session, so the runtime retires again here; the next demand seam
-/// rebuilds on the new session.
+/// Bind the engine's session file and RLM identity (the durable id model calls route under)
+/// to a just-swapped session, before the swap's first await: ungated read seams build the
+/// engine lazily, so a build during the later awaits (the model restore) must see the new
+/// session. A build that slipped in between the teardown and the swap captured the previous
+/// session, so the runtime retires again here.
 pub(crate) async fn bind_engine_to_swapped_session(
     engine: &Arc<dyn SessionEngine>,
     session_file: std::path::PathBuf,

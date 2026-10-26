@@ -106,14 +106,10 @@ impl SessionCore {
 
     /// Adopt the live store's RLM identity after a replacement swap (TS
     /// `refreshReplacedSessionState`): the moved-to file's persisted depth
-    /// re-seeds the core (a replacement carries no create-config depth), and
-    /// the returned identity rebinds the engine. No thinking flag rides the
-    /// rebind (the create's level is already resolved on the engine); the TS
-    /// replacement runtime carries no inherited max-depth (the moved-to
-    /// session's chat override, the global setting, the env, or the default
-    /// resolve it) and no semantic spawn. The harness's child engine file
-    /// rides along: TS children inherit the replacement runtime's
-    /// `sessionConfig`, which the runtime keeps across its swaps.
+    /// re-seeds the core (a replacement carries no create-config depth). No
+    /// thinking flag (already resolved on the engine), no inherited max-depth
+    /// and no semantic spawn (a TS replacement runtime has neither); the child
+    /// engine file rides along (TS keeps `sessionConfig` across swaps).
     pub(crate) fn adopt_replacement_identity(&mut self) -> crate::engine::RlmSessionIdentity {
         let rlm_depth = self
             .store

@@ -265,8 +265,7 @@ impl Worker {
             let identity = core.adopt_replacement_identity();
             (identity, self.summary_locked(&core, inputs))
         };
-        // The swap already bound this identity (before its first await); the
-        // re-bind is idempotent and re-seeds the children's parent identity.
+        // The swap already bound this identity; the idempotent re-bind re-seeds the children.
         match self.engine.configure_rlm_identity(identity) {
             Ok(()) => self.reseed_rlm_children().await,
             Err(error) => eprintln!("pa-daemon: replacement identity rebind failed: {error:#}"),

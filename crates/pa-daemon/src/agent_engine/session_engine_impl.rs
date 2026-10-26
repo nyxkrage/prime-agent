@@ -738,8 +738,7 @@ impl SessionEngine for AgentSessionEngine {
             cwd: self.cwd(),
             agent_dir: self.config.agent_dir.clone(),
         };
-        // TS `navigateTree` passes `this.sessionId`: the summary routes under the
-        // owning session's durable id, the one its turns carry.
+        // TS `navigateTree` passes `this.sessionId`.
         let session_id = self
             .semantic_identity
             .lock()
