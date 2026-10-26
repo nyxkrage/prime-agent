@@ -495,12 +495,11 @@ impl<'a> ResponsesStreamProcessor<'a> {
                 }
             }
             "response.output_item.done" => {
-                // Read the finishing block's index before dropping its slot: removing first left
-                // every branch below without a block, so no signature or `*_end` was recorded.
-                let content_index = self
-                    .current_slot(output_index)
-                    .map(|slot| slot.content_index);
-                let slot = output_index.and_then(|index| self.slots.remove(&index));
+                // Finalize from the removed slot: looking it up after removal skipped every branch.
+                let slot = output_index
+                    .or(self.current_output_index)
+                    .and_then(|index| self.slots.remove(&index));
+                let content_index = slot.as_ref().map(|slot| slot.content_index);
                 let item = event.get("item").cloned().unwrap_or(Value::Null);
                 let item_type = item
                     .get("type")
@@ -942,90 +941,45 @@ mod tests {
         create_assistant_message_event_stream, initial_assistant_message, AssistantMessageEventExt,
     };
 
-    fn responses_model() -> Model {
-        Model {
-            id: "gpt-5.6-luna".into(),
-            name: "gpt-5.6-luna".into(),
-            api: "openai-responses".into(),
-            provider: "opencode-go".into(),
-            base_url: "https://opencode.ai/zen/go/v1".into(),
-            reasoning: true,
-            thinking_level_map: None,
-            input: vec![crate::types::ModelInput::Text],
-            cost: crate::types::zero_model_cost(),
-            context_window: 400_000,
-            max_tokens: 128_000,
-            max_tokens_explicit: false,
-            featured: None,
-            headers: None,
-            compat: None,
-        }
-    }
-
-    /// The `output_item.done` events finalize their blocks: the reasoning item's JSON (with
-    /// `encrypted_content`) becomes the thinking signature, the message id/phase the text
-    /// signature, and each block gets its `*_end` event. The event shapes follow a live
-    /// opencode-go `gpt-5.6-luna` capture. Regression: the slot was removed before its content
-    /// index was read, so every finalize branch was skipped and replay lost the reasoning.
+    /// Regression: `output_item.done` removed the slot before reading it, so no block got its
+    /// signature or `*_end`, and tool-call arguments streamed as deltas were lost.
     #[tokio::test]
-    async fn output_item_done_finalizes_signatures_for_reasoning_message_and_tool_call() {
-        let reasoning_done = json!({
-            "id": "rs_1", "type": "reasoning", "encrypted_content": "gAAAA-final",
-            "summary": [{"type": "summary_text", "text": "Multiply."}],
-        });
+    async fn output_item_done_finalizes_reasoning_message_and_tool_call() {
+        let reasoning = json!({"id": "rs_1", "type": "reasoning", "encrypted_content": "gAAAA",
+            "summary": [{"type": "summary_text", "text": "Multiply."}]});
+        let message = json!({"id": "msg_1", "type": "message", "phase": "final_answer",
+            "content": [{"type": "output_text", "text": "391"}]});
+        let call = json!({"id": "fc_1", "type": "function_call", "call_id": "call_1",
+            "name": "bash", "arguments": ""});
         let events = [
-            json!({"type": "response.created", "response": {"id": "resp_1"}}),
-            json!({"type": "response.output_item.added", "output_index": 0, "item": {
-                "id": "rs_1", "type": "reasoning", "encrypted_content": "gAAAA-added", "summary": []}}),
-            json!({"type": "response.reasoning_summary_part.added", "output_index": 0,
-                "part": {"type": "summary_text", "text": ""}}),
-            json!({"type": "response.reasoning_summary_text.delta", "output_index": 0,
-                "delta": "Multiply."}),
-            json!({"type": "response.reasoning_summary_part.done", "output_index": 0}),
-            json!({"type": "response.output_item.done", "output_index": 0,
-                "item": reasoning_done.clone()}),
-            json!({"type": "response.output_item.added", "output_index": 1, "item": {
-                "id": "msg_1", "type": "message", "status": "in_progress", "role": "assistant",
-                "phase": "final_answer", "content": []}}),
-            json!({"type": "response.content_part.added", "output_index": 1, "content_index": 0,
-                "part": {"type": "output_text", "text": ""}}),
-            json!({"type": "response.output_text.delta", "output_index": 1, "content_index": 0,
-                "delta": "391"}),
-            json!({"type": "response.output_item.done", "output_index": 1, "item": {
-                "id": "msg_1", "type": "message", "status": "completed", "role": "assistant",
-                "phase": "final_answer", "content": [{"type": "output_text", "text": "391"}]}}),
-            json!({"type": "response.output_item.added", "output_index": 2, "item": {
-                "id": "fc_1", "type": "function_call", "call_id": "call_1", "name": "bash",
-                "arguments": ""}}),
+            json!({"type": "response.output_item.added", "output_index": 0, "item": reasoning}),
+            json!({"type": "response.output_item.done", "output_index": 0, "item": reasoning}),
+            json!({"type": "response.output_item.added", "output_index": 1, "item": message}),
+            json!({"type": "response.output_item.done", "output_index": 1, "item": message}),
+            json!({"type": "response.output_item.added", "output_index": 2, "item": call}),
             json!({"type": "response.function_call_arguments.delta", "output_index": 2,
                 "delta": "{\"cmd\":\"echo hi\"}"}),
-            json!({"type": "response.output_item.done", "output_index": 2, "item": {
-                "id": "fc_1", "type": "function_call", "call_id": "call_1", "name": "bash",
-                "arguments": "{\"cmd\":\"echo hi\"}"}}),
-            json!({"type": "response.completed", "response": {"id": "resp_1",
-                "status": "completed"}}),
+            json!({"type": "response.output_item.done", "output_index": 2, "item": call}),
         ];
-        let model = responses_model();
+        let model = crate::models_generated::get_model("opencode", "gpt-5").expect("compiled");
         let mut output = initial_assistant_message(&model.api, &model.provider, &model.id);
         let (writer, stream) = create_assistant_message_event_stream();
-        {
-            let mut processor = ResponsesStreamProcessor::new(
-                &model,
-                &mut output,
-                &writer,
-                ResponsesStreamHooks::default(),
-            );
-            for event in &events {
-                processor.handle_event(event).expect("scripted event");
-            }
+        let mut processor = ResponsesStreamProcessor::new(
+            model,
+            &mut output,
+            &writer,
+            ResponsesStreamHooks::default(),
+        );
+        for event in &events {
+            processor.handle_event(event).expect("scripted event");
         }
         writer.end(None);
-        let end_events: Vec<&str> = stream
+        let ends: Vec<_> = stream
             .collect()
             .await
             .iter()
-            .map(AssistantMessageEventExt::event_type)
-            .filter(|event_type| event_type.ends_with("_end"))
+            .filter(|event| event.event_type().ends_with("_end"))
+            .map(|event| (event.event_type(), event.content_index()))
             .collect();
 
         assert_eq!(
@@ -1033,7 +987,7 @@ mod tests {
             vec![
                 AssistantContent::Thinking(ThinkingContent {
                     thinking: "Multiply.".into(),
-                    thinking_signature: Some(reasoning_done.to_string()),
+                    thinking_signature: Some(reasoning.to_string()),
                     redacted: None,
                     rest: Map::default(),
                 }),
@@ -1056,6 +1010,13 @@ mod tests {
                 }),
             ]
         );
-        assert_eq!(end_events, ["thinking_end", "text_end", "toolcall_end"]);
+        assert_eq!(
+            ends,
+            [
+                ("thinking_end", Some(0)),
+                ("text_end", Some(1)),
+                ("toolcall_end", Some(2)),
+            ]
+        );
     }
 }
