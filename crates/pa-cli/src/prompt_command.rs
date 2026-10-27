@@ -250,7 +250,7 @@ mod tests {
             (facts(&claude), facts(&gpt)),
             (
                 ("prompts/layers/core.md", false, false),
-                ("prompts/layers/core.md + apply-patch-core.md", true, true),
+                ("prompts/layers/core.md", true, true),
             )
         );
         std::fs::write(
@@ -365,10 +365,9 @@ mod tests {
         .unwrap();
         let (breakdown, _errors) = assemble_breakdown(dir.path(), &agent_dir, /*model*/ None)
             .expect("the prompt assembles");
-        assert_eq!(
-            breakdown.segments[0].source,
-            "prompts/layers/core.md + apply-patch-core.md"
-        );
+        assert!(breakdown.segments[0]
+            .text
+            .contains("- `apply_patch(patch: str)"));
     }
 
     #[test]

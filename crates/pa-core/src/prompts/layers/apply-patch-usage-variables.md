@@ -1,1 +1,0 @@
-- Agents use Python for reading files and searching in them — it gives them reusable variables they can slice, filter, and act on without re-reading; using Python variables to find or produce, and to save the lines used in `apply_patch` hunks is also encouraged.

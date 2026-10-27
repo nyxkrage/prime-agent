@@ -121,26 +121,16 @@ pub fn system_prompt_breakdown(options: &BuildSystemPromptOptions) -> SystemProm
             ));
         }
         _ => {
-            let (core_source, usage_source) = match options.edit_format {
-                pa_types::ai::EditFormat::Edit => (
-                    layers::layer_source("core").unwrap_or_default(),
-                    layers::layer_source("usage").unwrap_or_default(),
-                ),
-                pa_types::ai::EditFormat::ApplyPatch => (
-                    "prompts/layers/core.md + apply-patch-core.md",
-                    "prompts/layers/usage.md + apply-patch-usage*.md",
-                ),
-            };
             segments.push(PromptSegment::static_segment(
                 "core",
-                core_source,
+                layers::layer_source("core").unwrap_or_default(),
                 layers::layer_for_edit_format(layers::CORE_LAYER, options.edit_format)
                     .trim()
                     .to_string(),
             ));
             segments.push(PromptSegment::static_segment(
                 "usage",
-                usage_source,
+                layers::layer_source("usage").unwrap_or_default(),
                 layers::layer_for_edit_format(layers::USAGE_LAYER, options.edit_format)
                     .trim()
                     .to_string(),
@@ -465,8 +455,10 @@ mod tests {
             &prompt[..breakdown.cached_prefix_len],
             format!(
                 "{}\n\n{}\n\n{}",
-                layers::CORE_LAYER.trim(),
-                layers::USAGE_LAYER.trim(),
+                layers::layer_for_edit_format(layers::CORE_LAYER, pa_types::ai::EditFormat::Edit)
+                    .trim(),
+                layers::layer_for_edit_format(layers::USAGE_LAYER, pa_types::ai::EditFormat::Edit)
+                    .trim(),
                 layers::OPINIONATED_LAYER.trim()
             )
         );
@@ -562,10 +554,7 @@ mod tests {
                 .map(|segment| (segment.name, segment.source))
                 .collect::<Vec<_>>()
         };
-        let mut expected_sources = sources(&edit);
-        expected_sources[0].1 = "prompts/layers/core.md + apply-patch-core.md";
-        expected_sources[1].1 = "prompts/layers/usage.md + apply-patch-usage*.md";
-        assert_eq!(sources(&apply_patch), expected_sources);
+        assert_eq!(sources(&apply_patch), sources(&edit));
         assert!(apply_patch.segments[0]
             .text
             .contains("`apply_patch(patch: str)"));

@@ -106,8 +106,8 @@ fn cached_prefix_is_stable_across_sessions() {
         &first.assembled[..first.cached_prefix_len],
         &format!(
             "{}\n\n{}\n\n{}\n\nmodel guidance.",
-            CORE_LAYER.trim(),
-            USAGE_LAYER.trim(),
+            layer_for_edit_format(CORE_LAYER, EditFormat::Edit).trim(),
+            layer_for_edit_format(USAGE_LAYER, EditFormat::Edit).trim(),
             OPINIONATED_LAYER.trim()
         )
     );
