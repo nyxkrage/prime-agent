@@ -658,6 +658,12 @@ impl SettingsManager {
             .unwrap_or(crate::settings::types::DEFAULT_PYTHON_CELL_TIMEOUT_MS)
     }
 
+    /// The `applyPatch` switch over per-model edit formats (default `auto`).
+    #[must_use]
+    pub fn get_apply_patch(&self) -> crate::settings::types::ApplyPatchSetting {
+        self.merged.apply_patch.unwrap_or_default()
+    }
+
     /// The steering queue's delivery mode: `all` co-delivers every queued message at
     /// the next turn boundary; `one-at-a-time` delivers one per turn.
     #[must_use]

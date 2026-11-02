@@ -264,6 +264,18 @@ pub const FEATURE_NAMES: &[&str] = &[
     "feedback",
 ];
 
+/// Why an `apply_patch` call failed (the skill's `PatchError.reason`;
+/// keep in sync with `skills/apply-patch`).
+pub const APPLY_PATCH_FAILURE_REASONS: &[&str] = &[
+    "parse",
+    "context_not_found",
+    "file_missing",
+    "path_conflict",
+    "not_writable",
+    "unreadable",
+    "apply_failed",
+];
+
 pub const FEATURE_OUTCOMES: &[&str] = &[
     "initiated",
     "completed",
@@ -750,6 +762,21 @@ const AGENT_SESSION_ENDED: EventRule = EventRule {
         ("feature_feedback_failed_count", optional(count())),
         ("feature_feedback_canceled_count", optional(count())),
         ("feature_feedback_unavailable_count", optional(count())),
+        // `apply_patch` adoption (Rust-only kernel skill): successful calls,
+        // the files and hunks they changed, failures by reason.
+        ("apply_patch_call_count", optional(count())),
+        ("apply_patch_file_count", optional(count())),
+        ("apply_patch_hunk_count", optional(count())),
+        ("apply_patch_failure_parse_count", optional(count())),
+        (
+            "apply_patch_failure_context_not_found_count",
+            optional(count()),
+        ),
+        ("apply_patch_failure_file_missing_count", optional(count())),
+        ("apply_patch_failure_path_conflict_count", optional(count())),
+        ("apply_patch_failure_not_writable_count", optional(count())),
+        ("apply_patch_failure_unreadable_count", optional(count())),
+        ("apply_patch_failure_apply_failed_count", optional(count())),
     ],
 };
 
@@ -1275,6 +1302,15 @@ pub fn feature_outcome_key(feature_name: &str, outcome: &str) -> Option<String> 
         .then(|| format!("feature_{feature_name}_{outcome}_count"))
 }
 
+/// The `apply_patch_failure_<reason>_count` counter key for a failure reason
+/// in the fixed vocabulary (`None` outside it).
+#[must_use]
+pub fn apply_patch_failure_key(reason: &str) -> Option<String> {
+    APPLY_PATCH_FAILURE_REASONS
+        .contains(&reason)
+        .then(|| format!("apply_patch_failure_{reason}_count"))
+}
+
 /// The `input_<stage>_*` key prefix for an input stage in the fixed
 /// vocabulary (`None` outside it).
 #[must_use]
@@ -1458,7 +1494,12 @@ mod tests {
         assert_eq!(feature_outcome_key("goal", "exploded"), None);
         assert_eq!(input_stage_key("queued").as_deref(), Some("input_queued"));
         assert_eq!(input_stage_key("nope"), None);
+        assert_eq!(apply_patch_failure_key("nope"), None);
         let ended = lookup("agent session ended").unwrap();
+        for reason in APPLY_PATCH_FAILURE_REASONS {
+            let key = apply_patch_failure_key(reason).unwrap();
+            assert!(ended.properties.iter().any(|(known, _)| *known == key));
+        }
         let exit = lookup("tui exit").unwrap();
         for name in FEATURE_NAMES {
             for outcome in FEATURE_OUTCOMES {

@@ -674,6 +674,17 @@ pub enum ModelInput {
     Text,
     Image,
 }
+
+/// How a model edits files from the Python REPL (`models.json` `editFormat`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EditFormat {
+    /// Exact old/new string replacement through the `edit` skill.
+    #[default]
+    Edit,
+    /// `OpenAI` V4A patches through the `apply_patch` skill.
+    ApplyPatch,
+}
 mod compat;
 pub use compat::{
     AnthropicMessagesCompat, CacheControlFormat, CompatKind, MaxTokensField, ModelCompat,
@@ -727,6 +738,10 @@ pub struct Model {
     /// Compatibility overrides; auto-detected from `baseUrl` when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compat: Option<ModelCompat>,
+    /// Configured `editFormat`; `None` uses the ID default and stays off the
+    /// wire, so catalog JSON is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edit_format: Option<EditFormat>,
 }
 
 /// TS `supportsServiceTier` over the eligibility fields; the Model-typed [`supports_service_tier`]

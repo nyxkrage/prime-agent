@@ -1909,6 +1909,7 @@ mod tests {
                 context_window: 200_000,
                 max_tokens: 8192,
                 max_tokens_explicit: false,
+                edit_format: None,
                 featured: None,
                 headers: None,
                 compat: None,
