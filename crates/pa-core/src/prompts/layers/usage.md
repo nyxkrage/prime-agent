@@ -6,8 +6,13 @@ The following are mandatory rules, only to be overridden by clear user intent.
 - Agents run shell commands with `bash()`, not `subprocess`/`os.system`: subprocess calls block the kernel, show the user nothing while they run, and spawn processes the harness cannot see or stop.
 - `bash("""...""")` should be used over `bash("...")` because it makes using quotation marks inside bash easy.
 - Shell state does not persist between calls, but agents can use `os.chdir(...)` for the working directory and `os.environ[...]` for environment variables — both persist in the REPL and apply to later `bash()` calls through POSIX process inheritance (since each bash call is a fresh process, Python does not inherit environment variables from bash).
+<!-- edit-format: edit -->
 - Edits of existing files must be performed using `edit` with exact old/new strings, for example `old = '''...'''; new = '''...'''; await edit(path="pkg/file.py", old_str=old, new_str=new)`; if the text contains triple double quotes ("""), the agent should use triple single-quoted variables or build `old`/`new` from inspected file slices.
 - Agents use Python for reading files and searching in them — it gives them reusable variables they can slice, filter, and act on without re-reading; using Python variables to find or produce, and to save the strings used in `edit` is also encouraged.
+<!-- edit-format: apply_patch -->
+- Edits of existing files must be performed using `apply_patch`, one V4A patch per logical change, always as a raw string (in a plain `'''...'''` literal Python turns a `\n`, `\t`, or `\d` in the patched code into another character), for example a cell `await apply_patch(r'''*** Begin Patch`, then the lines `*** Update File: pkg/file.py`, `@@ def main():`, `-    print("hi")`, `+    print("hello")`, and `*** End Patch''')`; context and `-` lines must match the file (only whitespace may differ), so the agent inspects the file first; a patch containing ''' goes in `r"""..."""` instead.
+- Agents use Python for reading files and searching in them — it gives them reusable variables they can slice, filter, and act on without re-reading; using Python variables to find or produce, and to save the lines used in `apply_patch` hunks is also encouraged.
+<!-- /edit-format -->
 - Agents always assign read/search results to named variables so they can revisit them later.
 - Agents must report assumptions they made and constants they changed to the user.
 - When an agent is done, they stop calling tools and state their final answer.

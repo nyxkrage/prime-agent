@@ -1,0 +1,3583 @@
+{
+  "group": "ipython_plain_cells",
+  "cases": [
+    {
+      "code": "for i in range(3):\n    print(f'line {i}')",
+      "rows": [
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "✓",
+            "Style::new().fg(Color::Rgb(125, 168, 118))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "python",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ],
+          [
+            " · ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "print(f'line {i}')",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            " · ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "↑ 2 lines",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            " · ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "1ms",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "╰─ ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "for",
+            "Style::new().fg(Color::Rgb(56, 189, 248))"
+          ],
+          [
+            " i ",
+            "Style::new()"
+          ],
+          [
+            "in",
+            "Style::new().fg(Color::Rgb(56, 189, 248))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "range",
+            "Style::new().fg(Color::Rgb(245, 158, 11))"
+          ],
+          [
+            "(",
+            "Style::new()"
+          ],
+          [
+            "3",
+            "Style::new().fg(Color::Rgb(245, 158, 11))"
+          ],
+          [
+            "):",
+            "Style::new()"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "    ",
+            "Style::new()"
+          ],
+          [
+            "print",
+            "Style::new().fg(Color::Rgb(245, 158, 11))"
+          ],
+          [
+            "(",
+            "Style::new()"
+          ],
+          [
+            "f'line {i}'",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ],
+          [
+            ")",
+            "Style::new()"
+          ]
+        ],
+        [],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            " › ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "no output",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "✓",
+            "Style::new().fg(Color::Rgb(125, 168, 118))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "python",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ],
+          [
+            " · print(f'line",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "╰─ ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "for",
+            "Style::new().fg(Color::Rgb(56, 189, 248))"
+          ],
+          [
+            " i ",
+            "Style::new()"
+          ],
+          [
+            "in",
+            "Style::new().fg(Color::Rgb(56, 189, 248))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "range",
+            "Style::new().fg(Color::Rgb(245, 158, 11))"
+          ],
+          [
+            "(",
+            "Style::new()"
+          ],
+          [
+            "3",
+            "Style::new().fg(Color::Rgb(245, 158, 11))"
+          ],
+          [
+            "):",
+            "Style::new()"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "    ",
+            "Style::new()"
+          ],
+          [
+            "print",
+            "Style::new().fg(Color::Rgb(245, 158, 11))"
+          ],
+          [
+            "(",
+            "Style::new()"
+          ],
+          [
+            "f'line",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "{i}'",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ],
+          [
+            ")",
+            "Style::new()"
+          ]
+        ],
+        [],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            " › ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "no output",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ]
+        ]
+      ]
+    },
+    {
+      "code": "def gutter_probe(count=7, x1=None, *args, **kw):\n    \"\"\"Doc.\"\"\"\n    return count + 0x1F + 1.5e3j\n\nclass Foo(Bar):\n    pass",
+      "rows": [
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "✓",
+            "Style::new().fg(Color::Rgb(125, 168, 118))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "python",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ],
+          [
+            " · ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "def gutter_probe(count=7, x1=None, *args, **kw):",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            " · ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "↑ 5 lines",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            " · ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "1ms",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "╰─ ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "def",
+            "Style::new().fg(Color::Rgb(56, 189, 248))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "gutter_probe",
+            "Style::new().fg(Color::Rgb(56, 189, 248))"
+          ],
+          [
+            "(",
+            "Style::new()"
+          ],
+          [
+            "count=",
+            "Style::new().fg(Color::Rgb(212, 212, 216))"
+          ],
+          [
+            "7",
+            "Style::new().fg(Color::Rgb(245, 158, 11))"
+          ],
+          [
+            ", x",
+            "Style::new().fg(Color::Rgb(212, 212, 216))"
+          ],
+          [
+            "1",
+            "Style::new().fg(Color::Rgb(245, 158, 11))"
+          ],
+          [
+            "=None, *args, **kw",
+            "Style::new().fg(Color::Rgb(212, 212, 216))"
+          ],
+          [
+            ")",
+            "Style::new()"
+          ],
+          [
+            ":",
+            "Style::new()"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "    ",
+            "Style::new()"
+          ],
+          [
+            "\"\"\"Doc.\"\"\"",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "    ",
+            "Style::new()"
+          ],
+          [
+            "return",
+            "Style::new().fg(Color::Rgb(56, 189, 248))"
+          ],
+          [
+            " count + ",
+            "Style::new()"
+          ],
+          [
+            "0x1F",
+            "Style::new().fg(Color::Rgb(245, 158, 11))"
+          ],
+          [
+            " + ",
+            "Style::new()"
+          ],
+          [
+            "1.5e3j",
+            "Style::new().fg(Color::Rgb(245, 158, 11))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "class",
+            "Style::new().fg(Color::Rgb(56, 189, 248))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "Foo",
+            "Style::new().fg(Color::Rgb(56, 189, 248))"
+          ],
+          [
+            "(",
+            "Style::new()"
+          ],
+          [
+            "Bar",
+            "Style::new().fg(Color::Rgb(212, 212, 216))"
+          ],
+          [
+            ")",
+            "Style::new()"
+          ],
+          [
+            ":",
+            "Style::new()"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "    ",
+            "Style::new()"
+          ],
+          [
+            "pass",
+            "Style::new().fg(Color::Rgb(56, 189, 248))"
+          ]
+        ],
+        [],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            " › ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "no output",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "✓",
+            "Style::new().fg(Color::Rgb(125, 168, 118))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "python",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ],
+          [
+            " · def gutter_p",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "╰─ ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "def",
+            "Style::new().fg(Color::Rgb(56, 189, 248))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "gutter_probe",
+            "Style::new().fg(Color::Rgb(56, 189, 248))"
+          ],
+          [
+            "(",
+            "Style::new()"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "count=",
+            "Style::new().fg(Color::Rgb(212, 212, 216))"
+          ],
+          [
+            "7",
+            "Style::new().fg(Color::Rgb(245, 158, 11))"
+          ],
+          [
+            ",",
+            "Style::new().fg(Color::Rgb(212, 212, 216))"
+          ],
+          [
+            " ",
+            "Style::new().fg(Color::Rgb(212, 212, 216))"
+          ],
+          [
+            "x",
+            "Style::new().fg(Color::Rgb(212, 212, 216))"
+          ],
+          [
+            "1",
+            "Style::new().fg(Color::Rgb(245, 158, 11))"
+          ],
+          [
+            "=None,",
+            "Style::new().fg(Color::Rgb(212, 212, 216))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "*args,",
+            "Style::new().fg(Color::Rgb(212, 212, 216))"
+          ],
+          [
+            " ",
+            "Style::new().fg(Color::Rgb(212, 212, 216))"
+          ],
+          [
+            "**kw",
+            "Style::new().fg(Color::Rgb(212, 212, 216))"
+          ],
+          [
+            ")",
+            "Style::new()"
+          ],
+          [
+            ":",
+            "Style::new()"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "    ",
+            "Style::new()"
+          ],
+          [
+            "\"\"\"Doc.\"\"\"",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "    ",
+            "Style::new()"
+          ],
+          [
+            "return",
+            "Style::new().fg(Color::Rgb(56, 189, 248))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "count",
+            "Style::new()"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "+",
+            "Style::new()"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "0x1F",
+            "Style::new().fg(Color::Rgb(245, 158, 11))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "+",
+            "Style::new()"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "1.5e3j",
+            "Style::new().fg(Color::Rgb(245, 158, 11))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "class",
+            "Style::new().fg(Color::Rgb(56, 189, 248))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "Foo",
+            "Style::new().fg(Color::Rgb(56, 189, 248))"
+          ],
+          [
+            "(",
+            "Style::new()"
+          ],
+          [
+            "Bar",
+            "Style::new().fg(Color::Rgb(212, 212, 216))"
+          ],
+          [
+            ")",
+            "Style::new()"
+          ],
+          [
+            ":",
+            "Style::new()"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "    ",
+            "Style::new()"
+          ],
+          [
+            "pass",
+            "Style::new().fg(Color::Rgb(56, 189, 248))"
+          ]
+        ],
+        [],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            " › ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "no output",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ]
+        ]
+      ]
+    },
+    {
+      "code": "a = r'raw\\d' + b\"bytes\" + rb'x' + Rb\"y\" + BR'z' + u'uni' + F\"{a!r}\" + fr'{b}' + RF\"c\"\nb = 'it\\'s' \"say \\\"hi\\\"\"",
+      "rows": [
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "✓",
+            "Style::new().fg(Color::Rgb(125, 168, 118))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "python",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ],
+          [
+            " · ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "a = r'raw\\d' + b\"bytes\" + rb'x' + Rb\"y\" + BR'z' + u'uni' + F\"{a…",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            " · ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "↑ 2 lines",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            " · ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "1ms",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "╰─ ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "a = ",
+            "Style::new()"
+          ],
+          [
+            "r'raw\\d'",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ],
+          [
+            " + ",
+            "Style::new()"
+          ],
+          [
+            "b\"bytes\"",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ],
+          [
+            " + ",
+            "Style::new()"
+          ],
+          [
+            "rb'x'",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ],
+          [
+            " + ",
+            "Style::new()"
+          ],
+          [
+            "Rb\"y\"",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ],
+          [
+            " + ",
+            "Style::new()"
+          ],
+          [
+            "BR'z'",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ],
+          [
+            " + ",
+            "Style::new()"
+          ],
+          [
+            "u'uni'",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ],
+          [
+            " + ",
+            "Style::new()"
+          ],
+          [
+            "F\"{a!r}\"",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ],
+          [
+            " + ",
+            "Style::new()"
+          ],
+          [
+            "fr'{b}'",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ],
+          [
+            " + ",
+            "Style::new()"
+          ],
+          [
+            "RF\"c\"",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "b = ",
+            "Style::new()"
+          ],
+          [
+            "'it\\'s'",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "\"say \\\"hi\\\"\"",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            " › ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "no output",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "✓",
+            "Style::new().fg(Color::Rgb(125, 168, 118))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "python",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ],
+          [
+            " · a = r'raw\\d'",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "╰─ ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "a",
+            "Style::new()"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "=",
+            "Style::new()"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "r'raw\\d'",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "+",
+            "Style::new()"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "b\"bytes\"",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "+",
+            "Style::new()"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "rb'x'",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "+",
+            "Style::new()"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "Rb\"y\"",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "+",
+            "Style::new()"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "BR'z'",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "+",
+            "Style::new()"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "u'uni'",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "+",
+            "Style::new()"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "F\"{a!r}\"",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "+",
+            "Style::new()"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "fr'{b}'",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "+",
+            "Style::new()"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "RF\"c\"",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "b",
+            "Style::new()"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "=",
+            "Style::new()"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "'it\\'s'",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "\"say",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "\\\"hi\\\"\"",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            " › ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "no output",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ]
+        ]
+      ]
+    },
+    {
+      "code": "s = '''one\n\"\"\" not the end\nthree'''\nt = \"\"\"a ''' b\"\"\"",
+      "rows": [
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "✓",
+            "Style::new().fg(Color::Rgb(125, 168, 118))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "python",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ],
+          [
+            " · ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "s = '''one",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            " · ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "↑ 4 lines",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            " · ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "1ms",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "╰─ ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "s = ",
+            "Style::new()"
+          ],
+          [
+            "'''one",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "\"\"\" not the end",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "three'''",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "t = ",
+            "Style::new()"
+          ],
+          [
+            "\"\"\"a ''' b\"\"\"",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            " › ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "no output",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "✓",
+            "Style::new().fg(Color::Rgb(125, 168, 118))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "python",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ],
+          [
+            " · s = '''one ·",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "╰─ ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "s = ",
+            "Style::new()"
+          ],
+          [
+            "'''one",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "\"\"\" not the end",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "three'''",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "t = ",
+            "Style::new()"
+          ],
+          [
+            "\"\"\"a ''' b\"\"\"",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            " › ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "no output",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ]
+        ]
+      ]
+    },
+    {
+      "code": "# apply_patch('''*** Begin Patch''') in a comment\nx = 1  # trailing apply_patch(\"*** End Patch\")",
+      "rows": [
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "✓",
+            "Style::new().fg(Color::Rgb(125, 168, 118))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "python",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ],
+          [
+            " · ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "x = 1 # trailing apply_patch(\"*** End Patch\")",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            " · ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "↑ 2 lines",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            " · ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "1ms",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "╰─ ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "# apply_patch('''*** Begin Patch''') in a comment",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "x = ",
+            "Style::new()"
+          ],
+          [
+            "1",
+            "Style::new().fg(Color::Rgb(245, 158, 11))"
+          ],
+          [
+            "  ",
+            "Style::new()"
+          ],
+          [
+            "# trailing apply_patch(\"*** End Patch\")",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ]
+        ],
+        [],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            " › ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "no output",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "✓",
+            "Style::new().fg(Color::Rgb(125, 168, 118))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "python",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ],
+          [
+            " · x = 1 # trai",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "╰─ ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "#",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ],
+          [
+            " ",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ],
+          [
+            "apply_patch('''***",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "Begin",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ],
+          [
+            " ",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ],
+          [
+            "Patch''')",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ],
+          [
+            " ",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ],
+          [
+            "in",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ],
+          [
+            " ",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ],
+          [
+            "a",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "comment",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "x",
+            "Style::new()"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "=",
+            "Style::new()"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "1",
+            "Style::new().fg(Color::Rgb(245, 158, 11))"
+          ],
+          [
+            "  ",
+            "Style::new()"
+          ],
+          [
+            "#",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ],
+          [
+            " ",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ],
+          [
+            "trailing",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "apply_patch(\"***",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ],
+          [
+            " ",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ],
+          [
+            "End",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "Patch\")",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ]
+        ],
+        [],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            " › ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "no output",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ]
+        ]
+      ]
+    },
+    {
+      "code": "msg = \"apply_patch('*** Begin Patch')\"\nprint(apply_patch.__doc__)\nhelp(apply_patch)",
+      "rows": [
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "✓",
+            "Style::new().fg(Color::Rgb(125, 168, 118))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "python",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ],
+          [
+            " · ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "help(apply_patch)",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            " · ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "↑ 3 lines",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            " · ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "1ms",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "╰─ ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "msg = ",
+            "Style::new()"
+          ],
+          [
+            "\"apply_patch('*** Begin Patch')\"",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "print",
+            "Style::new().fg(Color::Rgb(245, 158, 11))"
+          ],
+          [
+            "(apply_patch.__doc__)",
+            "Style::new()"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "help",
+            "Style::new().fg(Color::Rgb(245, 158, 11))"
+          ],
+          [
+            "(apply_patch)",
+            "Style::new()"
+          ]
+        ],
+        [],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            " › ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "no output",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "✓",
+            "Style::new().fg(Color::Rgb(125, 168, 118))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "python",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ],
+          [
+            " · help(apply_p",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "╰─ ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "msg",
+            "Style::new()"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "=",
+            "Style::new()"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "\"apply_patch('***",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "Begin",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ],
+          [
+            " ",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ],
+          [
+            "Patch')\"",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "print",
+            "Style::new().fg(Color::Rgb(245, 158, 11))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "(apply_patch.__doc__",
+            "Style::new()"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            ")",
+            "Style::new()"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "help",
+            "Style::new().fg(Color::Rgb(245, 158, 11))"
+          ],
+          [
+            "(apply_patch)",
+            "Style::new()"
+          ]
+        ],
+        [],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            " › ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "no output",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ]
+        ]
+      ]
+    },
+    {
+      "code": "patch = build()\nawait apply_patch(patch + suffix)\nawait apply_patch(make_patch())",
+      "rows": [
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "✓",
+            "Style::new().fg(Color::Rgb(125, 168, 118))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "python",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ],
+          [
+            " · ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "await apply_patch(patch + suffix)",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            " · ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "↑ 3 lines",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            " · ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "1ms",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "╰─ ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "patch = build()",
+            "Style::new()"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "await",
+            "Style::new().fg(Color::Rgb(56, 189, 248))"
+          ],
+          [
+            " apply_patch(patch + suffix)",
+            "Style::new()"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "await",
+            "Style::new().fg(Color::Rgb(56, 189, 248))"
+          ],
+          [
+            " apply_patch(make_patch())",
+            "Style::new()"
+          ]
+        ],
+        [],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            " › ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "no output",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "✓",
+            "Style::new().fg(Color::Rgb(125, 168, 118))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "python",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ],
+          [
+            " · await apply_",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "╰─ ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "patch = build()",
+            "Style::new()"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "await",
+            "Style::new().fg(Color::Rgb(56, 189, 248))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "apply_patch(patch",
+            "Style::new()"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "+",
+            "Style::new()"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "suffix)",
+            "Style::new()"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "await",
+            "Style::new().fg(Color::Rgb(56, 189, 248))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "apply_patch(make_pat",
+            "Style::new()"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "ch())",
+            "Style::new()"
+          ]
+        ],
+        [],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            " › ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "no output",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ]
+        ]
+      ]
+    },
+    {
+      "code": "text = '''*** Begin Patch\n*** Update File: a.py\n@@\n-old\n+new\n*** End Patch'''\nprint(text)",
+      "rows": [
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "✓",
+            "Style::new().fg(Color::Rgb(125, 168, 118))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "python",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ],
+          [
+            " · ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "text = '''*** Begin Patch",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            " · ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "↑ 7 lines",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            " · ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "1ms",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "╰─ ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "text = ",
+            "Style::new()"
+          ],
+          [
+            "'''*** Begin Patch",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "*** Update File: a.py",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "@@",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "-old",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "+new",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "*** End Patch'''",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "print",
+            "Style::new().fg(Color::Rgb(245, 158, 11))"
+          ],
+          [
+            "(text)",
+            "Style::new()"
+          ]
+        ],
+        [],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            " › ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "no output",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "✓",
+            "Style::new().fg(Color::Rgb(125, 168, 118))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "python",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ],
+          [
+            " · text = '''**",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "╰─ ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "text",
+            "Style::new()"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "=",
+            "Style::new()"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "'''***",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ],
+          [
+            " ",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ],
+          [
+            "Begin",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "Patch",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "***",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ],
+          [
+            " ",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ],
+          [
+            "Update",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ],
+          [
+            " ",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ],
+          [
+            "File:",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "a.py",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "@@",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "-old",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "+new",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "*** End Patch'''",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "print",
+            "Style::new().fg(Color::Rgb(245, 158, 11))"
+          ],
+          [
+            "(text)",
+            "Style::new()"
+          ]
+        ],
+        [],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            " › ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "no output",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ]
+        ]
+      ]
+    },
+    {
+      "code": "value = 1\r\nprint(value)\r\n",
+      "rows": [
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "✓",
+            "Style::new().fg(Color::Rgb(125, 168, 118))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "python",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ],
+          [
+            " · ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "value = 1",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            " · ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "↑ 2 lines",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            " · ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "1ms",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "╰─ ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "value = ",
+            "Style::new()"
+          ],
+          [
+            "1",
+            "Style::new().fg(Color::Rgb(245, 158, 11))"
+          ],
+          [
+            "\r",
+            "Style::new()"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "print",
+            "Style::new().fg(Color::Rgb(245, 158, 11))"
+          ],
+          [
+            "(value)",
+            "Style::new()"
+          ]
+        ],
+        [],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            " › ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "no output",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "✓",
+            "Style::new().fg(Color::Rgb(125, 168, 118))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "python",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ],
+          [
+            " · value = 1 · ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "╰─ ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "value = ",
+            "Style::new()"
+          ],
+          [
+            "1",
+            "Style::new().fg(Color::Rgb(245, 158, 11))"
+          ],
+          [
+            "\r",
+            "Style::new()"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "print",
+            "Style::new().fg(Color::Rgb(245, 158, 11))"
+          ],
+          [
+            "(value)",
+            "Style::new()"
+          ]
+        ],
+        [],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            " › ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "no output",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ]
+        ]
+      ]
+    },
+    {
+      "code": "partial = '''still streaming\n-not a patch\n+just text",
+      "rows": [
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "✓",
+            "Style::new().fg(Color::Rgb(125, 168, 118))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "python",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ],
+          [
+            " · ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "partial = '''still streaming",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            " · ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "↑ 3 lines",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            " · ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "1ms",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "╰─ ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "partial = ",
+            "Style::new()"
+          ],
+          [
+            "'''still streaming",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "-not a patch",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "+just text",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            " › ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "no output",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "✓",
+            "Style::new().fg(Color::Rgb(125, 168, 118))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "python",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ],
+          [
+            " · partial = ''",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "╰─ ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "partial",
+            "Style::new()"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "=",
+            "Style::new()"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "'''still",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "streaming",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "-not a patch",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "+just text",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ]
+        ],
+        [],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            " › ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "no output",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ]
+        ]
+      ]
+    },
+    {
+      "code": "x = (1,\n     2) \\\n    + 3\nlambda y: y if y else None",
+      "rows": [
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "✓",
+            "Style::new().fg(Color::Rgb(125, 168, 118))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "python",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ],
+          [
+            " · ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "x = (1,",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            " · ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "↑ 4 lines",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            " · ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "1ms",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "╰─ ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "x = (",
+            "Style::new()"
+          ],
+          [
+            "1",
+            "Style::new().fg(Color::Rgb(245, 158, 11))"
+          ],
+          [
+            ",",
+            "Style::new()"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "     ",
+            "Style::new()"
+          ],
+          [
+            "2",
+            "Style::new().fg(Color::Rgb(245, 158, 11))"
+          ],
+          [
+            ") \\",
+            "Style::new()"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "    + ",
+            "Style::new()"
+          ],
+          [
+            "3",
+            "Style::new().fg(Color::Rgb(245, 158, 11))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "lambda",
+            "Style::new().fg(Color::Rgb(56, 189, 248))"
+          ],
+          [
+            " y: y ",
+            "Style::new()"
+          ],
+          [
+            "if",
+            "Style::new().fg(Color::Rgb(56, 189, 248))"
+          ],
+          [
+            " y ",
+            "Style::new()"
+          ],
+          [
+            "else",
+            "Style::new().fg(Color::Rgb(56, 189, 248))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "None",
+            "Style::new().fg(Color::Rgb(245, 158, 11))"
+          ]
+        ],
+        [],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            " › ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "no output",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "✓",
+            "Style::new().fg(Color::Rgb(125, 168, 118))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "python",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ],
+          [
+            " · x = (1, · ↑ ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "╰─ ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "x = (",
+            "Style::new()"
+          ],
+          [
+            "1",
+            "Style::new().fg(Color::Rgb(245, 158, 11))"
+          ],
+          [
+            ",",
+            "Style::new()"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "     ",
+            "Style::new()"
+          ],
+          [
+            "2",
+            "Style::new().fg(Color::Rgb(245, 158, 11))"
+          ],
+          [
+            ") \\",
+            "Style::new()"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "    + ",
+            "Style::new()"
+          ],
+          [
+            "3",
+            "Style::new().fg(Color::Rgb(245, 158, 11))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "lambda",
+            "Style::new().fg(Color::Rgb(56, 189, 248))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "y:",
+            "Style::new()"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "y",
+            "Style::new()"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "if",
+            "Style::new().fg(Color::Rgb(56, 189, 248))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "y",
+            "Style::new()"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "else",
+            "Style::new().fg(Color::Rgb(56, 189, 248))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "None",
+            "Style::new().fg(Color::Rgb(245, 158, 11))"
+          ]
+        ],
+        [],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            " › ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "no output",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ]
+        ]
+      ]
+    },
+    {
+      "code": "!ls -la\nimport os\nos.listdir('.')",
+      "rows": [
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "✓",
+            "Style::new().fg(Color::Rgb(125, 168, 118))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "python",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ],
+          [
+            " · ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "os.listdir('.')",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            " · ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "↑ 3 lines",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            " · ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "1ms",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "╰─ ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "!ls -la",
+            "Style::new().fg(Color::Rgb(125, 168, 118))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "import",
+            "Style::new().fg(Color::Rgb(56, 189, 248))"
+          ],
+          [
+            " os",
+            "Style::new()"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "os.listdir(",
+            "Style::new()"
+          ],
+          [
+            "'.'",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ],
+          [
+            ")",
+            "Style::new()"
+          ]
+        ],
+        [],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            " › ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "no output",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "✓",
+            "Style::new().fg(Color::Rgb(125, 168, 118))"
+          ],
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "python",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ],
+          [
+            " · os.listdir('",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "╰─ ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "!ls -la",
+            "Style::new().fg(Color::Rgb(125, 168, 118))"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "import",
+            "Style::new().fg(Color::Rgb(56, 189, 248))"
+          ],
+          [
+            " os",
+            "Style::new()"
+          ]
+        ],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            "   ",
+            "Style::new()"
+          ],
+          [
+            "os.listdir(",
+            "Style::new()"
+          ],
+          [
+            "'.'",
+            "Style::new().fg(Color::Rgb(139, 168, 136))"
+          ],
+          [
+            ")",
+            "Style::new()"
+          ]
+        ],
+        [],
+        [
+          [
+            " ",
+            "Style::new()"
+          ],
+          [
+            " › ",
+            "Style::new().fg(Color::Rgb(113, 113, 122))"
+          ],
+          [
+            "no output",
+            "Style::new().fg(Color::Rgb(161, 161, 170))"
+          ]
+        ]
+      ]
+    }
+  ]
+}
