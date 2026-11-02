@@ -1,0 +1,1 @@
+- A new, switched or forked session no longer briefly runs under the previous session's identity, and an aborted side question no longer closes the main Codex connection.
