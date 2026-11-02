@@ -863,6 +863,21 @@ impl SettingsManager {
         self.merged.request_timing.unwrap_or(false)
     }
 
+    /// `freeformTools` from the highest scope that sets it, not deep-merged: a project
+    /// `{"enabled": false}` must turn every provider off even under a global provider `true`.
+    #[must_use]
+    pub fn get_freeform_tools(&self) -> super::types::FreeformToolsSettings {
+        [&self.runtime_overrides, &self.project, &self.global]
+            .into_iter()
+            .find_map(|scope| {
+                scope
+                    .freeform_tools
+                    .clone()
+                    .filter(|settings| *settings != super::types::FreeformToolsSettings::default())
+            })
+            .unwrap_or_default()
+    }
+
     #[must_use]
     pub fn get_session_dir(&self) -> Option<std::path::PathBuf> {
         let session_dir = self.merged.session_dir.as_ref()?;

@@ -254,6 +254,32 @@ pub struct TelemetrySettings {
     pub local_mirror: Option<bool>,
 }
 
+/// `freeformTools`: send free-text tools (`python_repl`) as `OpenAI` Responses custom tools.
+/// Rust-only setting; not deep-merged (`SettingsManager::get_freeform_tools`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FreeformToolsSettings {
+    /// Global override for every provider without its own entry.
+    pub enabled: Option<bool>,
+    /// Per-provider override, keyed by provider id.
+    pub providers: Option<std::collections::BTreeMap<String, bool>>,
+}
+
+/// Providers verified to accept freeform tools: on when nothing is configured.
+const FREEFORM_TOOLS_DEFAULT_PROVIDERS: [&str; 2] = ["openai", "openai-codex"];
+
+impl FreeformToolsSettings {
+    /// The provider's entry, then `enabled`, then the built-in default.
+    #[must_use]
+    pub fn is_enabled_for(&self, provider: &str) -> bool {
+        self.providers
+            .as_ref()
+            .and_then(|providers| providers.get(provider).copied())
+            .or(self.enabled)
+            .unwrap_or_else(|| FREEFORM_TOOLS_DEFAULT_PROVIDERS.contains(&provider))
+    }
+}
+
 /// The default per-cell watchdog budget for user `python_repl` cells: 60
 /// seconds.
 pub const DEFAULT_PYTHON_CELL_TIMEOUT_MS: u64 = 60_000;
@@ -342,6 +368,8 @@ pub struct Settings {
     /// Log per-request provider timing phases to the diagnostic log
     /// (unset means OFF, exactly the TS default).
     pub request_timing: Option<bool>,
+    /// Freeform (raw-text custom) tools per provider.
+    pub freeform_tools: Option<FreeformToolsSettings>,
     /// Unknown keys survive load/save round-trips (forward compatibility).
     #[serde(flatten, skip_serializing_if = "serde_json::Map::is_empty")]
     pub extra: serde_json::Map<String, serde_json::Value>,

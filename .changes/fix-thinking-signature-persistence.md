@@ -1,0 +1,1 @@
+- OpenAI Responses models (OpenAI, Codex, Azure, xAI, opencode) no longer lose their prior reasoning after every tool call and turn: reasoning and message signatures are kept and replayed.
