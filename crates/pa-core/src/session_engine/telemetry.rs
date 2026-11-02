@@ -369,6 +369,11 @@ struct CounterValues {
     subagent_models_find_count: u64,
     subagent_models_refused_count: u64,
     model_alias_spawn_count: u64,
+    rlm_spawn_count: u64,
+    rlm_remote_spawn_count: u64,
+    rlm_spawn_env_literal_key_count: u64,
+    rlm_spawn_env_passthrough_key_count: u64,
+    rlm_spawn_env_refused_count: u64,
     /// `feature_<name>_<outcome>_count` over the fixed feature vocabulary.
     feature_outcomes: std::collections::BTreeMap<String, u64>,
     /// `apply_patch_*_count` adoption counters (absent until a call reports).
@@ -466,7 +471,33 @@ impl SessionCounters {
         });
     }
 
-    fn write_into(&self, properties: &mut Properties) {
+    /// One admitted `rlm.spawn`: counts only, never a host, name, or value.
+    /// An inherited placement counts as local: only depth-0 sessions report,
+    /// and they have none to inherit.
+    pub(crate) fn note_rlm_spawn(
+        &self,
+        host: Option<&super::rlm_host::RlmSpawnHost>,
+        env: &crate::kernel::env_overrides::KernelEnvOverrides,
+    ) {
+        self.with(|values| {
+            values.rlm_spawn_count += 1;
+            values.rlm_spawn_env_literal_key_count += env.literal_count() as u64;
+            values.rlm_spawn_env_passthrough_key_count += env.passthrough_count() as u64;
+            match host {
+                Some(super::rlm_host::RlmSpawnHost::Remote(_)) => {
+                    values.rlm_remote_spawn_count += 1;
+                }
+                Some(super::rlm_host::RlmSpawnHost::Local) | None => {}
+            }
+        });
+    }
+
+    /// One `rlm.spawn` refused over its `env=`.
+    pub(crate) fn note_rlm_spawn_env_refused(&self) {
+        self.with(|values| values.rlm_spawn_env_refused_count += 1);
+    }
+
+    pub(crate) fn write_into(&self, properties: &mut Properties) {
         self.with(|values| {
             for (key, value) in [
                 ("skill_use_count", values.skill_use_count),
@@ -505,6 +536,20 @@ impl SessionCounters {
                     values.subagent_models_refused_count,
                 ),
                 ("model_alias_spawn_count", values.model_alias_spawn_count),
+                ("rlm_spawn_count", values.rlm_spawn_count),
+                ("rlm_remote_spawn_count", values.rlm_remote_spawn_count),
+                (
+                    "rlm_spawn_env_literal_key_count",
+                    values.rlm_spawn_env_literal_key_count,
+                ),
+                (
+                    "rlm_spawn_env_passthrough_key_count",
+                    values.rlm_spawn_env_passthrough_key_count,
+                ),
+                (
+                    "rlm_spawn_env_refused_count",
+                    values.rlm_spawn_env_refused_count,
+                ),
             ] {
                 properties.set(key, Value::from(value));
             }

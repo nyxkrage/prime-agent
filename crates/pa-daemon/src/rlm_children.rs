@@ -12,8 +12,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use pa_core::kernel::rlm_runtime::create_default_rlm_subagent_session_name;
 use pa_core::session_engine::rlm_host::{
     RlmChildResult, RlmCreateSessionHandle, RlmCreateSessionRequest, RlmDeleteSubagentResult,
-    RlmHostFuture, RlmSpawnHandle, RlmSpawnRequest, RlmSubagentActivity, RlmSubagentEntry,
-    RlmSubagentHost,
+    RlmHostFuture, RlmSpawnHandle, RlmSpawnHost, RlmSpawnRequest, RlmSubagentActivity,
+    RlmSubagentEntry, RlmSubagentHost,
 };
 use pa_core::session_engine::rlm_notices::{
     create_rlm_child_failure_message, create_rlm_child_terminal_notice, RlmChildTerminalNotice,
@@ -100,6 +100,9 @@ pub struct ParentIdentity {
     pub thinking: Option<String>,
     /// Verification seam: create children with a scripted engine file.
     pub child_script: Option<String>,
+    /// Where this session's kernel runs; its children inherit the host and
+    /// remote cwd unless they pass their own `host=` or `cwd=`.
+    pub remote_kernel: Option<pa_core::kernel::RemoteKernelTarget>,
 }
 
 impl ParentIdentity {
@@ -157,6 +160,8 @@ struct ChildRecord {
     session_dir: String,
     model: String,
     label: String,
+    /// The SSH host the child's kernel runs on.
+    host: Option<String>,
     started_at_ms: u64,
     /// Terminal state (`done` | `error` | `cancelled`); running while absent.
     settled_status: Option<&'static str>,
@@ -264,6 +269,9 @@ impl ChildRecord {
         if let Some(error) = &self.error {
             snapshot["error"] = json!(error);
         }
+        if let Some(host) = &self.host {
+            snapshot["host"] = json!(host);
+        }
         snapshot
     }
 
@@ -323,6 +331,7 @@ struct DeletedChild {
     /// The envelope's error: the child's own terminal error when one was
     /// recorded, else the delete reason.
     error: String,
+    host: Option<String>,
 }
 
 impl DeletedChild {
@@ -757,6 +766,7 @@ impl SupervisorChildSessions {
             .lock()
             .await
             .push(Arc::new(Mutex::new(ChildRecord {
+                host: None,
                 rlm_child_id: identity.rlm_child_id,
                 session_name: identity.session_name,
                 active_session_id: identity.active_session_id,
@@ -859,6 +869,7 @@ impl SupervisorChildSessions {
             label: (!record.label.is_empty()).then(|| record.label.clone()),
             last_activity_at: Some(record.started_at_ms),
             activity_stale_ms: None,
+            host: record.host.clone(),
         }
     }
 
@@ -1114,8 +1125,11 @@ impl SupervisorChildSessionsInner {
 }
 
 mod host;
+pub(crate) mod kernel_placement;
 mod lifecycle;
 mod registry;
+// Print mode (pa-cli) opens session files without a worker.
+pub use kernel_placement::{placement_for_session_file, KernelPlacement};
 mod usage;
 
 #[cfg(test)]

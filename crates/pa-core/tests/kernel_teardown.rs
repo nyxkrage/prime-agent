@@ -151,6 +151,8 @@ async fn started_manager(
 fn test_options() -> Option<pa_core::kernel::shared::KernelManagerOptions> {
     let python = kernel_python()?;
     Some(pa_core::kernel::shared::KernelManagerOptions {
+        remote: None,
+        env_overrides: pa_core::kernel::KernelEnvOverrides::default(),
         python: Some(python),
         cwd: Some(std::env::temp_dir()),
         env: std::collections::HashMap::default(),

@@ -408,6 +408,7 @@ async fn parent_child_agent_message_round_trip_end_to_end() {
         String::new(),
     );
     children.set_identity(ParentIdentity {
+        remote_kernel: None,
         rlm_depth: 0,
         rlm_max_depth: 2,
         model: Some("faux/faux-1".to_string()),
@@ -419,6 +420,8 @@ async fn parent_child_agent_message_round_trip_end_to_end() {
     });
     let handle = children
         .spawn(RlmSpawnRequest {
+            env: pa_core::kernel::KernelEnvOverrides::default(),
+            host: None,
             prompt: "work on the lane".to_string(),
             name: Some("kid".to_string()),
             model: None,
@@ -739,6 +742,7 @@ async fn family_edges_never_cross_families_end_to_end() {
             String::new(),
         );
         children.set_identity(ParentIdentity {
+            remote_kernel: None,
             rlm_depth: 0,
             rlm_max_depth: 2,
             model: Some("faux/faux-1".to_string()),
@@ -750,6 +754,8 @@ async fn family_edges_never_cross_families_end_to_end() {
         });
         let handle = children
             .spawn(RlmSpawnRequest {
+                env: pa_core::kernel::KernelEnvOverrides::default(),
+                host: None,
                 prompt: "work on the lane".to_string(),
                 name: Some(kid_name.to_string()),
                 model: None,
@@ -881,6 +887,7 @@ async fn family_edges_never_cross_families_end_to_end() {
         String::new(),
     );
     kid_children.set_identity(ParentIdentity {
+        remote_kernel: None,
         rlm_depth: 1,
         rlm_max_depth: 2,
         model: Some("faux/faux-1".to_string()),
@@ -892,6 +899,8 @@ async fn family_edges_never_cross_families_end_to_end() {
     });
     let grandkid_handle = kid_children
         .spawn(RlmSpawnRequest {
+            env: pa_core::kernel::KernelEnvOverrides::default(),
+            host: None,
             prompt: "grandkid work".to_string(),
             name: Some("grandkid".to_string()),
             model: None,
@@ -1201,6 +1210,7 @@ async fn parent_renames_a_child_end_to_end() {
         String::new(),
     );
     children.set_identity(ParentIdentity {
+        remote_kernel: None,
         rlm_depth: 0,
         rlm_max_depth: 2,
         model: Some("faux/faux-1".to_string()),
@@ -1212,6 +1222,8 @@ async fn parent_renames_a_child_end_to_end() {
     });
     let handle = children
         .spawn(RlmSpawnRequest {
+            env: pa_core::kernel::KernelEnvOverrides::default(),
+            host: None,
             prompt: "work on the lane".to_string(),
             name: Some("kid".to_string()),
             model: None,
@@ -1423,10 +1435,13 @@ async fn passivated_child_recent_messages_reads_its_file_end_to_end() {
         session_id: parent_summary["sessionId"].as_str().map(str::to_string),
         session_file: parent_summary["sessionFile"].as_str().map(str::to_string),
         thinking: None,
+        remote_kernel: None,
         child_script: Some(kid_script.to_string_lossy().to_string()),
     });
     children
         .spawn(RlmSpawnRequest {
+            env: pa_core::kernel::KernelEnvOverrides::default(),
+            host: None,
             prompt: "kid-a work".to_string(),
             name: Some("kid-a".to_string()),
             model: None,

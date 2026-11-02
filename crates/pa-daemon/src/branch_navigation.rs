@@ -434,7 +434,11 @@ impl TreeNavigation {
     /// `fork`'s swap phase (TS `buildAndApplyReplacement`): the store, the engine's session
     /// file, and the rebuilt context move onto the prepared fork file; the teardown runs
     /// between the prepare and this swap.
-    pub(crate) async fn replace_with_fork(&self, mut forked: SessionFile) -> Result<(), String> {
+    pub(crate) async fn replace_with_fork(
+        &self,
+        mut forked: SessionFile,
+        placement: crate::rlm_children::kernel_placement::KernelPlacement,
+    ) -> Result<(), String> {
         let branch_entries = forked.branch_file_entries();
         let new_path = forked.path.clone();
         // Prime the fork store's usage fold before it enters the core: the
@@ -462,7 +466,11 @@ impl TreeNavigation {
                 forked.trace_upload.clone_from(&transferred);
             }
             let previous = core.store.replace(forked);
-            (previous, transferred, core.adopt_replacement_identity())
+            (
+                previous,
+                transferred,
+                core.adopt_replacement_identity(placement),
+            )
         };
         if let Some(traces) = &transferred {
             // The fork was rewritten before its controller existed; the
@@ -584,13 +592,24 @@ impl Worker {
             Ok(prepared) => prepared,
             Err(response) => return response,
         };
+        // The fork lands in the live session's dir and keeps its placement
+        // (an unreadable one refuses before teardown).
+        let placement =
+            match crate::rlm_children::kernel_placement::placement_for_session_file(&forked.path) {
+                Ok(placement) => placement,
+                Err(error) => return response_failure(None, "fork", &format!("{error:#}"), None),
+            };
         // One replacement at a time: the fork's teardown, swap, restore, and rebuild share
         // the replacement gate with the other whole-session replacements.
         let _replacement_gate = self.replacement_gate.lock().await;
         if let Err(error) = self.teardown_for_replacement().await {
             return response_failure(None, "fork", &format!("{error:#}"), None);
         }
-        match self.tree_navigation.replace_with_fork(forked).await {
+        match self
+            .tree_navigation
+            .replace_with_fork(forked, placement.clone())
+            .await
+        {
             Ok(()) => {
                 // The fork is a whole-runtime replacement (TS
                 // `refreshReplacedSessionState` +
@@ -599,7 +618,7 @@ impl Worker {
                 // session's scheduled jobs rebind onto the forked
                 // session file — future restores target the fork, not the
                 // source branch.
-                self.refresh_replaced_session_state().await;
+                self.refresh_replaced_session_state(placement).await;
                 self.reseed_service_tier_for_replacement();
                 if let Err(error) = self.bind_scheduled_jobs().await {
                     return response_failure(None, "fork", &error.to_string(), None);
@@ -689,7 +708,13 @@ mod trace_fork_tests {
         forked.set_path(session_dir.join("fork.jsonl"));
         forked.trace_upload = Some(prepared.clone());
         forked.rewrite().unwrap();
-        navigation.replace_with_fork(forked).await.unwrap();
+        navigation
+            .replace_with_fork(
+                forked,
+                crate::rlm_children::kernel_placement::KernelPlacement::default(),
+            )
+            .await
+            .unwrap();
         let live = core.lock().unwrap();
         let published = live.store.as_ref().unwrap();
         let hook = published
@@ -747,7 +772,13 @@ mod trace_fork_tests {
         let mut forked = SessionFile::create(dir.path().to_string_lossy().as_ref(), None, 0);
         forked.set_path(session_dir.join("fork.jsonl"));
         forked.rewrite().unwrap();
-        navigation.replace_with_fork(forked).await.unwrap();
+        navigation
+            .replace_with_fork(
+                forked,
+                crate::rlm_children::kernel_placement::KernelPlacement::default(),
+            )
+            .await
+            .unwrap();
         let live = core.lock().unwrap();
         let published = live.store.as_ref().unwrap();
         assert!(

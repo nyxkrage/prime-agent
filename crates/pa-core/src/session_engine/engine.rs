@@ -109,6 +109,10 @@ pub struct SessionEngineConfig {
     /// request ids on the wire).
     pub semantic_edges: Option<super::semantic_edges::SemanticEdgeIdentity>,
     pub on_late_sent_agent_message: Option<crate::tools::ipython::LateSentAgentMessageHandler>,
+    /// Run this session's Python kernel on a remote SSH host. `None` runs it locally.
+    pub remote_kernel: Option<crate::kernel::shared::RemoteKernelTarget>,
+    /// This session's `rlm.spawn(env=...)` overrides, applied at every kernel start.
+    pub kernel_env: crate::kernel::env_overrides::KernelEnvOverrides,
 }
 
 pub struct SessionEngine {
@@ -227,6 +231,13 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         settings.settings().shell_path.as_deref(),
     )?
     .map(std::path::PathBuf::from);
+    // The `remoteEnvPassthrough` kill switch holds at every build, not only
+    // at the spawn: respawned and reopened sessions replay their `env=`.
+    if config.remote_kernel.is_some() && !settings.remote_env_passthrough_allowed() {
+        config.kernel_env.refuse_passthroughs().map_err(|refusal| {
+            anyhow::anyhow!("this session's remote kernel cannot start: {refusal}")
+        })?;
+    }
     // TS injects the prefix only when truthy (an empty string stays unset).
     let kernel_command_prefix = settings
         .settings()
@@ -383,6 +394,13 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     {
         session_counters.set_telemetry_enabled(telemetry_switch.enabled.clone());
     }
+    // Admitted `rlm.spawn` calls count their placement (local vs remote).
+    if config.telemetry.is_some() {
+        let _ = wiring
+            .rlm
+            .spawn_counters
+            .set(std::sync::Arc::clone(&session_counters));
+    }
     // The `mcp.*` host requests (config/refresh/begin_login) the kernel's
     // generic MCP registry sends while listing or calling generic servers.
     // Telemetry counts connector use (never the server name) when the
@@ -522,8 +540,35 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     let model_visible_skills =
         super::runtime_wiring::model_visible_skills(resources.skills.clone(), &handlers);
     let python_skills = super::runtime_wiring::kernel_python_skills(&model_visible_skills);
+    // A remote child's skills are uploaded with its install, and the
+    // prompt's inventory names the remote paths (an unreadable skill dir
+    // drops out of both).
+    let (remote_located_skills, remote_kernel) = match config.remote_kernel.clone() {
+        None => (model_visible_skills.clone(), None),
+        Some(target) => {
+            let mut prompt_skills = Vec::with_capacity(model_visible_skills.len());
+            let mut skill_dirs = Vec::with_capacity(model_visible_skills.len());
+            for skill in &model_visible_skills {
+                match crate::kernel::bootstrap::remote_skill_location(
+                    &skill.base_dir,
+                    &skill.file_path,
+                ) {
+                    Ok(location) => {
+                        let mut remote_skill = skill.clone();
+                        remote_skill.file_path = std::path::PathBuf::from(location);
+                        prompt_skills.push(remote_skill);
+                        skill_dirs.push(skill.base_dir.clone());
+                    }
+                    Err(error) => {
+                        tracing::warn!(skill = %skill.name, error = %format!("{error:#}"), "skill left out of a remote kernel");
+                    }
+                }
+            }
+            (prompt_skills, Some(target.with_skill_dirs(skill_dirs)))
+        }
+    };
     let prompt_skills = super::runtime_wiring::skills_for_edit_format(
-        model_visible_skills.clone(),
+        remote_located_skills.clone(),
         prompt_facts.edit_format,
     );
     // TS resolves the serper credential on the host: `!command` key refs
@@ -567,6 +612,8 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         config.on_background_work_settled.clone(),
         on_unavailable_skills,
         on_bootstrap_result,
+        remote_kernel,
+        config.kernel_env.clone(),
     );
     let mut tools = config.tools.clone();
     if !tools.iter().any(|tool| tool.name() == PYTHON_TOOL_NAME) {
@@ -634,12 +681,17 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         let custom_prompt = resources.system_prompt.clone();
         let cwd = cwd.display().to_string();
         let messages_path = conversation_log.clone();
-        let context_files: Vec<(String, String)> = resources
-            .agents_files
-            .iter()
-            .map(|file| (file.path.display().to_string(), file.content.clone()))
-            .collect();
-        let skills = model_visible_skills.clone();
+        // This machine's AGENTS.md files describe a different tree.
+        let context_files: Vec<(String, String)> = if config.remote_kernel.is_some() {
+            Vec::new()
+        } else {
+            resources
+                .agents_files
+                .iter()
+                .map(|file| (file.path.display().to_string(), file.content.clone()))
+                .collect()
+        };
+        let skills = remote_located_skills.clone();
         let active_tool_names = active_tool_names.clone();
         let allow_recursion = config.allow_recursion;
         // A spawned child's prompt must read "depth: N (not root)" with
@@ -650,6 +702,13 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         let can_spawn = config.rlm_subagent_host.is_some();
         let append_system_prompt = resources.append_system_prompt.join("\n\n");
         let subagent_models = prompt_subagent_models;
+        let remote_kernel_target = config.remote_kernel.clone();
+        // `mcp.*` is refused on a remote kernel: advertise no servers.
+        let generic_mcp_servers = if config.remote_kernel.is_some() {
+            Vec::new()
+        } else {
+            generic_mcp_servers
+        };
         Box::new(move |facts| {
             crate::prompts::system_prompt::build_system_prompt(
                 &crate::prompts::system_prompt::BuildSystemPromptOptions {
@@ -677,6 +736,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                     can_spawn,
                     generic_mcp_servers: generic_mcp_servers.clone(),
                     subagent_models: subagent_models.clone(),
+                    remote_kernel: remote_kernel_target.as_ref(),
                     append_system_prompt: Some(append_system_prompt.clone()),
                     ..Default::default()
                 },

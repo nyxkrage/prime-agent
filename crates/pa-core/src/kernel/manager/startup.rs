@@ -140,8 +140,50 @@ impl Inner {
         // kernel that is still booting.
         live_kernels::add(self);
 
-        let python = match self.resolve_python(options).await {
-            Ok(python) => python,
+        // Pass-throughs resolve at every start against the env a local
+        // kernel gets, so a value never leaves this process except to the kernel.
+        let resolved_env = self
+            .options
+            .env_overrides
+            .resolve(|key| {
+                self.options
+                    .env
+                    .get(key)
+                    .cloned()
+                    .or_else(|| std::env::var(key).ok())
+            })
+            .map_err(anyhow::Error::from);
+        if let Ok(resolved) = &resolved_env {
+            *lock(&self.redactions) = Arc::new(resolved.redactions().to_vec());
+            lock(&self.redaction_carries).clear();
+        }
+        let launch = match (&self.options.remote, resolved_env) {
+            (_, Err(error)) => Err(error),
+            (Some(target), Ok(resolved)) => {
+                self.remote_kernel_command(target, options, &resolved).await
+            }
+            (None, Ok(resolved)) => self.resolve_python(options).await.map(|python| {
+                let mut command = tokio::process::Command::new(&python);
+                command
+                    .args(["-m", "rlm.repl"])
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped());
+                // Hidden window on Windows (TS `spawnHidden`); the kernel stays in
+                // this process's group - its lifecycle is supervised directly.
+                crate::platform::process::set_no_window(command.as_std_mut());
+                if let Some(cwd) = &self.options.cwd {
+                    command.current_dir(cwd);
+                }
+                command
+                    .env_clear()
+                    .envs(kernel_spawn_env(&self.options.env))
+                    .envs(resolved.values().iter().cloned());
+                (command, python.display().to_string())
+            }),
+        };
+        let (mut command, launch_label) = match launch {
+            Ok(launch) => launch,
             Err(error) => {
                 if self.start_stale(self.current_generation()) {
                     // Never touch a newer start's state.
@@ -163,21 +205,6 @@ impl Inner {
             return Err(anyhow!("Kernel was disposed during startup"));
         }
 
-        let env = kernel_spawn_env(&self.options.env);
-        let cwd = self.options.cwd.clone();
-        let mut command = tokio::process::Command::new(&python);
-        command
-            .args(["-m", "rlm.repl"])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-        // Hidden window on Windows (TS `spawnHidden`); the kernel stays in
-        // this process's group - its lifecycle is supervised directly.
-        crate::platform::process::set_no_window(command.as_std_mut());
-        if let Some(cwd) = &cwd {
-            command.current_dir(cwd);
-        }
-        command.env_clear().envs(env);
         let child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {
@@ -185,6 +212,7 @@ impl Inner {
                 // interpreter itself failed to launch, so the memoized runtime-ready result
                 // is stale.
                 crate::kernel::bootstrap::invalidate_runtime_probe_cache();
+                lock(&self.resolved_remote).take();
                 self.append_diagnostic(&format!("spawn error: {error}"));
                 {
                     let mut g = lock(&self.guarded);
@@ -195,10 +223,7 @@ impl Inner {
                     let _ = tx.send(Err(anyhow!("spawn error: {error}")));
                 }
                 self.cleanup_resources(Signal::Term);
-                return Err(anyhow!(
-                    "failed to spawn kernel python {}: {error}",
-                    python.display()
-                ));
+                return Err(anyhow!("failed to spawn kernel {launch_label}: {error}"));
             }
         };
         let pid = child.id().map_or(-1, |p| p as i32);
@@ -219,8 +244,10 @@ impl Inner {
                     return Err(error);
                 }
                 // The child died or never reached ready, so the memoized runtime-ready
-                // result is stale: drop it and let a startup retry re-probe.
+                // result (and a remote kernel's cached install) is stale: drop it
+                // and let a startup retry re-probe.
                 crate::kernel::bootstrap::invalidate_runtime_probe_cache();
+                lock(&self.resolved_remote).take();
                 let can_retry_startup = lock(&self.guarded).state != KernelState::Shutdown;
                 // Only the call that performed the cleanup may resurrect to
                 // idle; a concurrent kill()/teardown owns the state otherwise.
@@ -243,10 +270,38 @@ impl Inner {
             // A stale runtime passed a memoized probe's key but speaks the
             // wrong protocol: the memo is stale, so a retry re-probes.
             crate::kernel::bootstrap::invalidate_runtime_probe_cache();
+            lock(&self.resolved_remote).take();
             return Err(anyhow!(
                 "Kernel runtime speaks protocol {protocol}, expected {REPL_PROTOCOL_VERSION}. \
                  Update prime-agent-runtime in the kernel Python (PRIME_AGENT_KERNEL_PYTHON) to match this prime-agent."
             ));
+        }
+        // A remote kernel exits when the host goes silent (a partition sshd
+        // never notices), so this generation heartbeats it while it lives.
+        if self.options.remote.is_some() {
+            let inner = Arc::downgrade(self);
+            tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(super::remote::HOST_HEARTBEAT_INTERVAL);
+                ticker.tick().await;
+                loop {
+                    ticker.tick().await;
+                    let Some(inner) = inner.upgrade() else {
+                        return;
+                    };
+                    if inner.current_generation() != generation
+                        || lock(&inner.guarded).state == KernelState::Shutdown
+                    {
+                        return;
+                    }
+                    if inner
+                        .write_line(&serde_json::json!({ "type": "heartbeat" }))
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            });
         }
         {
             let mut g = lock(&self.guarded);
@@ -283,6 +338,7 @@ impl Inner {
             // outlive every manager clone (#232: a dropped session leaked its live kernel).
             let inner = Arc::downgrade(self);
             let stdin_for_error = stdin;
+            let mut awaiting_sentinel = self.options.remote.is_some();
             tokio::spawn(async move {
                 let mut reader = BufReader::new(stdout);
                 // A poisoned child's residue must not grow the buffer again before the protocol
@@ -322,6 +378,33 @@ impl Inner {
                                 buffered[scan_from..].iter().position(|&b| b == b'\n')
                             {
                                 let end = scan_from + rel;
+                                // Login-shell rc output before the launcher's
+                                // sentinel is discarded unparsed.
+                                if awaiting_sentinel {
+                                    awaiting_sentinel = buffered[consumed..end].trim_ascii()
+                                        != super::remote::REMOTE_KERNEL_STDIO_SENTINEL.as_bytes();
+                                    consumed = end + 1;
+                                    scan_from = consumed;
+                                    // Past the `exec` only the kernel reads stdin:
+                                    // the env frame goes first (rc files never see it).
+                                    if !awaiting_sentinel {
+                                        let Some(inner) = inner.upgrade() else {
+                                            return;
+                                        };
+                                        let frame = lock(&inner.remote_env_frame).take();
+                                        if let Some(frame) = frame {
+                                            if let Err(error) = inner.write_line(&frame).await {
+                                                inner.fail_protocol_frame(
+                                                    generation,
+                                                    &format!(
+                                                        "could not send the kernel env: {error}"
+                                                    ),
+                                                );
+                                            }
+                                        }
+                                    }
+                                    continue;
+                                }
                                 // An invalid-UTF-8 stream ends the reader, like
                                 // read_line's decode error did before.
                                 let Ok(trimmed) = std::str::from_utf8(&buffered[consumed..end])
@@ -365,6 +448,7 @@ impl Inner {
             tokio::spawn(async move {
                 let mut reader = BufReader::new(stderr);
                 let mut pending: Vec<u8> = Vec::new();
+                let mut carry = String::new();
                 let mut buffer = [0u8; 4096];
                 // Incremental UTF-8 decoding: a chunk boundary can split a
                 // multi-byte character, so only complete sequences surface.
@@ -383,20 +467,23 @@ impl Inner {
                             let Some(inner) = inner.upgrade() else {
                                 break;
                             };
-                            inner.append_kernel_stderr_text(&decoded);
+                            // Pass-through values stay out of the stderr tail
+                            // and the log too.
+                            let redactions = Arc::clone(&lock(&inner.redactions));
+                            let masked;
+                            let (text, bytes): (&str, &[u8]) = if redactions.is_empty() {
+                                (&decoded, &buffer[..n])
+                            } else {
+                                masked = crate::kernel::env_overrides::redact_stream_chunk(
+                                    &mut carry,
+                                    &decoded,
+                                    &redactions,
+                                );
+                                (&masked, masked.as_bytes())
+                            };
+                            inner.append_kernel_stderr_text(text);
                             if let Some(log) = &log {
-                                let mut log = lock(log);
-                                if log.budget >= n as u64 {
-                                    let _ = log.file.write_all(&buffer[..n]);
-                                    let _ = log.file.flush();
-                                    log.budget -= n as u64;
-                                } else if log.budget > 0 {
-                                    let _ = log
-                                        .file
-                                        .write_all(KERNEL_STDERR_LOG_BUDGET_MARKER.as_bytes());
-                                    let _ = log.file.flush();
-                                    log.budget = 0;
-                                }
+                                write_stderr_log(log, bytes);
                             }
                         }
                     }
@@ -404,6 +491,13 @@ impl Inner {
                 if let Some(inner) = inner.upgrade() {
                     if !pending.is_empty() {
                         inner.append_kernel_stderr_text(&decode(&mut pending));
+                    }
+                    // The held tail of the last chunk: never part of a value.
+                    if !carry.is_empty() {
+                        inner.append_kernel_stderr_text(&carry);
+                        if let Some(log) = &log {
+                            write_stderr_log(log, carry.as_bytes());
+                        }
                     }
                     // Both the natural EOF and the kill path end here; the ready
                     // handshake waits on this notification for the final tail.
@@ -451,6 +545,15 @@ impl Inner {
                     exit.code.map_or("null".to_string(), |c| c.to_string()),
                     exit.signal.map_or("null".to_string(), |s| s.to_string()),
                 ));
+                // Usually a dropped connection: name the host, not the
+                // generic shutdown text.
+                if let Some(remote) = &inner.options.remote {
+                    inner.reject_active_execution(&format!(
+                        "Remote kernel on {} exited (code={}): the SSH connection closed or the remote Python died",
+                        remote.host(),
+                        exit.code.map_or("null".to_string(), |c| c.to_string()),
+                    ));
+                }
             }
             live_kernels::remove(&inner);
             // This exit is part of an in-flight graceful shutdown(): that call owns
@@ -524,15 +627,36 @@ impl Inner {
     }
 }
 
+/// Append `bytes` to the kernel stderr log within its byte budget; the
+/// first chunk over the budget writes the budget marker instead.
+fn write_stderr_log(log: &Mutex<StderrLog>, bytes: &[u8]) {
+    let mut log = lock(log);
+    if log.budget >= bytes.len() as u64 {
+        let _ = log.file.write_all(bytes);
+        let _ = log.file.flush();
+        log.budget -= bytes.len() as u64;
+    } else if log.budget > 0 {
+        let _ = log
+            .file
+            .write_all(KERNEL_STDERR_LOG_BUDGET_MARKER.as_bytes());
+        let _ = log.file.flush();
+        log.budget = 0;
+    }
+}
+
 /// The kernel child's env (TS repl-manager.ts:374-385): the worker env plus
 /// the provisioner's env, with UTF-8 mode forced on Windows (`CPython` must
 /// read UTF-8 regardless of the active legacy code page, overriding any
 /// provisioner-provided `PYTHONUTF8`) and the owner pid the runtime journals
-/// its process groups under.
+/// its process groups under. Remote launcher markers are dropped: this process
+/// may run inside a remote kernel's `bash`.
 fn kernel_spawn_env(options_env: &HashMap<String, String>) -> HashMap<String, String> {
     let mut env: HashMap<String, String> = std::env::vars().collect();
     for (key, value) in options_env {
         env.insert(key.clone(), value.clone());
+    }
+    for key in crate::kernel::remote_policy::REMOTE_KERNEL_MARKER_ENV {
+        env.remove(*key);
     }
     if cfg!(windows) {
         env.insert("PYTHONUTF8".to_string(), "1".to_string());
@@ -577,6 +701,27 @@ mod tests {
             env.get("PRIME_AGENT_KERNEL_OWNER_PID").map(String::as_str),
             Some(std::process::id().to_string().as_str())
         );
+    }
+
+    /// A `prime-agent` started from a remote kernel's `bash` inherits the
+    /// remote markers if the runtime leaked them; its local kernels must
+    /// still start as local kernels.
+    #[test]
+    fn kernel_spawn_env_drops_the_remote_markers() {
+        let options_env: HashMap<String, String> =
+            crate::kernel::remote_policy::REMOTE_KERNEL_MARKER_ENV
+                .iter()
+                .map(|key| ((*key).to_string(), "leaked".to_string()))
+                .chain([("RLM_SESSION_ID".to_string(), "s".to_string())])
+                .collect();
+        let env = kernel_spawn_env(&options_env);
+        let leaked: Vec<&String> = env
+            .iter()
+            .filter(|(_, value)| value.as_str() == "leaked")
+            .map(|(key, _)| key)
+            .collect();
+        assert_eq!(leaked, Vec::<&String>::new());
+        assert_eq!(env.get("RLM_SESSION_ID").map(String::as_str), Some("s"));
     }
 
     #[test]

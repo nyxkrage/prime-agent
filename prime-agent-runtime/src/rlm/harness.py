@@ -1347,6 +1347,9 @@ def get_harness_state(
     state_dir: str | Path | None = None, *, global_: bool = False, **kwargs: Any
 ) -> HarnessState:
     """Return the cached local harness state, or global when requested."""
+    from .remote import refuse_on_remote
+
+    refuse_on_remote("rlm.harness", "harness state lives on the orchestrator's machine")
     _require_refinements_enabled()
     global_ = _resolve_global_flag(global_, kwargs)
     file_path = _state_file(state_dir, global_=global_)

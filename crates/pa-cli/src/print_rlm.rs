@@ -214,6 +214,31 @@ pub(crate) fn root_node(
     })
 }
 
+/// The kernel placement of a print-mode engine: an inline child runs
+/// locally with its own `env=`; a root (or RPC) session opened from a file
+/// honors that file's placement sidecar (an unreadable one refuses).
+pub(crate) fn kernel_placement(
+    embedding: &crate::print_runtime::HeadlessEmbedding,
+    session_file: Option<&std::path::Path>,
+) -> Result<pa_daemon::rlm_children::KernelPlacement, String> {
+    match embedding {
+        crate::print_runtime::HeadlessEmbedding::Child(overrides) => {
+            Ok(pa_daemon::rlm_children::KernelPlacement {
+                remote: None,
+                env: overrides.kernel_env.clone(),
+            })
+        }
+        crate::print_runtime::HeadlessEmbedding::Root { .. }
+        | crate::print_runtime::HeadlessEmbedding::Rpc => match session_file {
+            Some(file) if file.exists() => {
+                pa_daemon::rlm_children::placement_for_session_file(file)
+                    .map_err(|error| format!("{error:#}"))
+            }
+            Some(_) | None => Ok(pa_daemon::rlm_children::KernelPlacement::default()),
+        },
+    }
+}
+
 /// Publish the built engine onto its node: the host and the messaging
 /// controller reach the session through this weak edge.
 pub(crate) async fn adopt_built_engine(
@@ -639,6 +664,32 @@ impl RlmSubagentHost for InlineHost {
             if node.depth >= node.max_depth {
                 return Err(rlm_depth_limit_error(node.depth, node.max_depth));
             }
+            if matches!(
+                request.host,
+                Some(pa_core::session_engine::rlm_host::RlmSpawnHost::Remote(_))
+            ) {
+                anyhow::bail!(
+                    "rlm.spawn host= requires a daemon-backed session; print mode runs subagents in-process on this machine"
+                );
+            }
+            // A child of a root reopened on a remote host would inherit that
+            // host, which an in-process child cannot honor.
+            if request.host.is_none() {
+                if let Some(file) = &node.session_file {
+                    let placement = pa_daemon::rlm_children::placement_for_session_file(
+                        std::path::Path::new(file),
+                    )?;
+                    if let Some(remote) = placement.remote {
+                        anyhow::bail!(
+                            "rlm.spawn would inherit this session's remote kernel host {}, and print mode runs subagents in-process on this machine; pass host=\"local\", or reopen the session through the daemon",
+                            remote.host()
+                        );
+                    }
+                }
+            }
+            request
+                .env
+                .check_resolvable(|key| std::env::var(key).ok())?;
             let recipe = match request.cwd.as_deref() {
                 None => Arc::clone(&node.recipe),
                 Some(requested) => {
@@ -824,6 +875,7 @@ impl RlmSubagentHost for InlineHost {
                 semantic_parent_session_id: Some(node.session_id.clone()),
                 spawned_by_request_id: request.spawned_by_request_id.clone(),
                 factory_child: request.factory.is_some(),
+                kernel_env: request.env.clone(),
             };
             let headless = crate::print_runtime::build_engine(
                 &recipe.options,
@@ -1071,6 +1123,7 @@ fn roster_entry(
     unsettled: bool,
 ) -> RlmSubagentEntry {
     RlmSubagentEntry {
+        host: None,
         rlm_child_id: child.rlm_child_id.clone(),
         active_session_id: Some(child.node.session_id.clone()),
         session_id: Some(child.node.session_id.clone()),
@@ -1301,6 +1354,8 @@ mod tests {
         Arc::get_mut(&mut node).unwrap().max_depth = 2;
         let gate = node.spawn_gate.lock().await;
         let mut spawn = InlineHost(Arc::clone(&node)).spawn(RlmSpawnRequest {
+            env: pa_core::kernel::KernelEnvOverrides::default(),
+            host: None,
             prompt: "finish the task".to_string(),
             name: Some("late".to_string()),
             model: None,
@@ -1383,6 +1438,8 @@ mod tests {
                         model: model.map(str::to_string),
                         thinking: None,
                         cwd: None,
+                        env: pa_core::kernel::KernelEnvOverrides::default(),
+                        host: None,
                         spawned_by_request_id: None,
                         factory: None,
                     })
@@ -1400,6 +1457,38 @@ mod tests {
                 assert_eq!(admitted, 0);
             }
         }
+    }
+
+    #[tokio::test]
+    async fn inline_spawns_refuse_a_remote_host_instead_of_ignoring_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let options = run_options(directory.path());
+        std::fs::create_dir_all(&options.config.agent_dir).unwrap();
+        let manager = pa_core::session::manager::SessionManager::in_memory(directory.path());
+        let mut node = root_node(&options, &manager, Some(json!({ "responses": ["parent"] })));
+        Arc::get_mut(&mut node).unwrap().max_depth = 2;
+        let error = InlineHost(Arc::clone(&node))
+            .spawn(RlmSpawnRequest {
+                env: pa_core::kernel::KernelEnvOverrides::default(),
+                cwd: Some("/srv/work".to_string()),
+                host: Some(pa_core::session_engine::rlm_host::RlmSpawnHost::Remote(
+                    "box".to_string(),
+                )),
+                prompt: "work".to_string(),
+                name: Some("child".to_string()),
+                model: None,
+                thinking: None,
+                spawned_by_request_id: None,
+                factory: None,
+            })
+            .await
+            .expect_err("refused");
+        assert_eq!(
+            format!("{error:#}"),
+            "rlm.spawn host= requires a daemon-backed session; print mode runs subagents in-process on this machine"
+        );
+        assert_eq!(node.children.lock().await.len(), 0);
+        dispose_inline_subagents(&node).await;
     }
 
     /// The fake python tool of the landing test: records one late receipt

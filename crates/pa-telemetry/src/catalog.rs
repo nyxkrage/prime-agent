@@ -710,6 +710,12 @@ const AGENT_SESSION_ENDED: EventRule = EventRule {
         ("subagent_models_find_count", optional(count())),
         ("subagent_models_refused_count", optional(count())),
         ("model_alias_spawn_count", optional(count())),
+        // `rlm.spawn` adoption (counts only, never a host, name, or value).
+        ("rlm_spawn_count", optional(count())),
+        ("rlm_remote_spawn_count", optional(count())),
+        ("rlm_spawn_env_literal_key_count", optional(count())),
+        ("rlm_spawn_env_passthrough_key_count", optional(count())),
+        ("rlm_spawn_env_refused_count", optional(count())),
         ("feature_model_initiated_count", optional(count())),
         ("feature_model_completed_count", optional(count())),
         ("feature_model_failed_count", optional(count())),

@@ -1,0 +1,1 @@
+- `rlm.spawn(..., host="user@box")` runs a subagent's kernel on a remote SSH host that only needs Python; `cwd=` and `env=` (with `None` passing this machine's value through) work for remote children, and `env=` also sets variables for local children.

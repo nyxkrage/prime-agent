@@ -61,6 +61,16 @@ impl Inner {
             .and_then(Value::as_str)
             .filter(|t| !t.is_empty())
             .ok_or_else(|| anyhow!("host request payload must have a string type"))?;
+        // A remote kernel reaches back only through the audited allowlist,
+        // whether or not a handler is registered.
+        if let Some(remote) = &self.options.remote {
+            if let Some(refusal) = crate::kernel::remote_policy::remote_host_request_refusal(
+                request_type,
+                remote.host(),
+            ) {
+                return Err(anyhow!(refusal));
+            }
+        }
         let handler = self
             .options
             .host_handlers

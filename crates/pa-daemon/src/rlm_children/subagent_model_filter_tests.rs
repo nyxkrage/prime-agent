@@ -141,6 +141,8 @@ async fn the_supervisor_host_refuses_children_outside_the_subagent_filter() {
                     model: model.clone(),
                     thinking: None,
                     cwd: None,
+                    env: pa_core::kernel::KernelEnvOverrides::default(),
+                    host: None,
                     spawned_by_request_id: None,
                     factory: None,
                 })

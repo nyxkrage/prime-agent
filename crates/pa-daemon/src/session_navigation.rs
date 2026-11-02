@@ -17,6 +17,8 @@ use crate::worker::{SessionCore, Worker};
 pub(crate) struct PreparedReplacement {
     pub(crate) file: SessionFile,
     pub(crate) cwd: Option<String>,
+    /// The moved-to session's kernel placement sidecar.
+    pub(crate) placement: crate::rlm_children::kernel_placement::KernelPlacement,
     // A successful fresh write owes scheduling only after publication.
     trace_persisted: bool,
 }
@@ -41,6 +43,7 @@ impl SessionNavigation {
         let PreparedReplacement {
             mut file,
             trace_persisted,
+            placement,
             ..
         } = target;
         let branch_entries = file.branch_file_entries();
@@ -63,7 +66,7 @@ impl SessionNavigation {
             let traces = file.trace_upload.clone();
             // No await or fallible preparation between slot transfer and publication.
             let previous = core.store.replace(file);
-            (previous, traces, core.adopt_replacement_identity())
+            (previous, traces, core.adopt_replacement_identity(placement))
         };
         if let Some(traces) = traces.filter(|_| trace_persisted) {
             // The successful prepare wrote this file before its controller existed.
@@ -154,9 +157,16 @@ impl SessionNavigation {
         }
         // TS `newSession` keeps the runtime's cwd: the fresh session runs where the live one did.
         let trace_persisted = !fresh.path.as_os_str().is_empty();
+        // A fresh session in a spawned child's dir keeps its host and env.
+        let placement =
+            crate::rlm_children::kernel_placement::placement_for_session_file(&fresh.path)
+                .map_err(|error| {
+                    response_failure(None, "new_session", &format!("{error:#}"), None)
+                })?;
         Ok(PreparedReplacement {
             file: fresh,
             cwd: None,
+            placement,
             trace_persisted,
         })
     }
@@ -272,6 +282,11 @@ impl SessionNavigation {
         let mut file = SessionFile::open(std::path::Path::new(path))
             .map_err(|error| response_failure(None, command, &error.to_string(), None))?;
         file.lease = lease;
+        // An unreadable placement refuses here, before the teardown.
+        let placement = crate::rlm_children::kernel_placement::placement_for_session_file(
+            std::path::Path::new(path),
+        )
+        .map_err(|error| response_failure(None, command, &format!("{error:#}"), None))?;
         let cwd =
             cwd_override.or_else(|| (!file.header.cwd.is_empty()).then(|| file.header.cwd.clone()));
         if let Some(cwd) = cwd.as_deref() {
@@ -301,6 +316,7 @@ impl SessionNavigation {
         Ok(PreparedReplacement {
             file,
             cwd,
+            placement,
             trace_persisted: false,
         })
     }
@@ -361,9 +377,10 @@ impl Worker {
         if let Some(cwd) = target.cwd.as_deref() {
             self.rebind_worker_cwd(cwd);
         }
+        let placement = target.placement.clone();
         match self.navigation.replace_session(target).await {
             Ok(()) => {
-                self.refresh_replaced_session_state().await;
+                self.refresh_replaced_session_state(placement).await;
                 self.reseed_service_tier_for_replacement();
                 if let Err(error) = self.bind_scheduled_jobs().await {
                     return response_failure(None, command, &error.to_string(), None);

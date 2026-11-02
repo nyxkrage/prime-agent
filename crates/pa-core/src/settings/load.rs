@@ -52,6 +52,7 @@ const KNOWN_FIELDS: &[&str] = &[
     "enabledModels",
     "allowedModels",
     "subagentModels",
+    "remoteEnvPassthrough",
     "treeFilterMode",
     "chatDetail",
     "thinkingBudgets",

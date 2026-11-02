@@ -192,6 +192,31 @@ impl Worker {
             .get("childScript")
             .and_then(Value::as_str)
             .map(str::to_string);
+        // A spawned child's placement and `env=`: from the durable create
+        // (validated again), else from the sidecar beside an existing
+        // session file (an unreadable sidecar refuses the create).
+        let placement = match payload.get("kernelPlacement") {
+            Some(record) => {
+                crate::rlm_children::kernel_placement::KernelPlacement::from_record(record)
+            }
+            None => match &session_path {
+                Some(path) if path.exists() => {
+                    crate::rlm_children::kernel_placement::placement_for_session_file(path)
+                }
+                Some(_) | None => {
+                    Ok(crate::rlm_children::kernel_placement::KernelPlacement::default())
+                }
+            },
+        };
+        let crate::rlm_children::kernel_placement::KernelPlacement {
+            remote: remote_kernel,
+            env: kernel_env,
+        } = match placement {
+            Ok(placement) => placement,
+            Err(error) => {
+                return response_failure(None, "create", &format!("{error:#}"), None);
+            }
+        };
 
         // Set by the fresh-path arm when the name landed in its single rewrite:
         // the shared name persist must not append a second `session_info` line.
@@ -609,6 +634,8 @@ impl Worker {
             child_script: child_script.clone(),
             semantic_spawn,
             factory_child,
+            remote_kernel,
+            kernel_env,
         }) {
             return response_failure(None, "create", &error.to_string(), None);
         }

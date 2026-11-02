@@ -19,6 +19,7 @@ from .factory import (
     watch_factory,
 )
 from .harness import HarnessEntry, HarnessScope, HarnessState, RefinementEvent, get_harness_state
+from .remote import RemoteKernelRefusal
 
 _NOT_CALLABLE_MESSAGE = "'rlm' is not callable; spawn a child with: handle = await rlm.spawn('sub-task', name='worker')"
 _RENAMED_RUN_MESSAGE = "rlm.run was renamed; spawn a child with: handle = await rlm.spawn('sub-task', name='worker')"
@@ -78,6 +79,7 @@ class RLMSubagent:
     label: str | None = None
     last_activity_at: float | None = None
     activity_stale_ms: float | None = None
+    host: str | None = None
 
 
 @dataclass(frozen=True)
@@ -184,7 +186,9 @@ async def spawn(
     name: str,
     model: str | None = None,
     thinking: str | None = None,
+    host: str | None = None,
     cwd: str | None = None,
+    env: dict[str, str | None] | None = None,
 ) -> RLMSpawnHandle:
     """Spawn a recursive Prime Agent child and return once its task is admitted.
 
@@ -192,10 +196,20 @@ async def spawn(
     ``model`` selects a child with an exact ``provider/model`` selector.
     ``thinking`` sets the child reasoning level (e.g. 'off', 'low', 'medium', 'high');
     defaults to the parent level; levels invalid for the resolved model fail the spawn.
-    ``cwd`` starts the child in that directory (relative to the session cwd); defaults
-    to the session cwd.
+    ``host`` runs the child's Python REPL, files, and ``bash`` on a remote
+    machine over SSH (``user@host``, an ssh config alias, or ``host:port``);
+    its children default to the same host, ``host="local"`` spawns locally.
+    ``cwd`` starts the child in that directory (relative to the session cwd; it
+    must exist); defaults to the session cwd. For a remote child it is a path on
+    the remote host (defaulting to the parent's remote cwd on the same host).
+    ``env`` sets kernel variables: a ``str`` as given, ``None`` copies the
+    orchestrator's value without it entering your code (a missing variable
+    fails the spawn). ``RLM_*``, ``PRIME_AGENT_*``, ``PYTHON*``, ``PATH``,
+    ``HOME``, and ``VIRTUAL_ENV`` are reserved; ``env`` is never inherited.
+    Pass-through values of 8+ characters are masked as ``***`` in the child's
+    output (best effort).
     """
-    return await _spawn(prompt, name=name, model=model, thinking=thinking, cwd=cwd)
+    return await _spawn(prompt, name=name, model=model, thinking=thinking, host=host, cwd=cwd, env=env)
 
 
 async def _spawn(
@@ -204,20 +218,35 @@ async def _spawn(
     name: str,
     model: str | None = None,
     thinking: str | None = None,
+    host: str | None = None,
     cwd: str | None = None,
+    env: dict[str, str | None] | None = None,
     factory: dict[str, str] | None = None,
 ) -> RLMSpawnHandle:
     """``spawn`` plus the factory executor's run tag (``{runId, specId,
     stateId}``), which the host records on the child's ledger spawn edge."""
     if not isinstance(prompt, str):
         raise TypeError(f"prompt must be str, got {type(prompt).__name__}")
+    # An early shape check; the host validates authoritatively.
+    if env is not None:
+        if not isinstance(env, dict):
+            raise TypeError(f"env must be a dict of str to str | None, got {type(env).__name__}")
+        for key, value in env.items():
+            if not isinstance(key, str):
+                raise TypeError(f"env names must be str, got {type(key).__name__}")
+            if value is not None and not isinstance(value, str):
+                raise TypeError(f"env value for {key} must be a str or None, got {type(value).__name__}")
     kwargs: dict[str, Any] = {"name": name}
     if model is not None:
         kwargs["model"] = model
     if thinking is not None:
         kwargs["thinking"] = thinking
+    if host is not None:
+        kwargs["host"] = host
     if cwd is not None:
         kwargs["cwd"] = cwd
+    if env is not None:
+        kwargs["env"] = dict(env)
     if factory is not None:
         kwargs["factory"] = factory
     # Wire type stays "rlm.run" so kernels and hosts of different versions stay compatible.
@@ -359,6 +388,7 @@ def _subagent_from_payload(payload: Any, operation: str = "rlm.list_subagents") 
         label=_optional_str_field(payload, "label", operation),
         last_activity_at=_optional_int_field(payload, "last_activity_at", operation),
         activity_stale_ms=_optional_int_field(payload, "activity_stale_ms", operation),
+        host=_optional_str_field(payload, "host", operation),
     )
 
 
@@ -561,6 +591,9 @@ class _HarnessProxy:
     def _resolve(self) -> HarnessState:
         try:
             return get_harness_state()
+        except RemoteKernelRefusal:
+            # Never degrade to an in-memory store: that would split state.
+            raise
         except RuntimeError as exc:
             if "Local harness state requires" in str(exc):
                 if _HarnessProxy._unpersisted is None:
@@ -589,7 +622,10 @@ class _HarnessProxy:
         return sorted({*super().__dir__(), *(name for name in dir(self._resolve()) if not name.startswith("_"))})
 
     def __repr__(self) -> str:
-        return repr(self._resolve())
+        try:
+            return repr(self._resolve())
+        except RemoteKernelRefusal as refusal:
+            return f"<rlm.harness: {refusal}>"
 
 
 _harness_state = _HarnessProxy()
@@ -668,9 +704,13 @@ class _RLMNamespace:
         name: str,
         model: str | None = None,
         thinking: str | None = None,
+        host: str | None = None,
         cwd: str | None = None,
+        env: dict[str, str | None] | None = None,
     ) -> RLMSpawnHandle:
-        return await spawn(prompt, name=name, model=model, thinking=thinking, cwd=cwd)
+        return await spawn(
+            prompt, name=name, model=model, thinking=thinking, host=host, cwd=cwd, env=env
+        )
 
     async def create_session(
         self,

@@ -302,10 +302,13 @@ impl Worker {
     /// catalog rebind runs separately (`bind_scheduled_jobs`), like the
     /// TS dispatch handlers that call `rebindCronJobsToState` after the
     /// runtime call.
-    pub(crate) async fn refresh_replaced_session_state(&self) {
+    pub(crate) async fn refresh_replaced_session_state(
+        &self,
+        placement: crate::rlm_children::kernel_placement::KernelPlacement,
+    ) {
         let (identity, summary) = {
             let (mut core, inputs) = self.summary_inputs();
-            let identity = core.adopt_replacement_identity();
+            let identity = core.adopt_replacement_identity(placement);
             (identity, self.summary_locked(&core, inputs))
         };
         // The swap already bound this identity; the idempotent re-bind re-seeds the children.

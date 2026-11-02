@@ -370,6 +370,9 @@ pub struct Settings {
     /// Rust-only RLM child-model filter: selectors or `--models` globs matched
     /// against canonical names (never aliases). Global settings only.
     pub subagent_models: Option<Vec<String>>,
+    /// Rust-only kill switch for remote env pass-through; read from the raw
+    /// global document by `SettingsManager::remote_env_passthrough_allowed`.
+    pub remote_env_passthrough: Option<bool>,
     pub tree_filter_mode: Option<String>,
     /// `chatDetail`: the conversation-detail level Ctrl+O cycles and persists
     /// ("overview"/"details"/"all"); `None` reads as the `overview` startup level.

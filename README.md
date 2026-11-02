@@ -96,6 +96,45 @@ export NODE_EXTRA_CA_CERTS=/path/to/your-ca.pem
 
 Each transport reads the variable once when its first client is initialized. The background daemon keeps the environment it started with, so run `prime-agent shutdown` after changing it.
 
+## Remote subagents over SSH
+
+`rlm.spawn(prompt, name=..., host="user@box", cwd="~/work")` runs a subagent's
+Python REPL, files, and `bash` on another machine over your system `ssh`; the
+agent loop and model calls stay local. Its subagents stay on that host unless
+they pass `host="local"`. The session's skills are uploaded with the runtime
+under `~/.prime/agent/remote/` on the host. MCP servers and other features
+whose state lives on your machine are refused on remote kernels. Reopening a
+remote subagent's session (resume, fork, print mode) keeps its host and `env`.
+
+`env` sets variables in a subagent's kernel (local or remote):
+
+```python
+await rlm.spawn("train the model", name="train", host="gpu1",
+                env={"EPOCHS": "3",          # set as given
+                     "HF_TOKEN": None})      # copy this machine's value
+```
+
+A `None` value is resolved by Prime Agent at every kernel start, so it never
+appears in the model's code or the spawn request; for a remote host it travels
+over the kernel's stdin, never the ssh command line. A missing variable fails
+the spawn. Children never inherit `env`. `RLM_*`, `PRIME_AGENT_*`, `PYTHON*`,
+`PATH`, `HOME`, and `VIRTUAL_ENV` are reserved. Pass-through values of 8+
+characters are masked as `***` in the subagent's output as best-effort
+hygiene (a transformed value is not masked). A value sent to a host is trusted
+to that host, and the model can reach this machine's environment anyway.
+
+Known limitations of remote subagents:
+
+- The TUI agents view does not show a remote subagent's host yet
+  (`rlm.list_subagents()` and the daemon roster do).
+- No namespace snapshot or revive for remote kernels: a restarted remote kernel
+  starts with an empty namespace.
+- The remote kernel exits when it hears nothing from this machine for 45
+  seconds (its heartbeat timeout), so a laptop that sleeps longer than that
+  ends its remote jobs.
+- Verification uses a fake `ssh` that runs the "remote" side locally, plus an
+  opt-in live test against a real host; there is no throwaway-`sshd` test.
+
 ## Getting Started
 
 Start Prime Agent from the repository or directory you want it to work in:
@@ -272,3 +311,10 @@ models (with their `alias`), the system prompt lists them, and `rlm.spawn` /
 `rlm.create_session` refuse any other model, including one inherited from the parent,
 without falling back. Unset or `[]` means no filter; a malformed value refuses every
 subagent model. `enabledModels` never applies to subagents.
+
+### Remote environment pass-through setting
+
+`remoteEnvPassthrough` (global `~/.prime/agent/settings.json` only, default
+`true`): with `false`, `rlm.spawn(..., host=..., env={"NAME": None})` fails;
+literal values and local spawns are unaffected. A non-boolean value (or an
+unreadable global settings file) refuses pass-through.

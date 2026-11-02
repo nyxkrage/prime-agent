@@ -188,6 +188,8 @@ impl AgentSessionEngine {
             cwd,
             rlm_depth: std::sync::atomic::AtomicU32::new(0),
             factory_child: std::sync::atomic::AtomicBool::new(false),
+            remote_kernel: std::sync::Mutex::new(None),
+            kernel_env: std::sync::Mutex::new(pa_core::kernel::KernelEnvOverrides::default()),
             rlm_max_depth_source: std::sync::Mutex::new("default"),
             pending_max_depth: std::sync::Mutex::new(None),
             reloaded_goal_update: std::sync::Mutex::new(None),
@@ -1151,6 +1153,12 @@ impl AgentSessionEngine {
             .lock()
             .expect("late agent message sink lock")
             .clone();
+        let remote_kernel = self
+            .remote_kernel
+            .lock()
+            .expect("remote kernel lock")
+            .clone();
+        let kernel_env = self.kernel_env.lock().expect("kernel env lock").clone();
         pa_core::session_engine::engine::create_session(SessionEngineConfig {
             on_late_sent_agent_message,
             semantic_edges,
@@ -1185,6 +1193,8 @@ impl AgentSessionEngine {
             factory_child: self
                 .factory_child
                 .load(std::sync::atomic::Ordering::Relaxed),
+            remote_kernel,
+            kernel_env,
             // The worker session runs under the daemon scheduler and its wake-ups.
             daemonless: false,
             model_info: Some(model.clone()),

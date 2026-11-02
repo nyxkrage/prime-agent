@@ -112,9 +112,12 @@ impl SessionCore {
     /// `refreshReplacedSessionState`): the moved-to file's persisted depth
     /// re-seeds the core (a replacement carries no create-config depth). No
     /// thinking flag (already resolved on the engine), no inherited max-depth
-    /// and no semantic spawn (a TS replacement runtime has neither); the child
+    /// and no semantic spawn; the moved-to session's kernel placement rides along (a TS replacement runtime has neither); the child
     /// engine file rides along (TS keeps `sessionConfig` across swaps).
-    pub(crate) fn adopt_replacement_identity(&mut self) -> crate::engine::RlmSessionIdentity {
+    pub(crate) fn adopt_replacement_identity(
+        &mut self,
+        placement: crate::rlm_children::kernel_placement::KernelPlacement,
+    ) -> crate::engine::RlmSessionIdentity {
         let rlm_depth = self
             .store
             .as_ref()
@@ -122,6 +125,8 @@ impl SessionCore {
             .unwrap_or(0);
         self.rlm_depth = rlm_depth;
         crate::engine::RlmSessionIdentity {
+            remote_kernel: placement.remote,
+            kernel_env: placement.env,
             rlm_depth,
             rlm_max_depth: None,
             cwd: Some(self.cwd.clone()),

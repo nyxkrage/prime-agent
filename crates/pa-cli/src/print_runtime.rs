@@ -509,6 +509,8 @@ pub(crate) struct ChildEngineOverrides {
     pub spawned_by_request_id: Option<String>,
     /// The spawn carried a factory run tag.
     pub factory_child: bool,
+    /// The child kernel's validated `rlm.spawn(env=...)` overrides.
+    pub kernel_env: pa_core::kernel::KernelEnvOverrides,
 }
 
 /// A child's model source: a real-provider child carries its resolved
@@ -770,6 +772,8 @@ pub(crate) async fn build_headless_engine_with(
     // ledger-less but the request ids still go on the wire.
     let session_manager = session_manager
         .unwrap_or_else(|| pa_core::session::manager::SessionManager::in_memory(&config.cwd));
+    let placement =
+        crate::print_rlm::kernel_placement(embedding, session_manager.get_session_file())?;
     let HeadlessEmbeddingFields {
         rlm_subagent_host,
         extra_host_handlers,
@@ -812,6 +816,8 @@ pub(crate) async fn build_headless_engine_with(
     };
     let engine = pa_core::session_engine::engine::create_session(
         pa_core::session_engine::engine::SessionEngineConfig {
+            remote_kernel: placement.remote,
+            kernel_env: placement.env,
             on_late_sent_agent_message,
             cron_store: None,
             semantic_edges,

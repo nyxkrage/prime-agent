@@ -483,6 +483,7 @@ async fn subscribe_after_spawn_then_shutdown_seeds_the_passive_child() {
         String::new(),
     );
     children.set_identity(ParentIdentity {
+        remote_kernel: None,
         rlm_depth: 0,
         rlm_max_depth: 2,
         model: Some("scripted/faux-1".to_string()),
@@ -494,6 +495,8 @@ async fn subscribe_after_spawn_then_shutdown_seeds_the_passive_child() {
     });
     let handle = children
         .spawn(RlmSpawnRequest {
+            env: pa_core::kernel::KernelEnvOverrides::default(),
+            host: None,
             prompt: "ship the seed lane".to_string(),
             name: Some("worker-a".to_string()),
             model: None,

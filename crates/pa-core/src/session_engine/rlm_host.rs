@@ -16,6 +16,7 @@ use std::time::Instant;
 
 use serde_json::{json, Map, Value};
 
+use crate::kernel::env_overrides::KernelEnvRefusal;
 use crate::kernel::rlm_runtime::{
     find_rlm_model_matches, kwargs_from_payload, normalize_requested_rlm_subagent_model,
     normalize_requested_rlm_subagent_session_name, normalize_requested_rlm_subagent_thinking_level,
@@ -81,6 +82,9 @@ pub struct RlmSubagentEntry {
     pub last_activity_at: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub activity_stale_ms: Option<u64>,
+    /// The SSH destination a remote child's kernel runs on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
 }
 
 /// Live child activity projected onto the roster row.
@@ -143,7 +147,8 @@ pub struct RlmSpawnRequest {
     pub model: Option<String>,
     /// Validated thinking level; the host checks model support.
     pub thinking: Option<String>,
-    /// Working directory; the host resolves relative paths against the session cwd.
+    /// Working directory: for a local child the host resolves relative paths
+    /// against the session cwd; for a remote child it is a path on that host.
     pub cwd: Option<String>,
     /// The parent's in-flight turn request the spawn anchors to (TS
     /// `spawnedByRequestId`): `None` for a spawn outside an active run.
@@ -151,6 +156,10 @@ pub struct RlmSpawnRequest {
     /// The factory run that spawned the child; the daemon records it on
     /// the child's ledger spawn edge.
     pub factory: Option<RlmFactoryTag>,
+    /// Where the child's kernel runs. `None` inherits the parent's placement.
+    pub host: Option<RlmSpawnHost>,
+    /// The child kernel's validated `env=` overrides.
+    pub env: crate::kernel::env_overrides::KernelEnvOverrides,
 }
 
 /// The factory executor's run tag on a spawned child (`rlm.spawn`'s
@@ -161,6 +170,15 @@ pub struct RlmFactoryTag {
     pub run_id: String,
     pub spec_id: String,
     pub state_id: String,
+}
+
+/// An explicit `rlm.spawn(host=...)` placement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RlmSpawnHost {
+    /// `host="local"`: back on the local machine.
+    Local,
+    /// An SSH destination, validated.
+    Remote(String),
 }
 
 /// Validated `rlm.create_session` request handed to the host.
@@ -499,6 +517,8 @@ pub struct RlmHostBridge {
     settings_dirs: RlmSettingsDirs,
     /// The subagent-model policy counters; unset without telemetry.
     pub(crate) telemetry: std::sync::OnceLock<Arc<super::telemetry::SessionTelemetry>>,
+    /// The session counters admitted spawns count into; unset without telemetry.
+    pub(crate) spawn_counters: std::sync::OnceLock<Arc<super::telemetry::SessionCounters>>,
 }
 
 #[derive(Clone)]
@@ -527,6 +547,7 @@ impl RlmHostBridge {
             semantic_spawn: std::sync::OnceLock::new(),
             settings_dirs,
             telemetry: std::sync::OnceLock::new(),
+            spawn_counters: std::sync::OnceLock::new(),
         }
     }
 
@@ -690,7 +711,17 @@ fn register_run(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmHostBridge>)
                 let Some(prompt) = data.get("prompt").and_then(Value::as_str) else {
                     anyhow::bail!("rlm.spawn prompt must be a string");
                 };
-                let mut request = spawn_request_from_payload(prompt, data)?;
+                // An `env=` refusal counts, never by name or value.
+                let note_env_refusal = |error: anyhow::Error| {
+                    if error.downcast_ref::<KernelEnvRefusal>().is_some() {
+                        if let Some(counters) = bridge.spawn_counters.get() {
+                            counters.note_rlm_spawn_env_refused();
+                        }
+                    }
+                    error
+                };
+                let mut request =
+                    spawn_request_from_payload(prompt, data).map_err(note_env_refusal)?;
                 let (model, via_alias) = bridge.resolve_requested_model(request.model.take());
                 request.model = model;
                 // TS `_startRlmChildRun`: the spawning request is the turn
@@ -710,13 +741,19 @@ fn register_run(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmHostBridge>)
                     }
                     None => None,
                 };
+                let placement = request.host.clone();
+                let env = request.env.clone();
                 let handle = bridge
                     .host
                     .spawn(request)
                     .await
-                    .inspect_err(|error| bridge.note_spawn_error(error))?;
+                    .inspect_err(|error| bridge.note_spawn_error(error))
+                    .map_err(note_env_refusal)?;
                 if via_alias {
                     bridge.note_policy(super::telemetry::SubagentModelPolicyEvent::AliasSpawn);
+                }
+                if let Some(counters) = bridge.spawn_counters.get() {
+                    counters.note_rlm_spawn(placement.as_ref(), &env);
                 }
                 // TS `_findLastAssistantMessage` at spawn: the spawning
                 // assistant row (persisted at `message_end` before tool
@@ -737,7 +774,7 @@ fn spawn_request_from_payload(prompt: &str, data: &Value) -> anyhow::Result<RlmS
     reject_unsupported_kwargs(
         &kwargs,
         OPERATION,
-        &["name", "model", "thinking", "cwd", "factory"],
+        &["name", "model", "thinking", "host", "cwd", "env", "factory"],
     )?;
     let name = optional_string_kwarg(&kwargs, "name", OPERATION)?;
     let name = normalize_requested_rlm_subagent_session_name(name, OPERATION)?;
@@ -749,6 +786,17 @@ fn spawn_request_from_payload(prompt: &str, data: &Value) -> anyhow::Result<RlmS
     let thinking = optional_string_kwarg(&kwargs, "thinking", OPERATION)?;
     let thinking =
         normalize_requested_rlm_subagent_thinking_level(thinking, OPERATION)?.map(String::from);
+    // Validated verbatim (no trimming): the value checked is the value used.
+    let host = match optional_string_kwarg(&kwargs, "host", OPERATION)? {
+        None => None,
+        Some("local") => Some(RlmSpawnHost::Local),
+        Some(host) => {
+            crate::kernel::bootstrap::SshDestination::parse(host)?;
+            Some(RlmSpawnHost::Remote(host.to_string()))
+        }
+    };
+    // Local or remote depends on the placement the host resolves, so the
+    // host resolves and validates the cwd.
     let cwd = cwd_kwarg(&kwargs, OPERATION)?;
     let factory = match kwargs.get("factory") {
         None | Some(Value::Null) => None,
@@ -758,6 +806,10 @@ fn spawn_request_from_payload(prompt: &str, data: &Value) -> anyhow::Result<RlmS
             )
         })?),
     };
+    // Authoritative: the kernel wrapper's checks are a courtesy.
+    let env = crate::kernel::env_overrides::KernelEnvOverrides::from_json(
+        kwargs.get("env").unwrap_or(&Value::Null),
+    )?;
     Ok(RlmSpawnRequest {
         prompt: prompt.to_string(),
         name,
@@ -766,6 +818,8 @@ fn spawn_request_from_payload(prompt: &str, data: &Value) -> anyhow::Result<RlmS
         cwd,
         spawned_by_request_id: None,
         factory,
+        host,
+        env,
     })
 }
 
@@ -1072,6 +1126,7 @@ mod tests {
         fn list_subagents(&self) -> RlmHostFuture<Vec<RlmSubagentEntry>> {
             Box::pin(async {
                 Ok(vec![RlmSubagentEntry {
+                    host: None,
                     rlm_child_id: "sub-1".into(),
                     active_session_id: Some("live-2".into()),
                     session_id: Some("s-2".into()),
@@ -1099,6 +1154,7 @@ mod tests {
                 targets.lock().await.push(target);
                 Ok(RlmDeleteSubagentResult {
                     subagent: RlmSubagentEntry {
+                        host: None,
                         rlm_child_id: "sub-1".into(),
                         active_session_id: None,
                         session_id: None,
@@ -1525,6 +1581,76 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(error.to_string(), "rlm.spawn name must be a string");
+    }
+
+    /// `env=` is validated host-side (whatever the kernel wrapper let
+    /// through), reaches the host as literals and pass-through names, and
+    /// counts literal keys, pass-through keys, and refusals, never names.
+    #[tokio::test]
+    async fn spawn_env_is_validated_host_side_and_counted() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = RecordingHost::new();
+        let spawn_requests = Arc::clone(&host.spawn_requests);
+        let wiring = wired(dir.path(), Some(host));
+        let counters = Arc::new(crate::session_engine::telemetry::SessionCounters::default());
+        let _ = wiring.rlm.spawn_counters.set(Arc::clone(&counters));
+        call(
+            &wiring,
+            "rlm.run",
+            json!({
+                "prompt": "train",
+                "kwargs": { "name": "train", "env": { "EPOCHS": "3", "HF_TOKEN": null } }
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            spawn_requests.lock().await[0].env,
+            crate::kernel::env_overrides::KernelEnvOverrides::from_json(
+                &json!({ "EPOCHS": "3", "HF_TOKEN": null })
+            )
+            .unwrap()
+        );
+        let mut errors = Vec::new();
+        for env in [
+            json!({ "PRIME_AGENT_KERNEL_OWNER_PID": null }),
+            json!({ "EPOCHS": 3 }),
+        ] {
+            let error = call(
+                &wiring,
+                "rlm.run",
+                json!({ "prompt": "p", "kwargs": { "name": "bad", "env": env } }),
+            )
+            .await
+            .unwrap_err();
+            errors.push(error.to_string());
+        }
+        assert_eq!(
+            errors,
+            [
+                "rlm.spawn env name PRIME_AGENT_KERNEL_OWNER_PID is reserved: the kernel launcher owns RLM_*, PRIME_AGENT_*, PYTHON*, PATH, HOME, and VIRTUAL_ENV",
+                "rlm.spawn env value for EPOCHS must be a str or None, got int",
+            ]
+        );
+        assert_eq!(
+            spawn_requests.lock().await.len(),
+            1,
+            "no refused spawn reached the host"
+        );
+        let mut properties = pa_telemetry::Properties::new();
+        counters.write_into(&mut properties);
+        let properties = serde_json::to_value(&properties).unwrap();
+        assert_eq!(
+            [
+                "rlm_spawn_count",
+                "rlm_spawn_env_literal_key_count",
+                "rlm_spawn_env_passthrough_key_count",
+                "rlm_spawn_env_refused_count",
+            ]
+            .map(|key| properties[key].clone()),
+            [json!(1), json!(1), json!(1), json!(2)]
+        );
+        assert!(!properties.to_string().contains("HF_TOKEN"));
     }
 
     #[tokio::test]
