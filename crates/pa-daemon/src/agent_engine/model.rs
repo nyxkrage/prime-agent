@@ -258,7 +258,9 @@ impl AgentSessionEngine {
         let model = self.resolve_registry_model_unchecked()?;
         let selector = format!("{}/{}", model.provider, model.id);
         let allowlist = crate::model_allowlist::load(&self.cwd(), &self.config.agent_dir);
-        if let Err(refusal) = crate::model_allowlist::assert_allowed(&allowlist, &selector) {
+        if let Err(refusal) =
+            crate::model_allowlist::assert_allowed(&self.config.agent_dir, &allowlist, &selector)
+        {
             if let Some(refusal) = refusal.downcast_ref::<pa_core::models::ModelAllowlistRefusal>()
             {
                 self.note_model_refused("session_start", &refusal.selector);
@@ -294,6 +296,9 @@ impl AgentSessionEngine {
         // model keeps resolving when no credential is visible; run-start auth
         // validation reports it.
         let all: Vec<Model> = registry.get_all().to_vec();
+        // A models.json alias (`sol`, `sol:high`) expands to its selector.
+        let expanded = registry.expand_model_alias(model_name);
+        let model_name = expanded.as_deref().unwrap_or(model_name);
         let resolved =
             pa_core::models::resolve_cli_model(selection.provider.as_deref(), model_name, &all);
         if let Some(error) = resolved.error {

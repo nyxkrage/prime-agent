@@ -328,6 +328,9 @@ pub struct Settings {
     /// Rust-only daemon-level model allowlist: a model outside fails loudly instead
     /// of resolving, with no fallback. `None` is unrestricted.
     pub allowed_models: Option<Vec<String>>,
+    /// Rust-only RLM child-model filter: selectors or `--models` globs matched
+    /// against canonical names (never aliases). Global settings only.
+    pub subagent_models: Option<Vec<String>>,
     pub tree_filter_mode: Option<String>,
     /// `chatDetail`: the conversation-detail level Ctrl+O cycles and persists
     /// ("overview"/"details"/"all"); `None` reads as the `overview` startup level.

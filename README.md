@@ -181,3 +181,43 @@ For per-model early compaction, use the existing provider-scoped
 
 Use the actual model ID for your provider. This sets that model's effective context
 window; it does not change every model's global compaction percentage.
+
+### Model aliases and subagent models
+
+Give a model a short name with the `alias` field in `~/.prime/agent/models.json`, on
+built-in models via `modelOverrides` or on custom models in `models[]`:
+
+```json
+{
+  "providers": {
+    "openai": {
+      "modelOverrides": {
+        "gpt-6.1-sol": { "alias": "sol" },
+        "gpt-6-luna": { "alias": "luna" }
+      }
+    }
+  }
+}
+```
+
+An alias selects a model in `rlm.spawn(model="sol")`, `rlm.create_session(model=...)`,
+`--model` (also `--model sol:high`), and `imageModel`. It is a single word without `/`,
+`:`, spaces, or glob characters, unique across providers, and must not equal a model
+ID or the part of an ID after a `/`. Otherwise `models.json` fails to load with an
+error naming both models.
+
+To limit the models subagents can use, set `subagentModels` in the global
+`~/.prime/agent/settings.json` (project settings cannot change it). Entries are
+`provider/model-id` selectors or `--models`-style globs:
+
+```json
+{ "subagentModels": ["openai/gpt-6.1-sol", "openai/gpt-6-luna"] }
+```
+
+Patterns in `subagentModels` and `allowedModels` match real model names, never
+aliases; an entry that equals an alias matches nothing, and Prime Agent warns about it.
+When `subagentModels` is set, `rlm.find_models()` lists only matching authenticated
+models (with their `alias`), the system prompt lists them, and `rlm.spawn` /
+`rlm.create_session` refuse any other model, including one inherited from the parent,
+without falling back. Unset or `[]` means no filter; a malformed value refuses every
+subagent model. `enabledModels` never applies to subagents.

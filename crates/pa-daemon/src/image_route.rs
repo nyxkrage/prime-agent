@@ -69,7 +69,9 @@ impl AgentSessionEngine {
                 session_model: &session_model,
                 thinking_level: self.effective_thinking(),
                 service_tier: *self.service_tier.read().expect("service tier lock"),
-                image_model_reference: image_model_reference.as_deref(),
+                image_model_reference: image_model_reference
+                    .as_deref()
+                    .map(|reference| registry.resolve_model_alias(reference).unwrap_or(reference)),
                 available_models: &available,
                 // Keyed (provider, id): one provider's authenticated row must
                 // not vouch for another provider's same-id model.
@@ -106,8 +108,11 @@ impl AgentSessionEngine {
                 // by `allowedModels` must not bypass it.
                 let selector = format!("{}/{}", resolved.model.provider, resolved.model.id);
                 let allowlist = crate::model_allowlist::load(&self.cwd(), &self.config.agent_dir);
-                if let Err(refusal) = crate::model_allowlist::assert_allowed(&allowlist, &selector)
-                {
+                if let Err(refusal) = crate::model_allowlist::assert_allowed(
+                    &self.config.agent_dir,
+                    &allowlist,
+                    &selector,
+                ) {
                     self.note_model_refused("image_route", &selector);
                     return Err(format!("{refusal:#}"));
                 }
@@ -309,6 +314,7 @@ mod tests {
                             {
                                 "id": "mock-vision",
                                 "name": "Mock Vision",
+                                "alias": "eyes",
                                 "api": "mock-battery",
                                 "contextWindow": 128_000,
                                 "maxTokens": 4096,
@@ -390,6 +396,21 @@ mod tests {
             .resolve_image_turn_route(false)
             .expect("image-free batches stay on the session model");
         assert!(none.is_none());
+    }
+
+    /// `imageModel` accepts a models.json alias.
+    #[test]
+    fn image_route_resolves_an_image_model_alias() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let engine = image_route_engine(dir.path(), &serde_json::json!({ "imageModel": "Eyes" }));
+        let route = engine
+            .resolve_image_turn_route(true)
+            .expect("the alias routes")
+            .expect("the text-only session model routes");
+        assert_eq!(
+            (route.model.provider.as_str(), route.model.id.as_str()),
+            ("battery", "mock-vision")
+        );
     }
 
     #[test]

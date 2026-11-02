@@ -275,6 +275,26 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // pin), like the request-timing snapshot above.
     let factory_allowed_models = settings.get_allowed_models();
     // Captured before `settings` moves into the resource loader: the
+    // permitted subagent models for the prompt tail (spawns re-read the
+    // setting). An unreadable filter permits none.
+    let prompt_subagent_models = match crate::models::SubagentModelFilter::load(&settings) {
+        crate::models::SubagentModelFilter::Unrestricted => None,
+        filter @ (crate::models::SubagentModelFilter::Only(_)
+        | crate::models::SubagentModelFilter::Unreadable(_)) => {
+            Some(wiring.rlm.registry.subagent_model_names(&filter))
+        }
+    };
+    // Children share the settings and would only repeat the warning.
+    let model_pattern_notice = if config.rlm_depth.unwrap_or(0) == 0 {
+        super::model_pattern_notice::notice_message(
+            &wiring.rlm.registry,
+            factory_allowed_models.as_deref(),
+            settings.get_subagent_models().as_deref(),
+        )
+    } else {
+        None
+    };
+    // Captured before `settings` moves into the resource loader: the
     // per-cell watchdog budget (default 60s, `0` disables).
     let python_cell_timeout_ms = settings.get_python_cell_timeout_ms();
     let (mcp_skill_overrides, mcp_generic_servers, built_manager) =
@@ -568,6 +588,12 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         Some(&prompt_model_selector),
         &config.agent_dir,
     );
+    if let Some(row) = model_pattern_notice {
+        boot_notice_rows
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(row);
+    }
     if !model_prompts.errors.is_empty() {
         boot_notice_rows
             .lock()
@@ -603,6 +629,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             daemonless: config.daemonless,
             can_spawn: config.rlm_subagent_host.is_some(),
             generic_mcp_servers,
+            subagent_models: prompt_subagent_models,
             append_system_prompt: Some(resources.append_system_prompt.join("\n\n")),
             ..Default::default()
         },
@@ -907,6 +934,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         // Same lifetime for the `rlm_child_*` session counters: the
         // producer's flush counts through this handle.
         wiring.rlm_usage.set_telemetry(telemetry.clone());
+        let _ = wiring.rlm.telemetry.set(telemetry.clone());
     }
     let goal_driver = wiring.runtime.goal_driver().clone();
     // The factory host bridge: registered from `create_session` (the #3184

@@ -39,6 +39,7 @@ pub fn catalog_models(agent_dir: &Path) -> Vec<RlmModelInfo> {
             } else {
                 model.name.clone()
             },
+            alias: None,
         })
         .collect()
 }
@@ -57,7 +58,7 @@ pub fn resolve_child_model(
     allowlist: &crate::model_allowlist::DaemonAllowlist,
 ) -> Result<String> {
     let model = resolve_child_model_unchecked(agent_dir, reference, parent_model, target)?;
-    crate::model_allowlist::assert_allowed(allowlist, &model)?;
+    crate::model_allowlist::assert_allowed(agent_dir, allowlist, &model)?;
     Ok(model)
 }
 
@@ -115,6 +116,49 @@ pub fn resolve_child_model_unchecked(
         _ => {}
     }
     Err(model_unavailable_error(reference, target, &candidates))
+}
+
+/// Enforce the `subagentModels` filter on a resolved child model, explicit
+/// or inherited; there is never a fallback to another model.
+///
+/// # Errors
+/// The typed [`pa_core::models::SubagentModelRefusal`] when the filter
+/// excludes the selector or could not be read.
+pub fn assert_subagent_model_permitted(
+    agent_dir: &Path,
+    filter: &pa_core::models::SubagentModelFilter,
+    selector: &str,
+) -> Result<()> {
+    let selector = selector.to_string();
+    let refusal = match filter {
+        pa_core::models::SubagentModelFilter::Unrestricted => return Ok(()),
+        pa_core::models::SubagentModelFilter::Only(patterns) => {
+            if pa_core::models::model_allowed(&selector, patterns) {
+                return Ok(());
+            }
+            // Built only on the refusal path.
+            let registry = crate::state_getters::worker_model_registry(agent_dir);
+            pa_core::models::SubagentModelRefusal::OutsideFilter {
+                selector,
+                permitted: registry.subagent_model_names(filter),
+                alias_patterns: registry.alias_patterns(patterns),
+            }
+        }
+        pa_core::models::SubagentModelFilter::Unreadable(error) => {
+            pa_core::models::SubagentModelRefusal::UnreadableFilter {
+                selector,
+                error: error.clone(),
+            }
+        }
+    };
+    Err(refusal.into())
+}
+
+/// The live `subagentModels` filter (the cwd only locates the settings).
+#[must_use]
+pub fn load_subagent_filter(cwd: &Path, agent_dir: &Path) -> pa_core::models::SubagentModelFilter {
+    let settings = pa_core::settings::SettingsManager::create(cwd, agent_dir);
+    pa_core::models::SubagentModelFilter::load(&settings)
 }
 
 /// A requested thinking level must be supported by the resolved model;

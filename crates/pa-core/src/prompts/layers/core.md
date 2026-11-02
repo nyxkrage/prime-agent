@@ -62,6 +62,7 @@ The following programmatic tools are available in the REPL for subagent manageme
   - `id: str`
   - `name: str`
   - `selector: str`: the exact string to spawn the model
+  - `alias: str | None`: the user's short name for the model, also accepted by `model=`
 
 The following programmatic tools are available in the REPL for a2a communication:
 
