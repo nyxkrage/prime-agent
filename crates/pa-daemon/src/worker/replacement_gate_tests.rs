@@ -486,3 +486,215 @@ async fn an_unleased_switch_never_rewrites_another_workers_damaged_file() {
     drop(visitor);
     drop(owner);
 }
+
+/// The ids a build captured: the bound session file's durable header id (the id model
+/// calls route under) and the bound RLM identity's session id.
+type BuiltIds = (Option<String>, Option<String>);
+
+/// An engine that models the lazy build's identity capture, like `AgentSessionEngine`:
+/// `set_session_file` binds the file whose header id the build routes under,
+/// `configure_rlm_identity` binds the RLM identity, `get_commands` (an ungated read seam)
+/// builds the session on demand from both, and the replacement teardown retires the build.
+/// The session-model restore can hold open until the test releases it.
+#[derive(Default)]
+struct IdentityEngine {
+    /// The session file the next build reads its durable id from.
+    session_file: std::sync::Mutex<Option<PathBuf>>,
+    /// The RLM identity session id the next build captures.
+    rlm_session_id: std::sync::Mutex<Option<String>>,
+    /// The built session's ids (`None` while unbuilt).
+    built: std::sync::Mutex<Option<BuiltIds>>,
+    /// Hold the next restore open until `release` fires.
+    hold_restore: std::sync::atomic::AtomicBool,
+    restore_entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+    /// One concurrent build lands right after the next teardown's retire.
+    build_after_teardown: std::sync::atomic::AtomicBool,
+}
+
+impl IdentityEngine {
+    fn build_if_unbuilt(&self) {
+        let mut built = self.built.lock().unwrap();
+        if built.is_none() {
+            let routed = self
+                .session_file
+                .lock()
+                .unwrap()
+                .as_deref()
+                .and_then(pa_core::session::manager::read_session_header)
+                .map(|header| header.id);
+            *built = Some((routed, self.rlm_session_id.lock().unwrap().clone()));
+        }
+    }
+
+    fn built(&self) -> Option<BuiltIds> {
+        self.built.lock().unwrap().clone()
+    }
+}
+
+impl SessionEngine for IdentityEngine {
+    fn configure_rlm_identity(&self, identity: crate::engine::RlmSessionIdentity) -> Result<()> {
+        *self.rlm_session_id.lock().unwrap() = identity.session_id;
+        Ok(())
+    }
+
+    fn set_session_file(&self, path: PathBuf) {
+        *self.session_file.lock().unwrap() = Some(path);
+    }
+
+    fn teardown_for_replacement(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        Box::pin(async move {
+            *self.built.lock().unwrap() = None;
+            if self
+                .build_after_teardown
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                self.build_if_unbuilt();
+            }
+        })
+    }
+
+    fn connection_commands(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<Value>> + Send + '_>> {
+        Box::pin(async move {
+            self.build_if_unbuilt();
+            Vec::new()
+        })
+    }
+
+    fn restore_session_model(
+        &self,
+        _session_path: &std::path::Path,
+        _saved: Option<crate::engine::SavedSessionContext>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        Box::pin(async move {
+            if self
+                .hold_restore
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                self.restore_entered.notify_one();
+                self.release.notified().await;
+            }
+        })
+    }
+
+    fn rebuild_session_context(
+        &self,
+        _: Vec<pa_types::session::FileEntry>,
+        _: pa_core::session_engine::goal_driver::GoalBranchReload,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn run_prompt(
+        &self,
+        _: usize,
+        _: PromptRequest,
+        _: &dyn Fn() -> bool,
+        _: &mut dyn FnMut(EngineEvent) -> bool,
+    ) {
+    }
+
+    fn run_side_question(
+        &self,
+        request: crate::engine::SideQuestionRequest,
+        signal: &pa_agent::abort::AbortSignal,
+        sink: &pa_core::session_engine::side_question::SideQuestionSink,
+    ) -> crate::engine::SideQuestionOutcome {
+        ScriptedEngine::default().run_side_question(request, signal, sink)
+    }
+
+    fn run_compaction(
+        &self,
+        request: crate::engine::CompactionRequest,
+        signal: &pa_agent::abort::AbortSignal,
+    ) -> crate::engine::CompactionOutcome {
+        ScriptedEngine::default().run_compaction(request, signal)
+    }
+
+    fn run_branch_summary(
+        &self,
+        request: crate::engine::BranchSummaryRequest,
+        signal: &pa_agent::abort::AbortSignal,
+    ) -> crate::engine::BranchSummaryOutcome {
+        ScriptedEngine::default().run_branch_summary(request, signal)
+    }
+}
+
+/// A worker over an [`IdentityEngine`], created on a fresh session file; returns the
+/// worker and a second session file (with its durable id) to switch onto.
+async fn identity_worker(
+    dir: &Path,
+    engine: &std::sync::Arc<IdentityEngine>,
+) -> (Worker, PathBuf, String) {
+    let mut worker = recording_worker(dir, std::sync::Arc::default());
+    let dyn_engine: std::sync::Arc<dyn SessionEngine> = engine.clone();
+    let core = std::sync::Arc::clone(&worker.core);
+    worker.engine = std::sync::Arc::clone(&dyn_engine);
+    worker.navigation = crate::session_navigation::SessionNavigation::new(dyn_engine, core);
+    let live = written_session_file(dir, "live.jsonl");
+    let created = worker
+        .dispatch(
+            "create",
+            &json!({ "sessionPath": live.to_string_lossy(), "cwd": "/tmp" }),
+        )
+        .await;
+    assert!(created.success, "create failed: {created:?}");
+    let mut next = crate::session_store::SessionFile::create("/tmp", None, 0);
+    let next_path = dir.join("next.jsonl");
+    next.set_path(next_path.clone());
+    next.rewrite().unwrap();
+    let next_id = next.session_id().to_string();
+    (worker, next_path, next_id)
+}
+
+/// A worker command that builds the engine lazily during the replacement's model-restore
+/// wait (`get_commands` takes no replacement gate) must build it under the NEW session's
+/// file and RLM identity: the swap rebinds both before its first await, and nothing later
+/// retires a build that captured the predecessor's identity.
+#[tokio::test]
+async fn a_lazy_build_during_the_restore_wait_routes_under_the_new_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = std::sync::Arc::new(IdentityEngine::default());
+    let (worker, next_path, next_id) = identity_worker(dir.path(), &engine).await;
+    engine
+        .hold_restore
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let switch = json!({ "sessionPath": next_path.to_string_lossy(), "cwdOverride": "/tmp" });
+    let probe = async {
+        engine.restore_entered.notified().await;
+        let commands = worker.dispatch("get_commands", &json!({})).await;
+        engine.release.notify_one();
+        commands
+    };
+    let (switched, commands) = tokio::join!(worker.dispatch("switch_session", &switch), probe);
+    assert!(switched.success, "switch failed: {switched:?}");
+    assert!(commands.success, "get_commands failed: {commands:?}");
+    assert_eq!(engine.built(), Some((Some(next_id.clone()), Some(next_id))));
+}
+
+/// A build that slips in between the replacement's teardown and the store swap captured
+/// the predecessor's identity; the swap retires it, so the next demand seam builds under
+/// the new session.
+#[tokio::test]
+async fn a_build_between_the_teardown_and_the_swap_is_retired() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = std::sync::Arc::new(IdentityEngine::default());
+    let (worker, next_path, next_id) = identity_worker(dir.path(), &engine).await;
+    engine
+        .build_after_teardown
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let switched = worker
+        .dispatch(
+            "switch_session",
+            &json!({ "sessionPath": next_path.to_string_lossy(), "cwdOverride": "/tmp" }),
+        )
+        .await;
+    assert!(switched.success, "switch failed: {switched:?}");
+    let commands = worker.dispatch("get_commands", &json!({})).await;
+    assert!(commands.success, "get_commands failed: {commands:?}");
+    assert_eq!(engine.built(), Some((Some(next_id.clone()), Some(next_id))));
+}

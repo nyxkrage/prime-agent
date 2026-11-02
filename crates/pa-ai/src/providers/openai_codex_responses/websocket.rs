@@ -521,7 +521,18 @@ pub async fn release_connection(
         return;
     };
     if !keep {
-        close_websocket_sessions(Some(&session_id));
+        // Only the entry's own connection evicts it (TS `websocketSessionCache.get(sessionId) ===
+        // entry`): an overflow connection (opened beside a busy cached one) closes alone.
+        if let Ok(mut state) = session_state().lock() {
+            if state
+                .connections
+                .get(&session_id)
+                .is_some_and(|entry| entry.connection_id == connection.connection_id)
+            {
+                state.connections.remove(&session_id);
+            }
+        }
+        connection.close().await;
         return;
     }
     let matched = match session_state().lock() {
@@ -648,6 +659,62 @@ mod tests {
         let next = json!({ "model": "gpt", "input": [ { "type": "a" }, { "type": "y" } ] });
         let request = build_cached_websocket_request_body(Some(&cont), &next, 42);
         assert!(request.get("previous_response_id").is_none());
+    }
+
+    fn close_requested(worker: &mut mpsc::Receiver<WorkerCommand>) -> bool {
+        matches!(worker.try_recv(), Ok(WorkerCommand::Close))
+    }
+
+    /// A failed overflow release (`keep == false`) closes only its connection, never the main entry.
+    #[tokio::test]
+    async fn an_overflow_release_keeps_the_main_entry() {
+        let session_id = format!("overflow-release-{}", next_connection_id());
+        let (main_tx, mut main_rx) = mpsc::channel(4);
+        let main_id = next_connection_id();
+        session_state().lock().unwrap().connections.insert(
+            session_id.clone(),
+            CachedConnection {
+                worker: main_tx.clone(),
+                busy: true,
+                continuation: None,
+                expiry_generation: 0,
+                connection_id: main_id,
+            },
+        );
+        let (side_tx, mut side_rx) = mpsc::channel(4);
+        let side = AcquiredConnection {
+            worker: side_tx,
+            session_id: Some(session_id.clone()),
+            reused: false,
+            cached: false,
+            connection_id: next_connection_id(),
+        };
+        release_connection(side, /*keep*/ false, None).await;
+        assert!(close_requested(&mut side_rx));
+        assert!(!close_requested(&mut main_rx));
+        let cached = session_state()
+            .lock()
+            .unwrap()
+            .connections
+            .get(&session_id)
+            .map(|entry| entry.connection_id);
+        assert_eq!(cached, Some(main_id));
+
+        // The main turn's own failed release still evicts and closes its entry.
+        let main = AcquiredConnection {
+            worker: main_tx,
+            session_id: Some(session_id.clone()),
+            reused: false,
+            cached: true,
+            connection_id: main_id,
+        };
+        release_connection(main, /*keep*/ false, None).await;
+        assert!(close_requested(&mut main_rx));
+        assert!(!session_state()
+            .lock()
+            .unwrap()
+            .connections
+            .contains_key(&session_id));
     }
 
     #[test]
