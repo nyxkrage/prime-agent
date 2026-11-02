@@ -21,7 +21,12 @@ The harness often sends messages to the agent. These are user messages starting 
     - `.exit_code: int`
     - `.output: str`
     - `.duration: float`
+<!-- edit-format: edit -->
 - `edit.run(path: str, old_str: str, new_str: str) -> str`: the primary method for editing files. async, exact-unique-match; the `edit` module is callable with the same arguments (`await edit(path=..., old_str=..., new_str=...)`)
+<!-- edit-format: apply_patch -->
+- `apply_patch(patch: str) -> list[dict]`: the primary method for editing files. async; takes one V4A patch in the OpenAI Codex `apply_patch` format (`*** Begin Patch` ... `*** End Patch` around `*** Update File: <path>` sections, optionally followed by `*** Move to: <path>`, with `@@` or `@@ <line>` hunks of ` `/`-`/`+` lines; `*** Add File: <path>` with `+` lines; `*** Delete File: <path>`), passed as a raw string (`r'''...'''`); if any part would fail it raises `apply_patch.PatchError` (file, hunk, reason) with no file changed; otherwise writes files in place, undoes every change if a write fails, and shows each hunk's diff like `edit`; returns one `{"path", "operation", "hunks", "move_to"}` summary per file
+- `edit.run(path: str, old_str: str, new_str: str) -> str`: one exact replacement, for a change a patch does not fit. async, exact-unique-match; the `edit` module is callable with the same arguments (`await edit(path=..., old_str=..., new_str=...)`)
+<!-- /edit-format -->
 - `attach_image(*paths: str) -> str`: loads images directly into context if the agent's model is vision-capable, errors otherwise
 
 ## Subagents

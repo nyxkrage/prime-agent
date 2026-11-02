@@ -412,7 +412,8 @@ mod snapshot;
 mod startup;
 mod teardown;
 
-use requests::{append_truncated, describe_failure, HeadTailBuffer, Signal};
+pub(crate) use requests::describe_failure;
+use requests::{append_truncated, HeadTailBuffer, Signal};
 
 // Public API
 

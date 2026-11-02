@@ -181,3 +181,36 @@ For per-model early compaction, use the existing provider-scoped
 
 Use the actual model ID for your provider. This sets that model's effective context
 window; it does not change every model's global compaction percentage.
+
+### Edit format (`apply_patch`)
+
+Models trained on OpenAI's V4A patch format (Codex's `apply_patch`) edit files from the
+Python REPL with `await apply_patch(r'''*** Begin Patch ... *** End Patch''')`. The
+whole patch is checked before any file is written, files are rewritten in place, and a
+failure while writing undoes every change already made. Other models use
+`edit.run(path, old_str, new_str)`, which stays available everywhere.
+
+By default GPT-5.1 and newer use `apply_patch` (also under provider spellings such as
+`openai/gpt-5.1:nitro`, `ft:gpt-5.1:org::id`, or `us.openai.gpt-5.1`) and every other
+model uses `edit`. Override it per model with `editFormat` (`"edit"` or `"apply_patch"`)
+in `models.json`, on `modelOverrides` or custom `models[]` entries:
+
+```json
+{
+  "providers": {
+    "openai": {
+      "modelOverrides": {
+        "gpt-5.1-codex-mini": { "editFormat": "edit" }
+      }
+    },
+    "my-proxy": {
+      "models": [{ "id": "gpt-6.1-sol", "editFormat": "apply_patch" }]
+    }
+  }
+}
+```
+
+`"applyPatch": "off"` in `settings.json` makes every model use `edit`. The format
+follows the session's current model: a `/model` switch or a failover swaps the prompt's
+edit guidance and binds or hides `apply_patch` in the running kernel. `prime-agent
+prompt --model <provider/id>` shows the chosen variant in the layer sources.

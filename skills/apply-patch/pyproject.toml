@@ -1,0 +1,15 @@
+# Imports the bundled `edit` skill (always installed beside it, not on PyPI),
+# so it is not declared as a dependency.
+[project]
+name = "apply-patch"
+version = "0.1.0"
+description = "Prime Agent apply-patch skill: V4A patches (Codex apply_patch format), validated whole, undone on a failed write"
+requires-python = ">=3.10"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/apply_patch"]

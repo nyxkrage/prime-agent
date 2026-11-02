@@ -21,6 +21,7 @@ pub use pa_models::RefreshTrigger;
 pub mod allowlist;
 pub(crate) mod catalog_chain;
 pub(crate) mod custom;
+pub(crate) mod edit_format;
 pub mod image_model_routing;
 pub(crate) mod prime_inference;
 pub(crate) mod prime_inference_catalog;
@@ -34,6 +35,8 @@ pub use custom::{
     strip_json_comments, validate_config, CustomModelsResult, ModelOverride, ModelsConfig,
     ProviderOverride,
 };
+pub use edit_format::edit_format_for_model_reference;
+pub(crate) use edit_format::resolve_edit_format;
 pub use image_model_routing::{
     resolve_image_model_override, ImageModelRoutingInputs, ResolvedImageModel,
 };

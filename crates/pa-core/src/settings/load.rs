@@ -62,6 +62,7 @@ const KNOWN_FIELDS: &[&str] = &[
     "sessionDir",
     "requestTiming",
     "pythonCellTimeoutMs",
+    "applyPatch",
 ];
 
 /// Extract each known field independently; ignore fields whose JSON type does not match the Rust
