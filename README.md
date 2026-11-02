@@ -245,7 +245,7 @@ Models trained on OpenAI's V4A patch format (Codex's `apply_patch`) edit files f
 Python REPL with `await apply_patch(r'''*** Begin Patch ... *** End Patch''')`. The
 whole patch is checked before any file is written, files are rewritten in place, and a
 failure while writing undoes every change already made. Other models use
-`edit.run(path, old_str, new_str)`, which stays available everywhere.
+`edit(path, old_str, new_str)`, which stays available everywhere.
 
 By default GPT-5.1 and newer use `apply_patch` (also under provider spellings such as
 `openai/gpt-5.1:nitro`, `ft:gpt-5.1:org::id`, or `us.openai.gpt-5.1`) and every other

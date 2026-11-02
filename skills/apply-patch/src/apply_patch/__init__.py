@@ -1,7 +1,7 @@
 """Apply V4A patches (the OpenAI Codex ``apply_patch`` format) from the kernel.
 
 Parsing and matching follow Codex's ``codex-rs/apply-patch``, and files are
-written in place like Codex and ``edit.run`` write them (a rewritten file keeps
+written in place like Codex and ``edit()`` write them (a rewritten file keeps
 its identity). The one deliberate difference is atomicity: Codex applies file
 by file and can stop halfway; here the whole patch is replayed in memory first,
 every file to rewrite is opened before anything changes, and a failure or
@@ -361,7 +361,7 @@ def _update(
     content: str, chunks: list[_Chunk], path: str
 ) -> tuple[str, list[tuple[str, str, int]]]:
     """New contents plus one ``(old_str, new_str, start_line)`` display event
-    per changed chunk, as the equivalent sequence of ``edit.run`` calls
+    per changed chunk, as the equivalent sequence of ``edit()`` calls
     would report them."""
     lines: list[tuple[str, str | None]] = []
     position = 0
@@ -746,7 +746,7 @@ async def run(patch: str) -> list[dict[str, Any]]:
 
     The whole patch is checked first; any failure raises :class:`PatchError`
     with no file touched. A failure while writing undoes every change. Each
-    changed hunk shows its diff like ``edit.run``. Returns one
+    changed hunk shows its diff like ``edit()``. Returns one
     ``{"path", "operation", "hunks", "move_to"}`` summary per file operation.
     """
     try:
