@@ -328,6 +328,9 @@ pub struct Settings {
     /// Rust-only daemon-level model allowlist: a model outside fails loudly instead
     /// of resolving, with no fallback. `None` is unrestricted.
     pub allowed_models: Option<Vec<String>>,
+    /// Rust-only kill switch for remote env pass-through; read from the raw
+    /// global document by `SettingsManager::remote_env_passthrough_allowed`.
+    pub remote_env_passthrough: Option<bool>,
     pub tree_filter_mode: Option<String>,
     /// `chatDetail`: the conversation-detail level Ctrl+O cycles and persists
     /// ("overview"/"details"/"all"); `None` reads as the `overview` startup level.

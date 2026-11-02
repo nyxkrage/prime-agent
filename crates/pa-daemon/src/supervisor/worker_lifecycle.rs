@@ -283,6 +283,9 @@ impl Supervisor {
             // respawned child keeps its provenance (its ledger
             // re-registers idempotently either way).
             "spawnedByRequestId",
+            // A spawned child's kernel placement and `env=` (names only for
+            // pass-throughs): a respawned worker keeps both.
+            "kernelPlacement",
             "systemPrompt",
             "appendSystemPrompt",
             "skills",

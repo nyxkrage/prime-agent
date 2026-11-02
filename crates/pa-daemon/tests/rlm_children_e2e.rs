@@ -200,6 +200,7 @@ fn children(socket: &Path, agent_dir: &Path, script: &Path, depth: u32) -> Super
         String::new(),
     );
     sessions.set_identity(ParentIdentity {
+        remote_kernel: None,
         rlm_depth: depth,
         rlm_max_depth: 2,
         // Off-catalog on purpose: scripted children do not resolve models.
@@ -228,6 +229,8 @@ fn wait_until<T>(deadline: Duration, mut probe: impl FnMut() -> Option<T>) -> T 
 
 fn spawn_request(name: &str, prompt: &str) -> RlmSpawnRequest {
     RlmSpawnRequest {
+        env: pa_core::kernel::KernelEnvOverrides::default(),
+        host: None,
         prompt: prompt.to_string(),
         name: Some(name.to_string()),
         model: None,
@@ -273,6 +276,7 @@ async fn rlm_spawn_cwd_starts_the_child_in_that_directory() {
         session_id: Some("parent-session-uuid".to_string()),
         session_file: Some(agent_dir.join("parent.jsonl").to_string_lossy().to_string()),
         thinking: None,
+        remote_kernel: None,
         child_script: Some(script.to_string_lossy().to_string()),
     });
 

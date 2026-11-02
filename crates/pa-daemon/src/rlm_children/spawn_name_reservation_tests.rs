@@ -156,6 +156,8 @@ async fn sessions_with_gated_supervisor(
 
 fn spawn_request(name: &str, prompt: &str) -> RlmSpawnRequest {
     RlmSpawnRequest {
+        env: pa_core::kernel::KernelEnvOverrides::default(),
+        host: None,
         prompt: prompt.to_string(),
         name: Some(name.to_string()),
         model: None,

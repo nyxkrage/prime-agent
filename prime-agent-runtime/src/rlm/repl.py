@@ -32,6 +32,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from . import remote as remote_module
 from .factory import schedule_activity
 from .bash import _kill_live_handles, _rehydrate_persistent_shells
 
@@ -1523,6 +1524,10 @@ def _handle_request_line(raw: bytes, queue: asyncio.Queue[dict[str, Any]]) -> No
             return
         _request_interrupt(req.get("id"))
         return
+    if rtype == "heartbeat":
+        # Remote kernels only: the frame itself is the liveness signal
+        # (`_read_requests` records every frame); nothing to answer.
+        return
     if rtype == "host_reply":
         # Bypass the FIFO queue: the awaiting cell IS the in-flight
         # execute, so a queued reply would deadlock behind it.
@@ -1608,6 +1613,7 @@ def _read_requests(stdin_fd: int, queue: asyncio.Queue[dict[str, Any]]) -> None:
             raw = raw.strip()
             if not raw:
                 continue
+            remote_module.note_host_frame()
             try:
                 # The whole per-line handling sits inside the backstop: hostile
                 # input (RecursionError from pathological nesting, unhashable
@@ -1707,6 +1713,10 @@ def _owner_watchdog(owner: int, initial_ppid: int) -> None:
         _wait_owner_windows(owner)
     else:
         _wait_owner_posix(owner, initial_ppid)
+    _exit_ownerless()
+
+
+def _exit_ownerless() -> None:
     # Event-loop-independent by design: a synchronous cell monopolizes the
     # loop, so the queued EOF shutdown can never run; hard-exit from here.
     try:
@@ -1754,6 +1764,16 @@ def _setup_fds() -> int:
 def main() -> None:
     global _loop, _serve_task
     stdin_fd = _setup_fds()
+    # A remote kernel's spawn env is the first frame on stdin; it lands in
+    # os.environ before anything else runs (the reader thread starts later).
+    try:
+        remote_module.begin(stdin_fd)
+    except Exception as err:  # noqa: BLE001
+        os.write(_host_stderr_fd, f"prime-agent: {type(err).__name__}: {err}\n".encode())
+        os._exit(1)
+    # A remote kernel re-points its owner at the remote sshd session and arms
+    # the host heartbeat watchdog, so it must run before the owner watchdog.
+    remote_module.configure(stdin_fd, _exit_ownerless)
     _start_owner_watchdog()
 
     # Alias the executing module so an in-cell `from rlm.repl import emit`

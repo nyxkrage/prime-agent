@@ -302,7 +302,10 @@ impl Worker {
     /// catalog rebind runs separately (`bind_scheduled_jobs`), like the
     /// TS dispatch handlers that call `rebindCronJobsToState` after the
     /// runtime call.
-    pub(crate) async fn refresh_replaced_session_state(&self) {
+    pub(crate) async fn refresh_replaced_session_state(
+        &self,
+        placement: crate::rlm_children::kernel_placement::KernelPlacement,
+    ) {
         let (rlm_depth, summary, child_script) = {
             let (mut core, inputs) = self.summary_inputs();
             // The moved-to file's persisted depth wins (the replacement
@@ -327,6 +330,8 @@ impl Worker {
         match self
             .engine
             .configure_rlm_identity(crate::engine::RlmSessionIdentity {
+                remote_kernel: placement.remote,
+                kernel_env: placement.env,
                 rlm_depth,
                 rlm_max_depth: None,
                 cwd: Some(summary.cwd.clone()),

@@ -349,6 +349,16 @@ pub(crate) struct Inner {
     options: KernelManagerOptions,
     freshness_stat_probe: std::sync::atomic::AtomicBool,
     resolved_python: Mutex<Option<std::path::PathBuf>>,
+    /// The provisioned remote environment of a remote kernel, reused across restarts.
+    resolved_remote: Mutex<Option<crate::kernel::bootstrap::RemoteKernelInstall>>,
+    /// This start's pass-through values, masked in kernel output.
+    redactions: Mutex<Arc<Vec<String>>>,
+    /// Per stream (cell id, stdout/stderr): a held tail that may begin a
+    /// pass-through value split across chunks.
+    redaction_carries: Mutex<Vec<(Option<String>, StreamName, String)>>,
+    /// The `kernel_env` frame, sent by the stdout reader once the remote
+    /// launcher's stdio sentinel arrives.
+    remote_env_frame: Mutex<Option<Value>>,
     guarded: Mutex<Guarded>,
     child: Mutex<Option<ChildHandle>>,
     busy_notify: Notify,
@@ -406,6 +416,7 @@ mod delegations;
 mod events;
 mod execution;
 mod host_requests;
+mod remote;
 mod repair;
 mod requests;
 mod snapshot;
@@ -423,6 +434,10 @@ impl ReplKernelManager {
             options,
             freshness_stat_probe: std::sync::atomic::AtomicBool::new(false),
             resolved_python: Mutex::new(None),
+            resolved_remote: Mutex::new(None),
+            redactions: Mutex::new(Arc::new(Vec::new())),
+            redaction_carries: Mutex::new(Vec::new()),
+            remote_env_frame: Mutex::new(None),
             guarded: Mutex::new(Guarded {
                 state: KernelState::Idle,
                 start_generation: 0,

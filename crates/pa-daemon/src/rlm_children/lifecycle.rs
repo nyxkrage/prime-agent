@@ -83,6 +83,7 @@ impl SupervisorChildSessionsInner {
         runtime_metadata: Option<Value>,
         identity: &ParentIdentity,
         launch_env: Option<std::collections::BTreeMap<String, String>>,
+        placement: &super::kernel_placement::KernelPlacement,
     ) -> Result<CreatedChild> {
         let mut config = json!({
             "cwd": cwd,
@@ -104,6 +105,12 @@ impl SupervisorChildSessionsInner {
         }
         if let Some(request_id) = spawned_by_request_id {
             config["spawnedByRequestId"] = json!(request_id);
+        }
+        // The placement and `env=` (pass-throughs by name only) ride the
+        // durable create for respawns, and the sidecar for every later open.
+        super::kernel_placement::write_kernel_placement(session_dir, placement)?;
+        if let Some(record) = placement.to_record() {
+            config["kernelPlacement"] = record;
         }
         if let Some(script) = &identity.child_script {
             config["script"] = json!(script);
@@ -187,6 +194,7 @@ impl SupervisorChildSessionsInner {
                 runtime_metadata,
                 identity,
                 launch_env,
+                &super::kernel_placement::KernelPlacement::default(),
             )
             .await?;
         // A failed prompt tears the just-created session down (TS kills the

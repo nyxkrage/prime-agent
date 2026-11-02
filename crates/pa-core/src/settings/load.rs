@@ -51,6 +51,7 @@ const KNOWN_FIELDS: &[&str] = &[
     "images",
     "enabledModels",
     "allowedModels",
+    "remoteEnvPassthrough",
     "treeFilterMode",
     "chatDetail",
     "thinkingBudgets",

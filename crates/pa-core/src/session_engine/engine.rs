@@ -109,6 +109,10 @@ pub struct SessionEngineConfig {
     /// request ids on the wire).
     pub semantic_edges: Option<super::semantic_edges::SemanticEdgeIdentity>,
     pub on_late_sent_agent_message: Option<crate::tools::ipython::LateSentAgentMessageHandler>,
+    /// Run this session's Python kernel on a remote SSH host. `None` runs it locally.
+    pub remote_kernel: Option<crate::kernel::shared::RemoteKernelTarget>,
+    /// This session's `rlm.spawn(env=...)` overrides, applied at every kernel start.
+    pub kernel_env: crate::kernel::env_overrides::KernelEnvOverrides,
 }
 
 pub struct SessionEngine {
@@ -226,6 +230,13 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         settings.settings().shell_path.as_deref(),
     )?
     .map(std::path::PathBuf::from);
+    // The `remoteEnvPassthrough` kill switch holds at every build, not only
+    // at the spawn: respawned and reopened sessions replay their `env=`.
+    if config.remote_kernel.is_some() && !settings.remote_env_passthrough_allowed() {
+        config.kernel_env.refuse_passthroughs().map_err(|refusal| {
+            anyhow::anyhow!("this session's remote kernel cannot start: {refusal}")
+        })?;
+    }
     // TS injects the prefix only when truthy (an empty string stays unset).
     let kernel_command_prefix = settings
         .settings()
@@ -347,6 +358,13 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         .and_then(|telemetry| telemetry.telemetry_enabled.as_ref())
     {
         session_counters.set_telemetry_enabled(telemetry_switch.enabled.clone());
+    }
+    // Admitted `rlm.spawn` calls count their placement (local vs remote).
+    if config.telemetry.is_some() {
+        let _ = wiring
+            .rlm
+            .spawn_counters
+            .set(std::sync::Arc::clone(&session_counters));
     }
     // The `mcp.*` host requests (config/refresh/begin_login) the kernel's
     // generic MCP registry sends while listing or calling generic servers.
@@ -473,6 +491,33 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     let model_visible_skills =
         super::runtime_wiring::model_visible_skills(resources.skills.clone(), &handlers);
     let python_skills = super::runtime_wiring::kernel_python_skills(&model_visible_skills);
+    // A remote child's skills are uploaded with its install, and the
+    // prompt's inventory names the remote paths (an unreadable skill dir
+    // drops out of both).
+    let (prompt_skills, remote_kernel) = match config.remote_kernel.clone() {
+        None => (model_visible_skills.clone(), None),
+        Some(target) => {
+            let mut prompt_skills = Vec::with_capacity(model_visible_skills.len());
+            let mut skill_dirs = Vec::with_capacity(model_visible_skills.len());
+            for skill in &model_visible_skills {
+                match crate::kernel::bootstrap::remote_skill_location(
+                    &skill.base_dir,
+                    &skill.file_path,
+                ) {
+                    Ok(location) => {
+                        let mut remote_skill = skill.clone();
+                        remote_skill.file_path = std::path::PathBuf::from(location);
+                        prompt_skills.push(remote_skill);
+                        skill_dirs.push(skill.base_dir.clone());
+                    }
+                    Err(error) => {
+                        tracing::warn!(skill = %skill.name, error = %format!("{error:#}"), "skill left out of a remote kernel");
+                    }
+                }
+            }
+            (prompt_skills, Some(target.with_skill_dirs(skill_dirs)))
+        }
+    };
     // TS resolves the serper credential on the host: `!command` key refs
     // cannot run in-kernel (the websearch skill's auth.json fallback reads
     // literals and env-var names, not commands). The credential is read
@@ -513,6 +558,8 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         config.on_background_work_settled.clone(),
         on_unavailable_skills,
         on_bootstrap_result,
+        remote_kernel,
+        config.kernel_env.clone(),
     );
     let mut tools = config.tools.clone();
     if !tools.iter().any(|tool| tool.name() == PYTHON_TOOL_NAME) {
@@ -583,12 +630,17 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             vision_capable: prompt_vision_capable,
             cwd: cwd.display().to_string(),
             messages_path: conversation_log.clone(),
-            context_files: resources
-                .agents_files
-                .iter()
-                .map(|file| (file.path.display().to_string(), file.content.clone()))
-                .collect(),
-            skills: model_visible_skills.clone(),
+            // This machine's AGENTS.md files describe a different tree.
+            context_files: if config.remote_kernel.is_some() {
+                Vec::new()
+            } else {
+                resources
+                    .agents_files
+                    .iter()
+                    .map(|file| (file.path.display().to_string(), file.content.clone()))
+                    .collect()
+            },
+            skills: prompt_skills,
             selected_tools: Some(
                 active_tool_names
                     .iter()
@@ -602,7 +654,13 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             factory_child: config.factory_child,
             daemonless: config.daemonless,
             can_spawn: config.rlm_subagent_host.is_some(),
-            generic_mcp_servers,
+            // `mcp.*` is refused on a remote kernel: advertise no servers.
+            generic_mcp_servers: if config.remote_kernel.is_some() {
+                Vec::new()
+            } else {
+                generic_mcp_servers
+            },
+            remote_kernel: config.remote_kernel.as_ref(),
             append_system_prompt: Some(resources.append_system_prompt.join("\n\n")),
             ..Default::default()
         },

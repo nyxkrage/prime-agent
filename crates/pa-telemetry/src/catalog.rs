@@ -694,6 +694,12 @@ const AGENT_SESSION_ENDED: EventRule = EventRule {
         ("rlm_child_cache_read_tokens", optional(tokens())),
         ("rlm_child_cache_write_tokens", optional(tokens())),
         ("rlm_child_cost", optional(cost())),
+        // `rlm.spawn` adoption (counts only, never a host, name, or value).
+        ("rlm_spawn_count", optional(count())),
+        ("rlm_remote_spawn_count", optional(count())),
+        ("rlm_spawn_env_literal_key_count", optional(count())),
+        ("rlm_spawn_env_passthrough_key_count", optional(count())),
+        ("rlm_spawn_env_refused_count", optional(count())),
         ("feature_model_initiated_count", optional(count())),
         ("feature_model_completed_count", optional(count())),
         ("feature_model_failed_count", optional(count())),

@@ -275,6 +275,10 @@ pub struct RlmSessionIdentity {
     /// The create's runtime metadata carries a factory run tag: the
     /// session runs one factory state.
     pub factory_child: bool,
+    /// A spawned child's kernel placement and `env=` overrides; reset when
+    /// the worker moves to another session.
+    pub remote_kernel: Option<pa_core::kernel::RemoteKernelTarget>,
+    pub kernel_env: pa_core::kernel::KernelEnvOverrides,
 }
 
 /// A created session's semantic-edge provenance (TS

@@ -284,6 +284,10 @@ pub struct AgentSessionEngine {
     /// Whether this session runs a factory state (its create carried a
     /// factory run tag): selects the child prompt's factory line.
     factory_child: std::sync::atomic::AtomicBool,
+    /// This session's kernel placement and `env=` overrides (seeded by the
+    /// create's RLM identity), applied at every engine build.
+    remote_kernel: std::sync::Mutex<Option<pa_core::kernel::RemoteKernelTarget>>,
+    kernel_env: std::sync::Mutex<pa_core::kernel::KernelEnvOverrides>,
     /// The depth bound's source stamp (`default` | `env` | `global` |
     /// `inherited` | `chat`).
     rlm_max_depth_source: std::sync::Mutex<&'static str>,

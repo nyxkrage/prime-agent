@@ -578,6 +578,13 @@ impl Worker {
             Ok(prepared) => prepared,
             Err(response) => return response,
         };
+        // The fork lands in the live session's dir and keeps its placement
+        // (an unreadable one refuses before teardown).
+        let placement =
+            match crate::rlm_children::kernel_placement::placement_for_session_file(&forked.path) {
+                Ok(placement) => placement,
+                Err(error) => return response_failure(None, "fork", &format!("{error:#}"), None),
+            };
         // One replacement at a time: the fork's teardown, swap, restore, and rebuild share
         // the replacement gate with the other whole-session replacements.
         let _replacement_gate = self.replacement_gate.lock().await;
@@ -593,7 +600,7 @@ impl Worker {
                 // session's scheduled jobs rebind onto the forked
                 // session file — future restores target the fork, not the
                 // source branch.
-                self.refresh_replaced_session_state().await;
+                self.refresh_replaced_session_state(placement).await;
                 self.reseed_service_tier_for_replacement();
                 if let Err(error) = self.bind_scheduled_jobs().await {
                     return response_failure(None, "fork", &error.to_string(), None);

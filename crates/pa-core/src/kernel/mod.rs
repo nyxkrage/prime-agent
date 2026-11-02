@@ -6,11 +6,13 @@
 
 pub mod bootstrap;
 pub mod cancellation;
+pub(crate) mod env_overrides;
 pub mod live_kernels;
 pub mod manager;
 pub mod orphan_journal;
 pub mod protocol;
 pub mod provisioner;
+pub(crate) mod remote_policy;
 pub mod rlm_runtime;
 pub mod shared;
 pub mod state_snapshot;
@@ -20,6 +22,7 @@ pub use bootstrap::{
     KernelBootstrapProgressHandler, KernelPythonSkill, PYTHON_SKILL_IMPORT_ERROR_REPORT_MARKER,
 };
 pub use cancellation::AbortSignal;
+pub use env_overrides::{KernelEnvOverrides, KernelEnvRefusal};
 pub use manager::ReplKernelManager;
 pub use provisioner::IpythonKernelProvisioner;
 pub use rlm_runtime::{
@@ -31,7 +34,7 @@ pub use rlm_runtime::{
 pub use shared::{
     HostRequestHandler, HostRequestHandlers, HostRequestPayload, KernelBusyAfterInterruptError,
     KernelDiffDisplay, KernelManagerOptions, KernelSentAgentMessage, KernelShutdownOptions,
-    KernelSnapshotConfig, StreamName, EXECUTE_STATUS_ABORTED, EXECUTE_STATUS_ERROR,
-    EXECUTE_STATUS_OK,
+    KernelSnapshotConfig, RemoteKernelTarget, StreamName, EXECUTE_STATUS_ABORTED,
+    EXECUTE_STATUS_ERROR, EXECUTE_STATUS_OK,
 };
 pub use state_snapshot::{manifest_path_in, snapshot_path_in, RestoreResult, SnapshotResult};

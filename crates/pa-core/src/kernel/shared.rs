@@ -340,6 +340,55 @@ pub struct KernelSnapshotConfig {
     pub debounce_ms: Option<u64>,
 }
 
+/// A kernel that runs on another machine over SSH (`rlm.spawn(..., host=...)`);
+/// the agent loop, model calls, and session persistence stay local. Built
+/// by [`Self::validated`] only, so host and cwd are always within policy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteKernelTarget {
+    host: String,
+    /// `None` means the remote login directory.
+    cwd: Option<String>,
+    /// The session's model-visible skill dirs, uploaded with the install
+    /// (set by the session engine).
+    skill_dirs: Vec<std::path::PathBuf>,
+}
+
+impl RemoteKernelTarget {
+    /// # Errors
+    ///
+    /// Returns an error when the host or the cwd is outside its allowlist.
+    pub fn validated(host: String, cwd: Option<String>) -> anyhow::Result<Self> {
+        crate::kernel::bootstrap::SshDestination::parse(&host)?;
+        if let Some(cwd) = &cwd {
+            crate::kernel::remote_policy::validate_remote_path(cwd, "rlm.spawn cwd")?;
+        }
+        Ok(Self {
+            host,
+            cwd,
+            skill_dirs: Vec::new(),
+        })
+    }
+
+    #[must_use]
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
+    #[must_use]
+    pub fn cwd(&self) -> Option<&str> {
+        self.cwd.as_deref()
+    }
+
+    pub(crate) fn skill_dirs(&self) -> &[std::path::PathBuf] {
+        &self.skill_dirs
+    }
+
+    pub(crate) fn with_skill_dirs(mut self, skill_dirs: Vec<std::path::PathBuf>) -> Self {
+        self.skill_dirs = skill_dirs;
+        self
+    }
+}
+
 /// Options for constructing a [`ReplKernelManager`].
 #[derive(Clone, Default)]
 pub struct KernelManagerOptions {
@@ -359,6 +408,10 @@ pub struct KernelManagerOptions {
     pub bootstrap_code: Option<String>,
     /// File receiving the kernel process's stderr, rotated once at each spawn.
     pub stderr_log_path: Option<std::path::PathBuf>,
+    /// Run the kernel on a remote host over SSH instead of locally.
+    pub remote: Option<RemoteKernelTarget>,
+    /// The spawn's `rlm.spawn(env=...)` overrides, resolved at each start.
+    pub env_overrides: crate::kernel::env_overrides::KernelEnvOverrides,
 }
 
 /// Shutdown options: whether to flush a final namespace snapshot and drain
