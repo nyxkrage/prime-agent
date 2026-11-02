@@ -99,6 +99,8 @@ pub struct ToolDefinition {
     /// Scheduling constraints; `None` means unconstrained.
     pub execution_mode: Option<ExecutionMode>,
     pub prepare_arguments: Option<PrepareArgumentsFn>,
+    /// The string argument carrying the tool's whole free-text payload (see `Tool`).
+    pub freeform_argument: Option<String>,
     /// Executes the tool. The error message is the model-facing error text.
     pub execute: ExecuteFn,
 }
@@ -111,6 +113,7 @@ impl ToolDefinition {
             name: self.name.clone(),
             description: self.description.clone(),
             parameters: self.parameters.clone(),
+            freeform_argument: self.freeform_argument.clone(),
         }
     }
 }

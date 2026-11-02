@@ -28,8 +28,8 @@ use crate::providers::openai_codex_responses::websocket::{
 };
 use crate::providers::openai_responses_shared::{
     convert_responses_messages, convert_responses_tools, ConvertResponsesMessagesOptions,
-    ConvertResponsesToolsOptions, ReasoningSummary, ResponsesStreamHooks, ResponsesStreamProcessor,
-    OPENAI_TOOL_CALL_PROVIDERS,
+    ConvertResponsesToolsOptions, FreeformToolArguments, ReasoningSummary, ResponsesStreamHooks,
+    ResponsesStreamProcessor, OPENAI_TOOL_CALL_PROVIDERS,
 };
 use crate::providers::simple_options::build_base_options;
 use crate::registry::Provider;
@@ -237,6 +237,7 @@ async fn run_stream(
                 &options,
                 &body,
                 &websocket_headers,
+                context,
                 output,
                 writer,
                 &mut websocket_started,
@@ -345,7 +346,7 @@ async fn run_stream(
     writer.push(AssistantMessageEvent::Start {
         partial: output.clone(),
     });
-    run_sse_stream(&mut response, model, &options, output, writer).await?;
+    run_sse_stream(&mut response, model, context, &options, output, writer).await?;
 
     if options
         .base
@@ -376,6 +377,7 @@ fn is_codex_visible_response_event(event: &Value) -> bool {
         || event_type.starts_with("response.content_")
         || event_type.starts_with("response.refusal.")
         || event_type.starts_with("response.function_")
+        || event_type.starts_with("response.custom_tool_call_input.")
 }
 
 /// One WebSocket attempt.
@@ -387,6 +389,7 @@ async fn run_websocket_attempt(
     options: &OpenAICodexResponsesOptions,
     body: &Value,
     websocket_headers: &[(String, String)],
+    context: &Context,
     output: &mut AssistantMessage,
     writer: &AssistantMessageEventWriter,
     websocket_started: &mut bool,
@@ -444,6 +447,7 @@ async fn run_websocket_attempt(
             apply_service_tier_pricing: Some(Box::new(move |usage, service_tier| {
                 apply_codex_service_tier_pricing(usage, service_tier.as_deref(), &model_id);
             })),
+            freeform_tools: FreeformToolArguments::from_tools(context.tools.as_deref()),
         };
         let mut start_emitted = false;
         let mut processor = ResponsesStreamProcessor::new(model, output, writer, hooks);
@@ -495,11 +499,14 @@ async fn run_websocket_attempt(
             {
                 keep_connection = false;
             } else if use_cached_context && connection.cached && output.response_id.is_some() {
+                // Convert with this request's tools: the continuation delta needs an exact prefix
+                // match against the next request, which replays a freeform call as
+                // `custom_tool_call`.
                 let response_items = convert_responses_messages(
                     model,
                     &Context {
                         messages: vec![assistant_as_message(output)],
-                        tools: None,
+                        tools: context.tools.clone(),
                         system_prompt: None,
                     },
                     &OPENAI_TOOL_CALL_PROVIDERS,
@@ -509,7 +516,10 @@ async fn run_websocket_attempt(
                 )
                 .into_iter()
                 .filter(|item| {
-                    item.get("type").and_then(Value::as_str) != Some("function_call_output")
+                    !matches!(
+                        item.get("type").and_then(Value::as_str),
+                        Some("function_call_output" | "custom_tool_call_output")
+                    )
                 })
                 .collect::<Vec<_>>();
                 let continuation = ContinuationState {
@@ -544,6 +554,7 @@ fn assistant_as_message(output: &AssistantMessage) -> crate::types::Message {
 async fn run_sse_stream(
     response: &mut HttpResponse,
     model: &Model,
+    context: &Context,
     options: &OpenAICodexResponsesOptions,
     output: &mut AssistantMessage,
     writer: &AssistantMessageEventWriter,
@@ -555,6 +566,7 @@ async fn run_sse_stream(
         apply_service_tier_pricing: Some(Box::new(move |usage, service_tier| {
             apply_codex_service_tier_pricing(usage, service_tier.as_deref(), &model_id);
         })),
+        freeform_tools: FreeformToolArguments::from_tools(context.tools.as_deref()),
     };
     let mut processor = ResponsesStreamProcessor::new(model, output, writer, hooks);
     // The TS catch settles partial tool calls before the error event carries the message.
@@ -1101,6 +1113,7 @@ mod tests {
             "response.content_part.added",
             "response.refusal.delta",
             "response.function_call_arguments.delta",
+            "response.custom_tool_call_input.delta",
         ];
         for event_type in visible {
             let event = json!({ "type": event_type });
@@ -1595,5 +1608,106 @@ mod tests {
             .map(|body| body.get("prompt_cache_key").cloned())
             .collect();
         assert_eq!(cache_keys, vec![Some(json!(session_id)); 2]);
+    }
+
+    /// Regression: after a freeform tool turn, the follow-up continues the cached websocket
+    /// chain (a `previous_response_id` delta with only the tool result) instead of resending the
+    /// full body.
+    #[tokio::test]
+    async fn freeform_tool_turn_continues_the_cached_chain() {
+        let item = |status: &str, input: &str| {
+            json!({ "type": "custom_tool_call", "id": "ctc_1", "status": status,
+                "name": "python_repl", "call_id": "call_1", "input": input })
+        };
+        let custom_turn = vec![
+            json!({ "type": "response.created", "response": { "id": "resp_1" } }),
+            json!({ "type": "response.output_item.added", "output_index": 0,
+                "item": item("in_progress", "") }),
+            json!({ "type": "response.custom_tool_call_input.delta", "output_index": 0,
+                "item_id": "ctc_1", "delta": "print(1)" }),
+            json!({ "type": "response.custom_tool_call_input.done", "output_index": 0,
+                "item_id": "ctc_1", "input": "print(1)" }),
+            json!({ "type": "response.output_item.done", "output_index": 0,
+                "item": item("completed", "print(1)") }),
+            json!({ "type": "response.completed", "response": { "id": "resp_1",
+                "status": "completed",
+                "usage": { "input_tokens": 5, "output_tokens": 3, "total_tokens": 8 } } }),
+        ];
+        let server = spawn_scripted_codex_server(vec![vec![
+            custom_turn,
+            codex_response_events("resp_2", "msg_2", "Done"),
+        ]])
+        .await;
+        let model = codex_test_model(server.port);
+        let session_id = format!("session-freeform-continuation-{}", std::process::id());
+        let options = codex_test_options(&server, &session_id);
+        let tools = Some(vec![crate::types::Tool {
+            name: "python_repl".into(),
+            description: "Run Python.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": { "code": { "type": "string" } },
+                "required": ["code"],
+            }),
+            freeform_argument: Some("code".into()),
+        }]);
+        let first_context = Context {
+            tools: tools.clone(),
+            ..codex_test_context("Say hello")
+        };
+        let first = stream_openai_codex_responses(&model, &first_context, Some(&options))
+            .result()
+            .await;
+        assert_eq!(first.stop_reason, StopReason::ToolUse);
+        assert_eq!(first.response_id.as_deref(), Some("resp_1"));
+
+        let mut messages = first_context.messages.clone();
+        messages.extend([
+            crate::types::Message::Assistant(first),
+            crate::types::Message::ToolResult(crate::types::ToolResultMessage {
+                tool_call_id: "call_1|ctc_1".into(),
+                tool_name: "python_repl".into(),
+                content: vec![crate::types::UserOrToolContent::Text(
+                    crate::types::TextContent {
+                        text: "1".into(),
+                        text_signature: None,
+                        rest: Map::default(),
+                    },
+                )],
+                details: None,
+                is_error: false,
+                timestamp: 2,
+                rest: Map::default(),
+            }),
+        ]);
+        let second = stream_openai_codex_responses(
+            &model,
+            &Context {
+                messages,
+                ..first_context
+            },
+            Some(&options),
+        )
+        .result()
+        .await;
+        assert_eq!(second.stop_reason, StopReason::Stop);
+
+        let bodies = server.sent_bodies.lock().expect("bodies").clone();
+        assert_eq!(bodies.len(), 2, "{bodies:?}");
+        assert_eq!(
+            (
+                bodies[1].get("previous_response_id"),
+                bodies[1].get("input")
+            ),
+            (
+                Some(&json!("resp_1")),
+                Some(&json!([{
+                    "type": "custom_tool_call_output",
+                    "call_id": "call_1",
+                    "output": "1",
+                }]))
+            ),
+            "the follow-up sends only the tool result as a continuation delta"
+        );
     }
 }

@@ -73,6 +73,10 @@ impl AgentTool for ToolDefinitionBridge {
         self.definition.name == PYTHON_TOOL_NAME && is_python_tool_name(name)
     }
 
+    fn freeform_argument(&self) -> Option<&str> {
+        self.definition.freeform_argument.as_deref()
+    }
+
     fn execute(
         self: Arc<Self>,
         tool_call_id: String,
@@ -158,6 +162,7 @@ mod tests {
             }),
             execution_mode: Some(ExecutionMode::Sequential),
             prepare_arguments: Some(shout_args),
+            freeform_argument: None,
             execute: Arc::new(move |_id, params, _signal, _on_update| {
                 let text = params
                     .get("text")
@@ -214,6 +219,7 @@ mod tests {
             parameters: serde_json::json!({ "type": "object" }),
             execution_mode: None,
             prepare_arguments: None,
+            freeform_argument: None,
             execute: Arc::new(|_id, _params, _signal, on_update| {
                 Box::pin(async move {
                     if let Some(on_update) = on_update {

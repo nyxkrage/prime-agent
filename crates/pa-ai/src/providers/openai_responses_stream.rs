@@ -30,7 +30,61 @@ struct Slot {
     item: Value,
     /// Scratch for tool-call argument accumulation.
     partial_json: StreamingJsonAccumulator,
+    /// Scratch for a custom tool call's raw text input (empty for every other item).
+    custom: CustomInput,
     content_index: usize,
+}
+
+/// A custom tool call's raw input and how much of it `toolcall_delta`s have carried. The deltas
+/// carry JSON argument fragments, like a `function_call`'s: joined, they parse as
+/// `{"<argument>": input}`.
+#[derive(Default)]
+struct CustomInput {
+    text: String,
+    /// The prefix of `text` already sent (empty: the object is not opened yet).
+    streamed: String,
+    /// Whether the closing `"}` was sent.
+    closed: bool,
+}
+
+impl CustomInput {
+    /// The fragment for the input received since the last one; the first opens the object
+    /// (`{"code":"`) and needs some text. Empty when there is nothing new.
+    fn fragment(&mut self, argument: &str) -> String {
+        if self.closed || (self.streamed.is_empty() && self.text.is_empty()) {
+            return String::new();
+        }
+        self.unsent(argument)
+    }
+
+    /// The last fragment: any unsent text plus the closing `"}` (the whole object when nothing
+    /// was streamed). Empty once closed.
+    fn close(&mut self, argument: &str) -> String {
+        if self.closed {
+            return String::new();
+        }
+        let mut fragment = self.unsent(argument);
+        fragment.push_str("\"}");
+        self.closed = true;
+        fragment
+    }
+
+    /// The opener if nothing was sent yet, then the escaped unsent text. Input rewritten past
+    /// what was already streamed gets no further text: sent text cannot be retracted, and the
+    /// finalized tool call carries the authoritative arguments.
+    fn unsent(&mut self, argument: &str) -> String {
+        let mut fragment = String::new();
+        if self.streamed.is_empty() {
+            let key = Value::String(argument.to_string());
+            fragment = format!("{{{key}:\"");
+        }
+        if let Some(unsent) = self.text.strip_prefix(&self.streamed) {
+            let quoted = Value::String(unsent.to_string()).to_string();
+            fragment.push_str(&quoted[1..quoted.len() - 1]);
+            self.streamed.clone_from(&self.text);
+        }
+        fragment
+    }
 }
 
 /// Incremental Responses stream event processor (port of `processResponsesStream`).
@@ -129,6 +183,7 @@ impl<'a> ResponsesStreamProcessor<'a> {
                                 Slot {
                                     item,
                                     partial_json: StreamingJsonAccumulator::default(),
+                                    custom: CustomInput::default(),
                                     content_index,
                                 },
                             );
@@ -152,12 +207,14 @@ impl<'a> ResponsesStreamProcessor<'a> {
                                 Slot {
                                     item,
                                     partial_json: StreamingJsonAccumulator::default(),
+                                    custom: CustomInput::default(),
                                     content_index,
                                 },
                             );
                         }
                     }
-                    "function_call" => {
+                    // A custom tool call's raw input maps onto its free-text argument.
+                    "function_call" | "custom_tool_call" => {
                         let call_id = item
                             .get("call_id")
                             .and_then(|value| value.as_str())
@@ -170,17 +227,29 @@ impl<'a> ResponsesStreamProcessor<'a> {
                             .get("name")
                             .and_then(|value| value.as_str())
                             .unwrap_or("");
-                        let initial_arguments = item
-                            .get("arguments")
-                            .and_then(|value| value.as_str())
-                            .unwrap_or("")
-                            .to_string();
+                        let (initial_arguments, custom_input, arguments) =
+                            if item_type == "custom_tool_call" {
+                                let input = item
+                                    .get("input")
+                                    .and_then(|value| value.as_str())
+                                    .unwrap_or("");
+                                let arguments =
+                                    self.hooks.freeform_tools.arguments_from_input(name, input);
+                                (String::new(), input.to_string(), arguments)
+                            } else {
+                                let initial_arguments = item
+                                    .get("arguments")
+                                    .and_then(|value| value.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                (initial_arguments, String::new(), Map::default())
+                            };
                         self.output
                             .content
                             .push(AssistantContent::ToolCall(ToolCall {
                                 id: format!("{call_id}|{item_id}"),
                                 name: name.to_string(),
-                                arguments: Map::default(),
+                                arguments,
                                 thought_signature: None,
                                 rest: Map::default(),
                             }));
@@ -194,6 +263,10 @@ impl<'a> ResponsesStreamProcessor<'a> {
                                 Slot {
                                     item,
                                     partial_json: StreamingJsonAccumulator::new(initial_arguments),
+                                    custom: CustomInput {
+                                        text: custom_input,
+                                        ..CustomInput::default()
+                                    },
                                     content_index,
                                 },
                             );
@@ -494,9 +567,47 @@ impl<'a> ResponsesStreamProcessor<'a> {
                     }
                 }
             }
+            "response.custom_tool_call_input.delta" | "response.custom_tool_call_input.done" => {
+                let slot = output_index
+                    .or(self.current_output_index)
+                    .and_then(|index| self.slots.get_mut(&index));
+                if let Some(slot) = slot {
+                    if let Some(AssistantContent::ToolCall(tool_call)) =
+                        self.output.content.get_mut(slot.content_index)
+                    {
+                        let freeform_tools = &self.hooks.freeform_tools;
+                        let argument = freeform_tools.argument_name(&tool_call.name);
+                        // `toolcall_delta` carries JSON argument fragments (the session-event
+                        // contract), so the raw input goes out escaped inside `{"code":"..."}`.
+                        let delta = if event_type == "response.custom_tool_call_input.done" {
+                            slot.custom.text = event
+                                .get("input")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_string();
+                            slot.custom.close(argument)
+                        } else {
+                            slot.custom
+                                .text
+                                .push_str(event.get("delta").and_then(Value::as_str).unwrap_or(""));
+                            slot.custom.fragment(argument)
+                        };
+                        tool_call.arguments =
+                            freeform_tools.arguments_from_input(&tool_call.name, &slot.custom.text);
+                        let content_index = slot.content_index as u64;
+                        if !delta.is_empty() {
+                            self.writer.push(AssistantMessageEvent::ToolcallDelta {
+                                content_index,
+                                delta,
+                                partial: self.output.clone(),
+                            });
+                        }
+                    }
+                }
+            }
             "response.output_item.done" => {
                 // Finalize from the removed slot: looking it up after removal skipped every branch.
-                let slot = output_index
+                let mut slot = output_index
                     .or(self.current_output_index)
                     .and_then(|index| self.slots.remove(&index));
                 let content_index = slot.as_ref().map(|slot| slot.content_index);
@@ -614,22 +725,35 @@ impl<'a> ResponsesStreamProcessor<'a> {
                             }
                         }
                     }
-                    "function_call" => {
+                    "function_call" | "custom_tool_call" => {
+                        let is_custom = item_type == "custom_tool_call";
                         if let Some(content_index) = content_index {
                             if self.block_kind(content_index) == Some("toolCall") {
-                                let slot_json = match &slot {
+                                let field = if is_custom { "input" } else { "arguments" };
+                                let slot_text = match &slot {
+                                    Some(slot) if is_custom => slot.custom.text.clone(),
                                     Some(slot) => slot.partial_json.text().to_string(),
                                     None => String::new(),
                                 };
-                                let arguments_text = item
-                                    .get("arguments")
+                                let item_text = item
+                                    .get(field)
                                     .and_then(|value| value.as_str())
                                     .filter(|text| !text.is_empty())
-                                    .unwrap_or(&slot_json);
-                                let arguments = if arguments_text.is_empty() {
+                                    .unwrap_or(&slot_text);
+                                let name = item
+                                    .get("name")
+                                    .and_then(|value| value.as_str())
+                                    .unwrap_or("");
+                                let arguments = if is_custom {
+                                    Value::Object(
+                                        self.hooks
+                                            .freeform_tools
+                                            .arguments_from_input(name, item_text),
+                                    )
+                                } else if item_text.is_empty() {
                                     json!({})
                                 } else {
-                                    parse_streaming_json(Some(arguments_text))
+                                    parse_streaming_json(Some(item_text))
                                 };
                                 let call_id = item
                                     .get("call_id")
@@ -641,11 +765,7 @@ impl<'a> ResponsesStreamProcessor<'a> {
                                     .unwrap_or("");
                                 let tool_call = ToolCall {
                                     id: format!("{call_id}|{item_id}"),
-                                    name: item
-                                        .get("name")
-                                        .and_then(|value| value.as_str())
-                                        .unwrap_or("")
-                                        .to_string(),
+                                    name: name.to_string(),
                                     arguments: arguments.as_object().cloned().unwrap_or_default(),
                                     thought_signature: None,
                                     rest: Map::default(),
@@ -655,6 +775,20 @@ impl<'a> ResponsesStreamProcessor<'a> {
                                 {
                                     *block = tool_call.clone();
                                 }
+                                // Close a custom call's fragments if no input `.done` did.
+                                if let Some(slot) = slot.as_mut().filter(|_| is_custom) {
+                                    slot.custom.text = item_text.to_string();
+                                    let delta = slot
+                                        .custom
+                                        .close(self.hooks.freeform_tools.argument_name(name));
+                                    if !delta.is_empty() {
+                                        self.writer.push(AssistantMessageEvent::ToolcallDelta {
+                                            content_index: content_index as u64,
+                                            delta,
+                                            partial: self.output.clone(),
+                                        });
+                                    }
+                                }
                                 self.writer.push(AssistantMessageEvent::ToolcallEnd {
                                     content_index: content_index as u64,
                                     tool_call,
@@ -662,14 +796,26 @@ impl<'a> ResponsesStreamProcessor<'a> {
                                 });
                             } else {
                                 // No live block: emit a synthesized tool call.
-                                let arguments_text = item
-                                    .get("arguments")
+                                let name = item
+                                    .get("name")
                                     .and_then(|value| value.as_str())
-                                    .unwrap_or("{}");
-                                let arguments = parse_streaming_json(Some(arguments_text))
-                                    .as_object()
-                                    .cloned()
-                                    .unwrap_or_default();
+                                    .unwrap_or("");
+                                let arguments = if is_custom {
+                                    let input = item
+                                        .get("input")
+                                        .and_then(|value| value.as_str())
+                                        .unwrap_or("");
+                                    self.hooks.freeform_tools.arguments_from_input(name, input)
+                                } else {
+                                    let arguments_text = item
+                                        .get("arguments")
+                                        .and_then(|value| value.as_str())
+                                        .unwrap_or("{}");
+                                    parse_streaming_json(Some(arguments_text))
+                                        .as_object()
+                                        .cloned()
+                                        .unwrap_or_default()
+                                };
                                 let call_id = item
                                     .get("call_id")
                                     .and_then(|value| value.as_str())
@@ -682,11 +828,7 @@ impl<'a> ResponsesStreamProcessor<'a> {
                                     .content
                                     .push(AssistantContent::ToolCall(ToolCall {
                                         id: format!("{call_id}|{item_id}"),
-                                        name: item
-                                            .get("name")
-                                            .and_then(|value| value.as_str())
-                                            .unwrap_or("")
-                                            .to_string(),
+                                        name: name.to_string(),
                                         arguments,
                                         thought_signature: None,
                                         rest: Map::default(),
@@ -940,6 +1082,7 @@ mod tests {
     use crate::event_stream::{
         create_assistant_message_event_stream, initial_assistant_message, AssistantMessageEventExt,
     };
+    use crate::providers::openai_responses_hooks::FreeformToolArguments;
 
     /// Regression: `output_item.done` removed the slot before reading it, so no block got its
     /// signature or `*_end`, and tool-call arguments streamed as deltas were lost.
@@ -1018,5 +1161,166 @@ mod tests {
                 ("toolcall_end", Some(2)),
             ]
         );
+    }
+
+    fn responses_model() -> Model {
+        Model {
+            id: "gpt-5.6-luna".into(),
+            name: "gpt-5.6-luna".into(),
+            api: "openai-responses".into(),
+            provider: "opencode-go".into(),
+            base_url: "https://opencode.ai/zen/go/v1".into(),
+            reasoning: true,
+            thinking_level_map: None,
+            input: vec![crate::types::ModelInput::Text],
+            cost: crate::types::zero_model_cost(),
+            context_window: 400_000,
+            max_tokens: 128_000,
+            max_tokens_explicit: false,
+            featured: None,
+            headers: None,
+            compat: None,
+        }
+    }
+
+    /// Run events through a processor whose request declared `python_repl` freeform.
+    async fn run_freeform_events(
+        events: &[Value],
+    ) -> (AssistantMessage, Vec<AssistantMessageEvent>) {
+        let model = responses_model();
+        let tools = [crate::types::Tool {
+            name: "python_repl".into(),
+            description: "Run Python.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": { "code": { "type": "string" } },
+                "required": ["code"],
+            }),
+            freeform_argument: Some("code".into()),
+        }];
+        let mut output = initial_assistant_message(&model.api, &model.provider, &model.id);
+        let (writer, stream) = create_assistant_message_event_stream();
+        {
+            let mut processor = ResponsesStreamProcessor::new(
+                &model,
+                &mut output,
+                &writer,
+                ResponsesStreamHooks {
+                    freeform_tools: FreeformToolArguments::from_tools(Some(&tools)),
+                    ..ResponsesStreamHooks::default()
+                },
+            );
+            for event in events {
+                processor.handle_event(event).expect("scripted event");
+            }
+        }
+        writer.end(None);
+        (output, stream.collect().await)
+    }
+
+    fn custom_item(input: &str) -> Value {
+        json!({
+            "type": "custom_tool_call", "id": "ctc_1", "call_id": "call_1",
+            "name": "python_repl", "input": input,
+        })
+    }
+
+    /// Regression: `output_item.done` finalizes a `custom_tool_call` with `toolcall_end`, and
+    /// the item's final `input` wins over the streamed deltas.
+    #[tokio::test]
+    async fn output_item_done_finalizes_a_custom_tool_call_with_the_items_input() {
+        let events = [
+            json!({"type": "response.created", "response": {"id": "resp_1"}}),
+            json!({"type": "response.output_item.added", "output_index": 0,
+                "item": custom_item("")}),
+            json!({"type": "response.custom_tool_call_input.delta", "output_index": 0,
+                "item_id": "ctc_1", "delta": "print("}),
+            json!({"type": "response.custom_tool_call_input.delta", "output_index": 0,
+                "item_id": "ctc_1", "delta": "1)"}),
+            json!({"type": "response.output_item.done", "output_index": 0,
+                "item": custom_item("print(2)")}),
+            json!({"type": "response.completed", "response": {"id": "resp_1",
+                "status": "completed"}}),
+        ];
+        let (output, emitted) = run_freeform_events(&events).await;
+        let expected_call = ToolCall {
+            id: "call_1|ctc_1".into(),
+            name: "python_repl".into(),
+            arguments: [("code".to_string(), json!("print(2)"))]
+                .into_iter()
+                .collect(),
+            thought_signature: None,
+            rest: Map::default(),
+        };
+        let event_types: Vec<&str> = emitted
+            .iter()
+            .map(AssistantMessageEventExt::event_type)
+            .collect();
+        let end_call = emitted.iter().find_map(|event| match event {
+            AssistantMessageEvent::ToolcallEnd { tool_call, .. } => Some(tool_call.clone()),
+            _ => None,
+        });
+
+        assert_eq!(
+            output.content,
+            vec![AssistantContent::ToolCall(expected_call.clone())]
+        );
+        assert_eq!(end_call, Some(expected_call));
+        assert_eq!(
+            event_types,
+            [
+                "toolcall_start",
+                "toolcall_delta",
+                "toolcall_delta",
+                "toolcall_delta",
+                "toolcall_end"
+            ]
+        );
+    }
+
+    /// Regression: a custom call's `toolcall_delta`s carry JSON argument fragments, not the raw
+    /// input. Joined, they parse as `{"code": ...}`, escapes included, whether the input's
+    /// `.done` or only the item's `.done` closes them.
+    #[tokio::test]
+    async fn custom_tool_call_deltas_join_into_the_arguments_json() {
+        let code = "x = \"a\\b\"\nprint(x, 'é')";
+        let input_done = json!({"type": "response.custom_tool_call_input.done",
+            "output_index": 0, "item_id": "ctc_1", "input": code});
+        for closes_on_input_done in [true, false] {
+            let mut events = vec![
+                json!({"type": "response.created", "response": {"id": "resp_1"}}),
+                json!({"type": "response.output_item.added", "output_index": 0,
+                    "item": custom_item("")}),
+                json!({"type": "response.custom_tool_call_input.delta", "output_index": 0,
+                    "item_id": "ctc_1", "delta": &code[..9]}),
+                json!({"type": "response.custom_tool_call_input.delta", "output_index": 0,
+                    "item_id": "ctc_1", "delta": &code[9..]}),
+            ];
+            if closes_on_input_done {
+                events.push(input_done.clone());
+            }
+            events.extend([
+                json!({"type": "response.output_item.done", "output_index": 0,
+                    "item": custom_item(code)}),
+                json!({"type": "response.completed", "response": {"id": "resp_1",
+                    "status": "completed"}}),
+            ]);
+            let (_, emitted) = run_freeform_events(&events).await;
+            let deltas: Vec<&str> = emitted
+                .iter()
+                .filter_map(|event| match event {
+                    AssistantMessageEvent::ToolcallDelta { delta, .. } => Some(delta.as_str()),
+                    _ => None,
+                })
+                .collect();
+            let joined: Value =
+                serde_json::from_str(&deltas.concat()).expect("joined deltas parse");
+
+            assert_eq!(
+                (joined, deltas.len()),
+                (json!({ "code": code }), 3),
+                "{deltas:?}"
+            );
+        }
     }
 }

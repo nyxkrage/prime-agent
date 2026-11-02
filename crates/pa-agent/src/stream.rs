@@ -100,6 +100,13 @@ pub struct ToolDefinition {
     pub name: String,
     pub description: String,
     pub parameters: serde_json::Value,
+    /// See [`crate::types::AgentTool::freeform_argument`].
+    #[serde(
+        rename = "freeformArgument",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub freeform_argument: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

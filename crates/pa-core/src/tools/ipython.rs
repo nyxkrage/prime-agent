@@ -549,6 +549,7 @@ pub fn create_ipython_tool_definition(_cwd: &str, options: IpythonToolOptions) -
         execution_mode: Some(ExecutionMode::Sequential),
         parameters: ipython_tool_schema(),
         prepare_arguments: None,
+        freeform_argument: Some("code".to_string()),
         execute,
     }
 }

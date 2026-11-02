@@ -181,3 +181,21 @@ For per-model early compaction, use the existing provider-scoped
 
 Use the actual model ID for your provider. This sets that model's effective context
 window; it does not change every model's global compaction percentage.
+
+### Freeform tools setting
+
+On the OpenAI Responses API, `python_repl` can go out as a raw-text custom tool, so
+the model writes cells without JSON string escaping:
+
+```json
+{
+  "freeformTools": {
+    "enabled": false,
+    "providers": { "openai": true, "opencode-go": true }
+  }
+}
+```
+
+A provider's `providers` entry wins, then `enabled`, then the default (on for
+`openai` and `openai-codex` only). `freeformTools` is not merged across scopes: if
+project settings set it, the global value is ignored. Changes apply to new sessions.

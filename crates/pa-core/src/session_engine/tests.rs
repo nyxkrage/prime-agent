@@ -1185,6 +1185,7 @@ async fn python_tool_aliases_dispatch_to_python_repl() {
         parameters: serde_json::json!({ "type": "object" }),
         execution_mode: None,
         prepare_arguments: None,
+        freeform_argument: None,
         execute: {
             let calls = Arc::clone(&calls);
             Arc::new(move |_id, params, _signal, _on_update| {

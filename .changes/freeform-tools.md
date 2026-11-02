@@ -1,0 +1,1 @@
+- On the OpenAI Responses API, `python_repl` is sent as a raw-text custom tool, so the model writes cells without JSON string escaping. The new `freeformTools` setting turns this on or off globally or per provider. It is on by default for `openai` and `openai-codex` only.
