@@ -1180,6 +1180,7 @@ mod tests {
             featured: None,
             headers: None,
             compat: None,
+            edit_format: None,
         }
     }
 
