@@ -495,17 +495,16 @@ impl<'a> ResponsesStreamProcessor<'a> {
                 }
             }
             "response.output_item.done" => {
-                if let Some(index) = output_index {
-                    self.slots.remove(&index);
-                }
+                // Finalize from the removed slot: looking it up after removal skipped every branch.
+                let slot = output_index
+                    .or(self.current_output_index)
+                    .and_then(|index| self.slots.remove(&index));
+                let content_index = slot.as_ref().map(|slot| slot.content_index);
                 let item = event.get("item").cloned().unwrap_or(Value::Null);
                 let item_type = item
                     .get("type")
                     .and_then(|value| value.as_str())
                     .unwrap_or("");
-                let content_index = self
-                    .current_slot(output_index)
-                    .map(|slot| slot.content_index);
                 match item_type {
                     "reasoning" => {
                         if let Some(content_index) = content_index {
@@ -616,18 +615,12 @@ impl<'a> ResponsesStreamProcessor<'a> {
                         }
                     }
                     "function_call" => {
-                        let content_index = content_index.or_else(|| {
-                            output_index
-                                .and_then(|index| self.slots.get(&index))
-                                .map(|slot| slot.content_index)
-                        });
                         if let Some(content_index) = content_index {
                             if self.block_kind(content_index) == Some("toolCall") {
-                                let slot_json =
-                                    match self.slots.get(&output_index.unwrap_or_default()) {
-                                        Some(slot) => slot.partial_json.text().to_string(),
-                                        None => String::new(),
-                                    };
+                                let slot_json = match &slot {
+                                    Some(slot) => slot.partial_json.text().to_string(),
+                                    None => String::new(),
+                                };
                                 let arguments_text = item
                                     .get("arguments")
                                     .and_then(|value| value.as_str())
@@ -938,5 +931,92 @@ fn map_responses_stop_reason(status: Option<&str>) -> StopReason {
         None | Some("completed" | "in_progress" | "queued") => StopReason::Stop,
         Some("incomplete") => StopReason::Length,
         Some(_) => StopReason::Error,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event_stream::{
+        create_assistant_message_event_stream, initial_assistant_message, AssistantMessageEventExt,
+    };
+
+    /// Regression: `output_item.done` removed the slot before reading it, so no block got its
+    /// signature or `*_end`, and tool-call arguments streamed as deltas were lost.
+    #[tokio::test]
+    async fn output_item_done_finalizes_reasoning_message_and_tool_call() {
+        let reasoning = json!({"id": "rs_1", "type": "reasoning", "encrypted_content": "gAAAA",
+            "summary": [{"type": "summary_text", "text": "Multiply."}]});
+        let message = json!({"id": "msg_1", "type": "message", "phase": "final_answer",
+            "content": [{"type": "output_text", "text": "391"}]});
+        let call = json!({"id": "fc_1", "type": "function_call", "call_id": "call_1",
+            "name": "bash", "arguments": ""});
+        let events = [
+            json!({"type": "response.output_item.added", "output_index": 0, "item": reasoning}),
+            json!({"type": "response.output_item.done", "output_index": 0, "item": reasoning}),
+            json!({"type": "response.output_item.added", "output_index": 1, "item": message}),
+            json!({"type": "response.output_item.done", "output_index": 1, "item": message}),
+            json!({"type": "response.output_item.added", "output_index": 2, "item": call}),
+            json!({"type": "response.function_call_arguments.delta", "output_index": 2,
+                "delta": "{\"cmd\":\"echo hi\"}"}),
+            json!({"type": "response.output_item.done", "output_index": 2, "item": call}),
+        ];
+        let model = crate::models_generated::get_model("opencode", "gpt-5").expect("compiled");
+        let mut output = initial_assistant_message(&model.api, &model.provider, &model.id);
+        let (writer, stream) = create_assistant_message_event_stream();
+        let mut processor = ResponsesStreamProcessor::new(
+            model,
+            &mut output,
+            &writer,
+            ResponsesStreamHooks::default(),
+        );
+        for event in &events {
+            processor.handle_event(event).expect("scripted event");
+        }
+        writer.end(None);
+        let ends: Vec<_> = stream
+            .collect()
+            .await
+            .iter()
+            .filter(|event| event.event_type().ends_with("_end"))
+            .map(|event| (event.event_type(), event.content_index()))
+            .collect();
+
+        assert_eq!(
+            output.content,
+            vec![
+                AssistantContent::Thinking(ThinkingContent {
+                    thinking: "Multiply.".into(),
+                    thinking_signature: Some(reasoning.to_string()),
+                    redacted: None,
+                    rest: Map::default(),
+                }),
+                AssistantContent::Text(TextContent {
+                    text: "391".into(),
+                    text_signature: Some(encode_text_signature_v1(
+                        "msg_1",
+                        Some(TextSignaturePhase::FinalAnswer),
+                    )),
+                    rest: Map::default(),
+                }),
+                AssistantContent::ToolCall(ToolCall {
+                    id: "call_1|fc_1".into(),
+                    name: "bash".into(),
+                    arguments: [("cmd".to_string(), json!("echo hi"))]
+                        .into_iter()
+                        .collect(),
+                    thought_signature: None,
+                    rest: Map::default(),
+                }),
+            ]
+        );
+        assert_eq!(
+            ends,
+            [
+                ("thinking_end", Some(0)),
+                ("text_end", Some(1)),
+                ("toolcall_end", Some(2)),
+            ]
+        );
     }
 }
