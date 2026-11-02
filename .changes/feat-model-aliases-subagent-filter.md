@@ -1,0 +1,1 @@
+- Models can be given an `alias` in `models.json` for selecting them (`rlm.spawn(model="luna")`, `--model luna:high`), and the global `subagentModels` setting limits which models subagents may be spawned with; `rlm.find_models` lists only those.

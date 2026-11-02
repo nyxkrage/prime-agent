@@ -101,6 +101,8 @@ pub struct BuildSystemPromptOptions<'a> {
     pub can_spawn: bool,
     /// Enabled user-configured generic MCP servers.
     pub generic_mcp_servers: Vec<String>,
+    /// The models `rlm.spawn` accepts under `subagentModels`; `None` when unset.
+    pub subagent_models: Option<Vec<String>>,
 }
 
 /// Build the system prompt (assembled text only).
@@ -327,6 +329,15 @@ fn session_role_section(options: &BuildSystemPromptOptions, has_ipython: bool) -
     }
     if options.allow_recursion == Some(false) {
         lines.push("Subagent spawning is disabled in this session.".to_string());
+    } else if let Some(models) = &options.subagent_models {
+        lines.push(if models.is_empty() {
+            "Subagent models are restricted (settings `subagentModels`) and no model is currently permitted: `rlm.spawn` will refuse every model.".to_string()
+        } else {
+            format!(
+                "Subagent models are restricted (settings `subagentModels`): `rlm.spawn` and `rlm.create_session` accept only {}, so pass `model=` explicitly when your own model is not listed.",
+                models.join(", ")
+            )
+        });
     }
     if depth > 0 {
         lines.push(format!(
@@ -499,6 +510,23 @@ mod tests {
             .contains("Enabled generic MCP servers: `slack`"));
         assert!(right.assembled[right.cached_prefix_len..]
             .contains("You are a child agent spawned by the lead."));
+    }
+
+    /// The permitted list rides the dynamic tail, never the cached prefix.
+    #[test]
+    fn subagent_filter_lists_permitted_models_in_the_tail() {
+        let unset = system_prompt_breakdown(&base_options());
+        assert!(!unset.assembled.contains("subagentModels"));
+        let mut options = base_options();
+        options.subagent_models = Some(vec!["sol (openai/gpt-6.1-sol)".to_string()]);
+        let filtered = system_prompt_breakdown(&options);
+        assert_eq!(
+            unset.assembled[..unset.cached_prefix_len],
+            filtered.assembled[..filtered.cached_prefix_len]
+        );
+        assert!(filtered.assembled[filtered.cached_prefix_len..].contains(
+            "Subagent models are restricted (settings `subagentModels`): `rlm.spawn` and `rlm.create_session` accept only sol (openai/gpt-6.1-sol),"
+        ));
     }
 
     #[test]

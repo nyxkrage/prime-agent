@@ -106,6 +106,8 @@ pub struct ModelCostConfig {
 pub struct ModelDefinition {
     pub id: String,
     pub name: Option<String>,
+    /// The short name the model resolves by (`rlm.spawn(model="sol")`).
+    pub alias: Option<String>,
     pub api: Option<String>,
     pub base_url: Option<String>,
     pub reasoning: Option<bool>,
@@ -122,7 +124,9 @@ pub struct ModelDefinition {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ModelOverride {
+    /// Display name only; [`Self::alias`] is the name a model resolves by.
     pub name: Option<String>,
+    pub alias: Option<String>,
     pub reasoning: Option<bool>,
     pub thinking_level_map: Option<BTreeMap<String, Option<String>>>,
     pub input: Option<Vec<String>>,
@@ -183,8 +187,9 @@ pub fn parse_models_config(content: &str) -> Result<ModelsConfig, String> {
 ///
 /// # Errors
 ///
-/// Error when a provider lacks its base URL, API key, or API kind, or a
-/// model lacks an id or zero limits.
+/// Error when a provider lacks its base URL, API key, or API kind, a
+/// model lacks an id or zero limits, or a model alias is malformed,
+/// duplicated, or shadows a model ID the document names.
 pub fn validate_config(
     config: &ModelsConfig,
     built_in_providers: &dyn Fn(&str) -> bool,
@@ -247,7 +252,74 @@ pub fn validate_config(
             }
         }
     }
+    // No `/`, glob characters, or whitespace, so an alias never reads as a
+    // selector or pattern; no `:`, which `--model alias:<level>` splits on.
+    let mut aliased: Vec<(&str, String)> = Vec::new();
+    let mut model_ids: Vec<(&str, String)> = Vec::new();
+    for (provider_name, provider_config) in &config.providers {
+        let definitions = provider_config
+            .models
+            .iter()
+            .flatten()
+            .map(|model| (model.id.as_str(), model.alias.as_deref()));
+        let overrides = provider_config
+            .model_overrides
+            .iter()
+            .flatten()
+            .map(|(id, over)| (id.as_str(), over.alias.as_deref()));
+        for (model_id, alias) in definitions.chain(overrides) {
+            let selector = format!("{provider_name}/{model_id}");
+            model_ids.push((model_id, selector.clone()));
+            let Some(alias) = alias else { continue };
+            let trimmed = alias.trim();
+            if trimmed.is_empty()
+                || trimmed.contains(|c: char| c == '/' || c.is_whitespace())
+                || trimmed.contains(['*', '?', '[', ':'])
+            {
+                return Err(format!(
+                    "Model {selector}: invalid alias \"{alias}\" (use a single word without \"/\", \":\", spaces, or glob characters)."
+                ));
+            }
+            if let Some((_, other)) = aliased
+                .iter()
+                .find(|(existing, _)| existing.eq_ignore_ascii_case(trimmed))
+            {
+                if other != &selector {
+                    return Err(format!(
+                        "Model {selector}: alias \"{trimmed}\" is already used by model {other}; aliases must be unique."
+                    ));
+                }
+            }
+            aliased.push((trimmed, selector));
+        }
+    }
+    for (alias, selector) in &aliased {
+        if let Some((_, other)) = model_ids
+            .iter()
+            .find(|(model_id, _)| alias_shadows_model_id(alias, model_id))
+        {
+            return Err(format!(
+                "Model {selector}: alias \"{alias}\" {SHADOWED_MODEL_ID} {other}; an alias must not shadow a model ID."
+            ));
+        }
+    }
     Ok(())
+}
+
+pub(crate) const SHADOWED_MODEL_ID: &str =
+    "equals the ID (or a trailing \"/\" segment of the ID) of model";
+
+/// Whether `alias` equals the ID or a `/`-delimited suffix of it, which
+/// model references also accept (`DeepSeek-R1` reaches
+/// `deepseek-ai/DeepSeek-R1`).
+pub(crate) fn alias_shadows_model_id(alias: &str, model_id: &str) -> bool {
+    std::iter::once(model_id)
+        .chain(
+            model_id
+                .match_indices('/')
+                .map(|(index, _)| &model_id[index + 1..]),
+        )
+        .any(|suffix| suffix.eq_ignore_ascii_case(alias))
 }
 
 fn cost_from_config(config: &ModelCostConfig) -> ModelCost {
@@ -489,6 +561,60 @@ mod tests {
         let error = validate_config(&config, &|_| false).unwrap_err();
         assert!(error.contains("apiKey"));
         assert!(validate_config(&config, &|p| p == "custom").is_ok());
+    }
+
+    #[test]
+    fn invalid_aliases_fail_validation() {
+        let invalid = |alias: &str| {
+            format!(
+                "Model openai/gpt-6.1-sol: invalid alias \"{alias}\" (use a single word without \"/\", \":\", spaces, or glob characters)."
+            )
+        };
+        let cases = [
+            (
+                r#"{ "providers": {
+                    "anthropic": { "modelOverrides": { "claude-x": { "alias": "Sol" } } },
+                    "openai": { "modelOverrides": { "gpt-6.1-sol": { "alias": "sol" } } }
+                } }"#,
+                "Model openai/gpt-6.1-sol: alias \"sol\" is already used by model anthropic/claude-x; aliases must be unique.".to_string(),
+            ),
+            (
+                r#"{ "providers": { "openai": { "modelOverrides": {
+                    "gpt-6.1-sol": { "alias": "gpt-6-luna" },
+                    "gpt-6-luna": { "name": "Luna" }
+                } } } }"#,
+                "Model openai/gpt-6.1-sol: alias \"gpt-6-luna\" equals the ID (or a trailing \"/\" segment of the ID) of model openai/gpt-6-luna; an alias must not shadow a model ID.".to_string(),
+            ),
+            (
+                r#"{ "providers": { "openai": { "modelOverrides": { "gpt-6.1-sol": { "alias": "openai/sol" } } } } }"#,
+                invalid("openai/sol"),
+            ),
+            (
+                r#"{ "providers": { "openai": { "modelOverrides": { "gpt-6.1-sol": { "alias": "sol:high" } } } } }"#,
+                invalid("sol:high"),
+            ),
+            (
+                r#"{ "providers": { "together": {
+                    "baseUrl": "https://together.example", "apiKey": "k", "api": "openai-completions",
+                    "models": [
+                        { "id": "deepseek-ai/DeepSeek-R1" },
+                        { "id": "meta/llama-5", "alias": "deepseek-r1" }
+                    ]
+                } } }"#,
+                "Model together/meta/llama-5: alias \"deepseek-r1\" equals the ID (or a trailing \"/\" segment of the ID) of model together/deepseek-ai/DeepSeek-R1; an alias must not shadow a model ID.".to_string(),
+            ),
+        ];
+        for (document, expected) in cases {
+            let config = parse_models_config(document).unwrap();
+            assert_eq!(validate_config(&config, &|_| true), Err(expected));
+        }
+        let config = parse_models_config(
+            r#"{ "providers": { "openai": { "modelOverrides": {
+                "gpt-6.1-sol": { "alias": "sol" }, "gpt-6-luna": { "alias": "luna" }
+            } } } }"#,
+        )
+        .unwrap();
+        assert_eq!(validate_config(&config, &|_| true), Ok(()));
     }
 
     #[test]

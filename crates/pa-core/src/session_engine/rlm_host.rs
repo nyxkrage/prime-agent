@@ -484,7 +484,7 @@ pub(crate) struct SemanticSpawnAnchor {
 
 /// Session-scoped RLM state the handlers share.
 pub struct RlmHostBridge {
-    registry: Arc<ModelRegistry>,
+    pub(crate) registry: Arc<ModelRegistry>,
     pub notes: Arc<RlmProgressNotes>,
     /// Fires on every accepted note; `None` keeps the store the only surface.
     note_emit: Option<RlmProgressNoteEmit>,
@@ -495,17 +495,28 @@ pub struct RlmHostBridge {
     /// The spawn anchor [`register_run`] reads the in-flight turn from
     /// (`None` until the engine built the session's agent).
     pub(crate) semantic_spawn: std::sync::OnceLock<SemanticSpawnAnchor>,
+    /// Where `rlm.find_models` re-reads the `subagentModels` filter.
+    settings_dirs: RlmSettingsDirs,
+    /// The subagent-model policy counters; unset without telemetry.
+    pub(crate) telemetry: std::sync::OnceLock<Arc<super::telemetry::SessionTelemetry>>,
+}
+
+#[derive(Clone)]
+pub(crate) struct RlmSettingsDirs {
+    pub(crate) cwd: std::path::PathBuf,
+    pub(crate) agent_dir: std::path::PathBuf,
 }
 
 impl RlmHostBridge {
     /// Build the bridge over one child-session host: the daemon supplies
     /// [`SupervisorChildSessions`]; session embeddings without one pass
     /// [`NoRlmChildren`] (built against the session's own persistence).
-    pub fn new(
+    pub(crate) fn new(
         registry: Arc<ModelRegistry>,
         host: Arc<dyn RlmSubagentHost>,
         usage: Arc<super::rlm_usage::RlmChildUsageAttributions>,
         note_emit: Option<RlmProgressNoteEmit>,
+        settings_dirs: RlmSettingsDirs,
     ) -> Self {
         Self {
             registry,
@@ -514,6 +525,36 @@ impl RlmHostBridge {
             host,
             usage,
             semantic_spawn: std::sync::OnceLock::new(),
+            settings_dirs,
+            telemetry: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Resolve a models.json alias in a requested child model to its
+    /// selector (other references pass through to the host); `true` when an
+    /// alias resolved, counted once the host admits the spawn.
+    fn resolve_requested_model(&self, model: Option<String>) -> (Option<String>, bool) {
+        let alias_selector = model
+            .as_deref()
+            .and_then(|model| self.registry.resolve_model_alias(model));
+        match alias_selector {
+            Some(selector) => (Some(selector.to_string()), true),
+            None => (model, false),
+        }
+    }
+
+    fn note_spawn_error(&self, error: &anyhow::Error) {
+        if error
+            .downcast_ref::<crate::models::SubagentModelRefusal>()
+            .is_some()
+        {
+            self.note_policy(super::telemetry::SubagentModelPolicyEvent::FilterRefused);
+        }
+    }
+
+    fn note_policy(&self, event: super::telemetry::SubagentModelPolicyEvent) {
+        if let Some(telemetry) = self.telemetry.get() {
+            telemetry.note_subagent_model_policy(event);
         }
     }
 }
@@ -531,12 +572,13 @@ pub fn register_rlm_host_handlers(handlers: &mut HostRequestHandlers, bridge: &A
 }
 
 fn register_find_models(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmHostBridge>) {
-    let registry = Arc::clone(&bridge.registry);
+    let bridge = Arc::clone(bridge);
     handlers.register(
         "rlm.find_models",
         host_handler(move |payload| {
-            let registry = Arc::clone(&registry);
+            let bridge = Arc::clone(&bridge);
             Box::pin(async move {
+                let registry = &bridge.registry;
                 let data = &payload.data;
                 let Some(query) = data.get("query").and_then(Value::as_str) else {
                     anyhow::bail!("rlm.find_models query must be a string");
@@ -552,8 +594,29 @@ fn register_find_models(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmHost
                         "rlm.find_models limit must be an integer from 1 to {MAX_RLM_MODEL_SEARCH_LIMIT}"
                     );
                 };
+                // Blocking disk I/O: off the runtime.
+                let RlmSettingsDirs { cwd, agent_dir } = bridge.settings_dirs.clone();
+                let filter = tokio::task::spawn_blocking(move || {
+                    crate::models::SubagentModelFilter::load(
+                        &crate::settings::SettingsManager::create(&cwd, &agent_dir),
+                    )
+                })
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!("rlm.find_models: the settings read task failed: {error}")
+                })?;
+                match &filter {
+                    crate::models::SubagentModelFilter::Only(_) => bridge
+                        .note_policy(super::telemetry::SubagentModelPolicyEvent::FilteredFind),
+                    crate::models::SubagentModelFilter::Unrestricted => {}
+                    crate::models::SubagentModelFilter::Unreadable(error) => anyhow::bail!(
+                        "rlm.find_models: the subagent model filter (settings \"subagentModels\") \
+                         could not be read ({error}); no model is permitted for subagents until \
+                         the global settings.json is fixed."
+                    ),
+                }
                 let models: Vec<RlmModelInfo> = registry
-                    .get_rlm_searchable_models()
+                    .get_rlm_subagent_models(&filter)
                     .into_iter()
                     .map(|model| RlmModelInfo {
                         provider: model.provider.clone(),
@@ -563,6 +626,9 @@ fn register_find_models(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmHost
                         } else {
                             model.name.clone()
                         },
+                        alias: registry
+                            .model_alias(&model.provider, &model.id)
+                            .map(str::to_string),
                     })
                     .collect();
                 let matches = find_rlm_model_matches(query, &models, limit as usize);
@@ -625,6 +691,8 @@ fn register_run(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmHostBridge>)
                     anyhow::bail!("rlm.spawn prompt must be a string");
                 };
                 let mut request = spawn_request_from_payload(prompt, data)?;
+                let (model, via_alias) = bridge.resolve_requested_model(request.model.take());
+                request.model = model;
                 // TS `_startRlmChildRun`: the spawning request is the turn
                 // whose tool call is executing now (the anchor is computed
                 // before the spawn admission's first await); a spawn
@@ -642,7 +710,14 @@ fn register_run(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmHostBridge>)
                     }
                     None => None,
                 };
-                let handle = bridge.host.spawn(request).await?;
+                let handle = bridge
+                    .host
+                    .spawn(request)
+                    .await
+                    .inspect_err(|error| bridge.note_spawn_error(error))?;
+                if via_alias {
+                    bridge.note_policy(super::telemetry::SubagentModelPolicyEvent::AliasSpawn);
+                }
                 // TS `_findLastAssistantMessage` at spawn: the spawning
                 // assistant row (persisted at `message_end` before tool
                 // execution) is the target every child-usage attribution
@@ -695,11 +770,11 @@ fn spawn_request_from_payload(prompt: &str, data: &Value) -> anyhow::Result<RlmS
 }
 
 fn register_create_session(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmHostBridge>) {
-    let host = Arc::clone(&bridge.host);
+    let bridge = Arc::clone(bridge);
     handlers.register(
         "rlm.create_session",
         host_handler(move |payload| {
-            let host = Arc::clone(&host);
+            let bridge = Arc::clone(&bridge);
             Box::pin(async move {
                 const OPERATION: &str = "rlm.create_session";
                 let data = &payload.data;
@@ -722,12 +797,14 @@ fn register_create_session(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmH
                 }
                 let model = optional_string_kwarg(&kwargs, "model", OPERATION)?;
                 let model = normalize_requested_rlm_subagent_model(model, OPERATION)?;
+                let (model, via_alias) = bridge.resolve_requested_model(model);
                 let thinking = optional_string_kwarg(&kwargs, "thinking", OPERATION)?;
                 let thinking =
                     normalize_requested_rlm_subagent_thinking_level(thinking, OPERATION)?
                         .map(String::from);
                 let cwd = cwd_kwarg(&kwargs, OPERATION)?;
-                let handle = host
+                let handle = bridge
+                    .host
                     .create_session(RlmCreateSessionRequest {
                         prompt: prompt.to_string(),
                         name,
@@ -735,7 +812,11 @@ fn register_create_session(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmH
                         thinking,
                         cwd,
                     })
-                    .await?;
+                    .await
+                    .inspect_err(|error| bridge.note_spawn_error(error))?;
+                if via_alias {
+                    bridge.note_policy(super::telemetry::SubagentModelPolicyEvent::AliasSpawn);
+                }
                 serde_json::to_value(&handle).map_err(anyhow::Error::new)
             })
         }),
@@ -909,6 +990,8 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
+    mod subagent_model_tests;
+
     /// A host recording every call, answering with fixed handles.
     /// One recorded collect call: its targets and timeout.
     type CollectCall = (Vec<String>, u64);
@@ -916,6 +999,8 @@ mod tests {
     type RecordedRename = (String, Option<String>);
 
     struct RecordingHost {
+        /// A spawn or session on this selector is refused like the real hosts.
+        refused_selector: std::sync::Mutex<Option<String>>,
         spawn_requests: Arc<Mutex<Vec<RlmSpawnRequest>>>,
         create_requests: Arc<Mutex<Vec<RlmCreateSessionRequest>>>,
         targets: Arc<Mutex<Vec<String>>>,
@@ -926,6 +1011,7 @@ mod tests {
     impl RecordingHost {
         fn new() -> Arc<Self> {
             Arc::new(Self {
+                refused_selector: std::sync::Mutex::new(None),
                 spawn_requests: Arc::new(Mutex::new(Vec::new())),
                 create_requests: Arc::new(Mutex::new(Vec::new())),
                 targets: Arc::new(Mutex::new(Vec::new())),
@@ -933,12 +1019,29 @@ mod tests {
                 renames: Arc::new(Mutex::new(Vec::new())),
             })
         }
+
+        fn refusal(&self, model: Option<&str>) -> anyhow::Result<()> {
+            let refused = self.refused_selector.lock().unwrap();
+            match (refused.as_deref(), model) {
+                (Some(refused), Some(model)) if refused == model => {
+                    Err(crate::models::SubagentModelRefusal::OutsideFilter {
+                        selector: model.to_string(),
+                        permitted: Vec::new(),
+                        alias_patterns: Vec::new(),
+                    }
+                    .into())
+                }
+                _ => Ok(()),
+            }
+        }
     }
 
     impl RlmSubagentHost for RecordingHost {
         fn spawn(&self, request: RlmSpawnRequest) -> RlmHostFuture<RlmSpawnHandle> {
             let requests = Arc::clone(&self.spawn_requests);
+            let refusal = self.refusal(request.model.as_deref());
             Box::pin(async move {
+                refusal?;
                 requests.lock().await.push(request);
                 Ok(RlmSpawnHandle {
                     rlm_child_id: "sub-1".into(),
@@ -953,7 +1056,9 @@ mod tests {
             request: RlmCreateSessionRequest,
         ) -> RlmHostFuture<RlmCreateSessionHandle> {
             let requests = Arc::clone(&self.create_requests);
+            let refusal = self.refusal(request.model.as_deref());
             Box::pin(async move {
+                refusal?;
                 requests.lock().await.push(request);
                 Ok(RlmCreateSessionHandle {
                     active_session_id: "live-2".into(),
@@ -1084,7 +1189,7 @@ mod tests {
                         "api": "openai-completions",
                         "models": [
                             { "id": "glm-5.3", "name": "GLM 5.3", "contextWindow": 1000, "maxTokens": 100 },
-                            { "id": "glm-5.3-turbo", "name": "GLM Turbo", "contextWindow": 1000, "maxTokens": 100 }
+                            { "id": "glm-5.3-turbo", "name": "GLM Turbo", "alias": "turbo", "contextWindow": 1000, "maxTokens": 100 }
                         ]
                     }
                 }

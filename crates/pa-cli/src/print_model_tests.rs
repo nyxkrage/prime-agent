@@ -228,3 +228,39 @@ async fn print_model_provider_only_settings_default_does_not_scope() {
         ("my-gateway", "my-group/my-model")
     );
 }
+
+/// `--model` expands a models.json alias, with or without a `:thinking`
+/// suffix, before fuzzy matching (a missed `turbo:high` would fuzzy-match
+/// `turbo-model` on the bare `turbo`).
+#[tokio::test]
+async fn print_model_flag_expands_a_models_json_alias() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("models.json");
+    std::fs::write(
+        &path,
+        json!({"providers": {
+            "gw": {"baseUrl": "http://127.0.0.1:9/v1", "apiKey": "synthetic-only",
+                "api": "openai-completions",
+                "models": [{"id": "fast-model", "alias": "turbo"}, {"id": "turbo-model"}]}
+        }})
+        .to_string(),
+    )
+    .unwrap();
+    let config = RuntimeConfig {
+        cwd: dir.path().into(),
+        agent_dir: dir.path().into(),
+        ..Default::default()
+    };
+    let auth = AuthStorage::in_memory_without_env(&AuthStorageData::default(), Arc::new(NoOAuth));
+    let mut registry = ModelRegistry::create(auth, path);
+    let mut selected = Vec::new();
+    for flag in ["turbo", "TURBO:high"] {
+        let config = RuntimeConfig {
+            model: Some(flag.to_string()),
+            ..config.clone()
+        };
+        let model = select_model(&mut registry, &config, None).await.unwrap();
+        selected.push(format!("{}/{}", model.provider, model.id));
+    }
+    assert_eq!(selected, ["gw/fast-model", "gw/fast-model"]);
+}

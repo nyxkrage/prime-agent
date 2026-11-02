@@ -93,6 +93,8 @@ pub struct ModelRegistry {
     authorized_private_ids: HashSet<String>,
     authorized_private_models: Vec<Model>,
     authorized_team_id: Option<String>,
+    /// models.json `(alias, provider/model-id)` pairs.
+    model_aliases: Vec<(String, String)>,
     /// The process-shared live catalog chain (`catalog_chain::catalog_for`);
     /// `resolve()` sources built-ins from it.
     catalog: std::sync::Arc<pa_models::ModelCatalog>,
@@ -182,6 +184,7 @@ impl ModelRegistry {
             authorized_private_ids: HashSet::new(),
             authorized_private_models: Vec::new(),
             authorized_team_id: None,
+            model_aliases: Vec::new(),
             catalog,
         };
         registry.load_models();
@@ -379,6 +382,7 @@ impl ModelRegistry {
     }
 
     fn load_models(&mut self) {
+        self.model_aliases.clear();
         let path = self.models_json_path.clone();
         let result = match &path {
             Some(path) => self.load_custom_models_file(path),
@@ -408,6 +412,111 @@ impl ModelRegistry {
         built_in.extend(private_models.into_values());
         self.models = Self::merge_custom_models(built_in, result.models);
         self.apply_subscription_model_adaptations();
+        // `validate_config` only sees the IDs models.json names; here the
+        // full catalog is checked. A collision disables every alias.
+        let collision = self.model_aliases.iter().find_map(|(alias, selector)| {
+            self.models
+                .iter()
+                .find(|model| super::custom::alias_shadows_model_id(alias, &model.id))
+                .map(|model| (alias, selector, format!("{}/{}", model.provider, model.id)))
+        });
+        if let Some((alias, selector, shadowed)) = collision {
+            let file = path
+                .as_ref()
+                .map(|path| format!("\n\nFile: {}", path.display()))
+                .unwrap_or_default();
+            let shadows = super::custom::SHADOWED_MODEL_ID;
+            self.load_error = Some(format!(
+                "Invalid models.json: model {selector}: alias \"{alias}\" {shadows} {shadowed}; an alias must not shadow a model ID.{file}"
+            ));
+            self.model_aliases.clear();
+        }
+    }
+
+    /// The `provider/model-id` selector a models.json alias names
+    /// (case-insensitive).
+    #[must_use]
+    pub fn resolve_model_alias(&self, reference: &str) -> Option<&str> {
+        let reference = reference.trim();
+        self.model_aliases
+            .iter()
+            .find(|(alias, _)| alias.eq_ignore_ascii_case(reference))
+            .map(|(_, selector)| selector.as_str())
+    }
+
+    /// A `--model` reference with its alias expanded, keeping a
+    /// `:<thinking-level>` suffix (`sol:high` -> `openai/gpt-6.1-sol:high`).
+    #[must_use]
+    pub fn expand_model_alias(&self, reference: &str) -> Option<String> {
+        if let Some(selector) = self.resolve_model_alias(reference) {
+            return Some(selector.to_string());
+        }
+        let (alias, level) = reference.trim().rsplit_once(':')?;
+        if !super::resolver::is_valid_thinking_level(level) {
+            return None;
+        }
+        self.resolve_model_alias(alias)
+            .map(|selector| format!("{selector}:{level}"))
+    }
+
+    #[must_use]
+    pub(crate) fn model_alias(&self, provider: &str, model_id: &str) -> Option<&str> {
+        let selector = format!("{provider}/{model_id}");
+        self.model_aliases
+            .iter()
+            .find(|(_, aliased)| *aliased == selector)
+            .map(|(alias, _)| alias.as_str())
+    }
+
+    /// The patterns that name an alias and match no model, for warnings.
+    #[must_use]
+    pub fn alias_patterns(&self, patterns: &[String]) -> Vec<super::allowlist::AliasPattern> {
+        patterns
+            .iter()
+            .filter_map(|pattern| {
+                let selector = self.resolve_model_alias(pattern)?;
+                let matches_a_model = self.models.iter().any(|model| {
+                    super::allowlist::model_allowed(
+                        &format!("{}/{}", model.provider, model.id),
+                        std::slice::from_ref(pattern),
+                    )
+                });
+                (!matches_a_model).then(|| super::allowlist::AliasPattern {
+                    pattern: pattern.clone(),
+                    selector: selector.to_string(),
+                })
+            })
+            .collect()
+    }
+
+    #[must_use]
+    pub(crate) fn get_rlm_subagent_models(
+        &self,
+        filter: &super::allowlist::SubagentModelFilter,
+    ) -> Vec<&Model> {
+        self.get_rlm_searchable_models()
+            .into_iter()
+            .filter(|model| filter.permits(&format!("{}/{}", model.provider, model.id)))
+            .collect()
+    }
+
+    /// The permitted subagent models as `alias (provider/model-id)` for an
+    /// aliased model, else the selector.
+    #[must_use]
+    pub fn subagent_model_names(
+        &self,
+        filter: &super::allowlist::SubagentModelFilter,
+    ) -> Vec<String> {
+        self.get_rlm_subagent_models(filter)
+            .into_iter()
+            .map(|model| {
+                let selector = format!("{}/{}", model.provider, model.id);
+                match self.model_alias(&model.provider, &model.id) {
+                    Some(alias) => format!("{alias} ({selector})"),
+                    None => selector,
+                }
+            })
+            .collect()
     }
 
     /// Per-model base-URL/API overrides plus the xAI subscription switch,
@@ -494,6 +603,12 @@ impl ModelRegistry {
                     }
                     if let Some(model_overrides) = provider_config.model_overrides {
                         for (model_id, model_override) in model_overrides {
+                            if let Some(alias) = &model_override.alias {
+                                self.model_aliases.push((
+                                    alias.trim().to_string(),
+                                    format!("{provider}/{model_id}"),
+                                ));
+                            }
                             self.store_model_headers(
                                 &provider,
                                 &model_id,
@@ -503,6 +618,12 @@ impl ModelRegistry {
                     }
                     if let Some(model_defs) = provider_config.models {
                         for model_def in model_defs {
+                            if let Some(alias) = &model_def.alias {
+                                self.model_aliases.push((
+                                    alias.trim().to_string(),
+                                    format!("{provider}/{}", model_def.id),
+                                ));
+                            }
                             self.store_model_headers(
                                 &provider,
                                 &model_def.id,

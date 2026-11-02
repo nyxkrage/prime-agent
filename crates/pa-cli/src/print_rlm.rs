@@ -731,6 +731,15 @@ impl RlmSubagentHost for InlineHost {
                     "subagent",
                 )
                 .map_err(|error| anyhow::anyhow!("{error:#}"))?;
+                // Unlike `allowedModels`, `subagentModels` binds print mode too.
+                pa_daemon::rlm_child_model::assert_subagent_model_permitted(
+                    &config.agent_dir,
+                    &pa_daemon::rlm_child_model::load_subagent_filter(
+                        &config.cwd,
+                        &config.agent_dir,
+                    ),
+                    &selector,
+                )?;
                 pa_daemon::rlm_child_model::assert_thinking_supported(
                     &config.agent_dir,
                     request.thinking.as_deref(),
@@ -1314,6 +1323,83 @@ mod tests {
         let error = result.expect_err("a disposed parent must not admit a queued spawn");
         assert!(error.to_string().contains("disposed"), "{error:#}");
         assert_eq!(admitted, 0);
+    }
+
+    /// The print host enforces `subagentModels` on a real spawn, explicit or
+    /// inherited, and fails closed on a malformed setting.
+    #[tokio::test]
+    async fn the_inline_host_enforces_the_subagent_filter_on_spawn() {
+        use pa_core::models::SubagentModelRefusal;
+        let directory = tempfile::tempdir().unwrap();
+        let options = run_options(directory.path());
+        let agent_dir = &options.config.agent_dir;
+        std::fs::create_dir_all(agent_dir).unwrap();
+        std::fs::write(
+            agent_dir.join("models.json"),
+            json!({
+                "providers": {
+                    "test-provider": {
+                        "baseUrl": "http://localhost:9",
+                        "apiKey": "test-key",
+                        "api": "openai-completions",
+                        "models": [
+                            { "id": "glm-5.3", "contextWindow": 1000, "maxTokens": 100 },
+                            { "id": "glm-5.3-turbo", "alias": "turbo", "contextWindow": 1000, "maxTokens": 100 }
+                        ]
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let manager = pa_core::session::manager::SessionManager::in_memory(directory.path());
+        let mut node = root_node(&options, &manager, None);
+        Arc::get_mut(&mut node).unwrap().max_depth = 2;
+        *node.model_selector.lock().unwrap() = Some("test-provider/glm-5.3".to_string());
+        let selector = "test-provider/glm-5.3".to_string();
+        for (settings, expected) in [
+            (
+                r#"{ "subagentModels": ["test-provider/glm-5.3-turbo"] }"#,
+                SubagentModelRefusal::OutsideFilter {
+                    selector: selector.clone(),
+                    permitted: vec!["turbo (test-provider/glm-5.3-turbo)".to_string()],
+                    alias_patterns: Vec::new(),
+                },
+            ),
+            (
+                r#"{ "subagentModels": "test-provider/glm-5.3" }"#,
+                SubagentModelRefusal::UnreadableFilter {
+                    selector: selector.clone(),
+                    error: "subagentModels is present but is not an array of strings".to_string(),
+                },
+            ),
+        ] {
+            std::fs::write(agent_dir.join("settings.json"), settings).unwrap();
+            for model in [Some("test-provider/glm-5.3"), None] {
+                let result = InlineHost(Arc::clone(&node))
+                    .spawn(RlmSpawnRequest {
+                        prompt: "finish the task".to_string(),
+                        name: None,
+                        model: model.map(str::to_string),
+                        thinking: None,
+                        cwd: None,
+                        spawned_by_request_id: None,
+                        factory: None,
+                    })
+                    .await;
+                let admitted = node.children.lock().await.len();
+                dispose_inline_subagents(&node).await;
+                node.disposed
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+                let error = result.expect_err("the spawn must be refused");
+                assert_eq!(
+                    error.downcast_ref::<SubagentModelRefusal>(),
+                    Some(&expected),
+                    "{settings} model={model:?}: {error:#}"
+                );
+                assert_eq!(admitted, 0);
+            }
+        }
     }
 
     /// The fake python tool of the landing test: records one late receipt

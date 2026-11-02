@@ -428,7 +428,9 @@ impl SessionEngine for AgentSessionEngine {
         {
             let selector = format!("{provider}/{model}");
             let allowlist = crate::model_allowlist::load(&self.cwd(), &self.config.agent_dir);
-            if crate::model_allowlist::assert_allowed(&allowlist, &selector).is_err() {
+            if crate::model_allowlist::assert_allowed(&self.config.agent_dir, &allowlist, &selector)
+                .is_err()
+            {
                 return false;
             }
         }

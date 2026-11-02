@@ -51,6 +51,7 @@ pub mod turn_boundary;
 
 mod admission;
 mod compaction_arms;
+mod model_pattern_notice;
 mod session_prompt;
 mod wiring;
 

@@ -1128,3 +1128,6 @@ mod usage_emit_tests;
 /// so the reservation's lifecycle is observable.
 #[cfg(test)]
 mod spawn_name_reservation_tests;
+
+#[cfg(test)]
+mod subagent_model_filter_tests;

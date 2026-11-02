@@ -454,3 +454,84 @@ async fn scope_readiness_timeout_keeps_models_available_before_refresh() {
         vec![existing]
     );
 }
+
+fn registry_with_models_json(dir: &std::path::Path, document: &str) -> ModelRegistry {
+    let models_path = dir.join("models.json");
+    std::fs::write(&models_path, document).unwrap();
+    ModelRegistry::create(auth_without_env(&serde_json::json!({})), models_path)
+}
+
+#[test]
+fn models_json_aliases_resolve_and_never_expand_in_patterns() {
+    let dir = tempfile::tempdir().unwrap();
+    let registry = registry_with_models_json(
+        dir.path(),
+        r#"{ "providers": {
+            "custom": {
+                "baseUrl": "https://custom.example", "apiKey": "custom-key",
+                "api": "openai-completions",
+                "models": [ { "id": "big-model-v2", "alias": "big" } ]
+            },
+            "openai": { "modelOverrides": { "gpt-5.6-luna": { "alias": "luna" } } }
+        } }"#,
+    );
+    assert_eq!(registry.get_error(), None);
+    assert_eq!(
+        registry.resolve_model_alias("LUNA"),
+        Some("openai/gpt-5.6-luna")
+    );
+    assert_eq!(
+        registry.resolve_model_alias(" big "),
+        Some("custom/big-model-v2")
+    );
+    assert_eq!(registry.resolve_model_alias("gpt-5.6-luna"), None);
+    assert_eq!(registry.model_alias("openai", "gpt-5.6-luna"), Some("luna"));
+    assert_eq!(
+        registry.alias_patterns(&[
+            "luna".to_string(),
+            "custom/big-model-v2".to_string(),
+            "zai/*".to_string()
+        ]),
+        vec![crate::models::AliasPattern {
+            pattern: "luna".to_string(),
+            selector: "openai/gpt-5.6-luna".to_string(),
+        }]
+    );
+}
+
+/// A duplicate alias, or one shadowing a catalog ID (or its trailing `/`
+/// segment) that models.json never names, fails the load and disables it.
+#[test]
+fn an_invalid_alias_fails_the_load() {
+    let cases = [
+        (
+            r#"{ "providers": {
+                "anthropic": { "modelOverrides": { "claude-x": { "alias": "sol" } } },
+                "openai": { "modelOverrides": { "gpt-5.6-luna": { "alias": "sol" } } }
+            } }"#,
+            "sol",
+            "alias \"sol\" is already used by model anthropic/claude-x",
+        ),
+        (
+            r#"{ "providers": { "openai": { "modelOverrides": {
+                "gpt-5.6-luna": { "alias": "deepseek-v4-flash" }
+            } } } }"#,
+            "deepseek-v4-flash",
+            "/deepseek-v4-flash; an alias must not shadow a model ID.",
+        ),
+        (
+            r#"{ "providers": { "openai": { "modelOverrides": {
+                "gpt-5.6-luna": { "alias": "deepseek-r1" }
+            } } } }"#,
+            "deepseek-r1",
+            "/deepseek-ai/DeepSeek-R1; an alias must not shadow a model ID.",
+        ),
+    ];
+    for (document, alias, expected) in cases {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = registry_with_models_json(dir.path(), document);
+        let error = registry.get_error().expect("a load error");
+        assert!(error.contains(expected), "{error}");
+        assert_eq!(registry.resolve_model_alias(alias), None);
+    }
+}
